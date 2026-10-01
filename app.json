@@ -1,0 +1,43 @@
+{
+  "expo": {
+    "name": "Anywarehouse",
+    "slug": "anywarehouse",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/icon.png",
+        "backgroundColor": "#0f172a"
+      },
+      "predictiveBackGestureEnabled": false,
+      "package": "com.anywarehouse.scanner",
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO"
+      ]
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "expo-sqlite",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Cho phép ứng dụng sử dụng Camera để quét tem thùng hàng."
+        }
+      ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "a3a6d544-ff07-4dbd-87cd-e102c862f335"
+      }
+    },
+    "owner": "dinhtung"
+  }
+}
