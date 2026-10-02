@@ -267,13 +267,29 @@ export default function PalletListScreen({ onBackToScanner }: { onBackToScanner:
             ) : (
               <ScrollView style={{ maxHeight: 400, marginTop: 10 }}>
                 {selectedBoxes.map((b, idx) => (
-                  <View key={b.id} style={styles.boxRow}>
-                    <Text style={styles.boxRowIdx}>#{b.box_index}</Text>
-                    <View style={{ flex: 1, marginLeft: 10 }}>
-                      <Text style={styles.boxRowTitle} numberOfLines={1}>{b.product_name}</Text>
-                      <Text style={styles.boxRowMeta}>
-                        Lô: {b.lot_code} | {b.weight} Kg | NSX: {b.production_date} | Tổ: {b.shift_group}
-                      </Text>
+                  <View key={b.id} style={styles.boxCardItem}>
+                    {/* Header Row: Index + SKU + Weight */}
+                    <View style={styles.boxCardHeader}>
+                      <View style={styles.boxIndexTag}>
+                        <Text style={styles.boxIndexTagText}>#{b.box_index}</Text>
+                      </View>
+                      <Text style={styles.boxSkuTag}>SKU: {b.sku}</Text>
+                      <View style={styles.boxWeightTag}>
+                        <Text style={styles.boxWeightTagText}>{b.weight} {b.unit}</Text>
+                      </View>
+                    </View>
+
+                    {/* Product Name Full without truncation */}
+                    <Text style={styles.boxFullTitle}>{b.product_name}</Text>
+
+                    {/* Complete 2-Column Grid of Label Details */}
+                    <View style={styles.boxMetaGrid}>
+                      <Text style={styles.boxMetaCell}><Text style={styles.metaDim}>Mã Lô:</Text> {b.lot_code}</Text>
+                      <Text style={styles.boxMetaCell}><Text style={styles.metaDim}>Quy cách:</Text> {b.spec || 'Thùng/túi: 20kg'}</Text>
+                      <Text style={styles.boxMetaCell}><Text style={styles.metaDim}>Tổ/Nhóm:</Text> {b.shift_group || 'Nguyên'}</Text>
+                      <Text style={styles.boxMetaCell}><Text style={styles.metaDim}>Vùng NL:</Text> {b.region || 'Tây Nguyên'}</Text>
+                      <Text style={styles.boxMetaCell}><Text style={styles.metaDim}>Ngày SX:</Text> {b.production_date}</Text>
+                      <Text style={styles.boxMetaCell}><Text style={styles.metaDim}>Ngày ĐG:</Text> {b.packaging_date || b.production_date}</Text>
                     </View>
                   </View>
                 ))}
@@ -476,30 +492,78 @@ const styles = StyleSheet.create({
     fontSize: 12,
     marginTop: 4,
   },
-  boxRow: {
+  
+  boxCardItem: {
+    backgroundColor: '#131b2e',
+    borderRadius: 10,
+    padding: 12,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  boxCardHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#0f172a',
-    padding: 10,
-    borderRadius: 8,
+    justifyContent: 'space-between',
     marginBottom: 6,
   },
-  boxRowIdx: {
-    color: '#38bdf8',
-    fontSize: 13,
-    fontWeight: '900',
-    width: 44,
+  boxIndexTag: {
+    backgroundColor: '#064e3b',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#10b981',
   },
-  boxRowTitle: {
-    color: '#f8fafc',
+  boxIndexTagText: {
+    color: '#34d399',
+    fontSize: 14,
+    fontWeight: '900',
+  },
+  boxSkuTag: {
+    color: '#94a3b8',
     fontSize: 12,
     fontWeight: '700',
+    flex: 1,
+    marginLeft: 8,
   },
-  boxRowMeta: {
-    color: '#94a3b8',
+  boxWeightTag: {
+    backgroundColor: '#0c4a6e',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+  },
+  boxWeightTagText: {
+    color: '#38bdf8',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  boxFullTitle: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '800',
+    lineHeight: 19,
+    marginBottom: 6,
+  },
+  boxMetaGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 4,
+    paddingTop: 4,
+    borderTopWidth: 1,
+    borderTopColor: '#1e293b',
+  },
+  boxMetaCell: {
+    width: '48%',
+    color: '#cbd5e1',
     fontSize: 11,
-    marginTop: 2,
+    marginVertical: 1,
   },
+  metaDim: {
+    color: '#64748b',
+    fontWeight: '600',
+  },
+
   closeDetailBtn: {
     backgroundColor: '#334155',
     paddingVertical: 10,

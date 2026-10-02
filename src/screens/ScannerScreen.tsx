@@ -601,20 +601,30 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
           </View>
         ) : (
           boxes.map((b, idx) => (
-            <View key={b.id} style={styles.boxItem}>
-              <View style={styles.boxIndexCircle}>
-                <Text style={styles.boxOrderNum}>#{boxes.length - idx}</Text>
-              </View>
-              <View style={styles.boxInfoCol}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                  <Text style={styles.boxMainIndex}>STT Thùng: {b.box_index}</Text>
-                  <Text style={styles.boxWeightTag}>{b.weight} {b.unit}</Text>
+            <View key={b.id} style={styles.richBoxCard}>
+              <View style={styles.richBoxHeader}>
+                <View style={styles.richBoxIndexBadge}>
+                  <Text style={styles.richBoxIndexText}>#{b.box_index}</Text>
                 </View>
-                <Text style={styles.boxSubInfo}>Lot: {b.lot_code} | {b.production_date}</Text>
+                <Text style={styles.richBoxSkuText}>SKU: {b.sku}</Text>
+                <View style={styles.richBoxWeightBadge}>
+                  <Text style={styles.richBoxWeightText}>{b.weight} {b.unit}</Text>
+                </View>
+                <TouchableOpacity onPress={() => handleDeleteBox(b)} style={styles.deleteBoxBtn}>
+                  <Ionicons name="trash-outline" size={18} color="#ef4444" />
+                </TouchableOpacity>
               </View>
-              <TouchableOpacity onPress={() => handleDeleteBox(b)} style={styles.deleteBoxBtn}>
-                <Ionicons name="trash-outline" size={18} color="#ef4444" />
-              </TouchableOpacity>
+
+              <Text style={styles.richBoxTitle}>{b.product_name}</Text>
+
+              <View style={styles.richBoxMetaRow}>
+                <Text style={styles.richMetaText}><Text style={styles.metaLabel}>Lot:</Text> {b.lot_code}</Text>
+                <Text style={styles.richMetaText}><Text style={styles.metaLabel}>Quy cách:</Text> {b.spec || '20kg'}</Text>
+                <Text style={styles.richMetaText}><Text style={styles.metaLabel}>Tổ:</Text> {b.shift_group || 'Nguyên'}</Text>
+                <Text style={styles.richMetaText}><Text style={styles.metaLabel}>Vùng:</Text> {b.region || 'Tây Nguyên'}</Text>
+                <Text style={styles.richMetaText}><Text style={styles.metaLabel}>NSX:</Text> {b.production_date}</Text>
+                <Text style={styles.richMetaText}><Text style={styles.metaLabel}>NĐG:</Text> {b.packaging_date || b.production_date}</Text>
+              </View>
             </View>
           ))
         )}
@@ -951,31 +961,78 @@ const styles = StyleSheet.create({
   emptyText: { color: '#e2e8f0', fontSize: 14, fontWeight: '700', marginTop: 8 },
   emptySubText: { color: '#64748b', fontSize: 12, marginTop: 4, textAlign: 'center' },
 
-  boxItem: {
+  
+  richBoxCard: {
+    backgroundColor: '#131b2e',
+    borderRadius: 10,
+    padding: 12,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: '#1e293b',
+  },
+  richBoxHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#131b2e',
-    padding: 10,
-    borderRadius: 10,
-    marginBottom: 6,
+    marginBottom: 4,
+  },
+  richBoxIndexBadge: {
+    backgroundColor: '#064e3b',
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 6,
     borderWidth: 1,
-    borderColor: '#1e293b'
+    borderColor: '#10b981',
+    marginRight: 8,
   },
-  boxIndexCircle: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: '#1e293b',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 10
+  richBoxIndexText: {
+    color: '#34d399',
+    fontSize: 13,
+    fontWeight: '900',
   },
-  boxOrderNum: { color: '#10b981', fontSize: 12, fontWeight: '800' },
-  boxInfoCol: { flex: 1 },
-  boxMainIndex: { color: '#ffffff', fontSize: 15, fontWeight: '800' },
-  boxWeightTag: { color: '#38bdf8', fontSize: 12, fontWeight: '700', backgroundColor: '#0c4a6e', paddingHorizontal: 6, paddingVertical: 1, borderRadius: 4 },
-  boxSubInfo: { color: '#94a3b8', fontSize: 11, marginTop: 2 },
-  deleteBoxBtn: { padding: 8 },
+  richBoxSkuText: {
+    color: '#94a3b8',
+    fontSize: 12,
+    fontWeight: '700',
+    flex: 1,
+  },
+  richBoxWeightBadge: {
+    backgroundColor: '#0c4a6e',
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 6,
+    marginRight: 6,
+  },
+  richBoxWeightText: {
+    color: '#38bdf8',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  richBoxTitle: {
+    color: '#ffffff',
+    fontSize: 13,
+    fontWeight: '800',
+    lineHeight: 18,
+    marginBottom: 6,
+  },
+  richBoxMetaRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 4,
+    paddingTop: 4,
+    borderTopWidth: 1,
+    borderTopColor: '#1e293b',
+  },
+  richMetaText: {
+    width: '48%',
+    color: '#cbd5e1',
+    fontSize: 11,
+    marginVertical: 1,
+  },
+  metaLabel: {
+    color: '#64748b',
+    fontWeight: '600',
+  },
+  deleteBoxBtn: { padding: 4 },
 
   modalBg: { flex: 1, backgroundColor: 'rgba(0,0,0,0.75)', justifyContent: 'center', padding: 20 },
   modalCard: { backgroundColor: '#131b2e', borderRadius: 16, padding: 20, borderWidth: 1, borderColor: '#334155' },
