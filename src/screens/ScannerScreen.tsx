@@ -14,7 +14,7 @@ import {
   getBoxesByPallet, addBoxToPallet, deleteBox,
   getPalletByCode, resetPalletBoxes, activateExistingPallet
 } from '../services/database';
-import { parseBoxLabelText } from '../services/labelParser';
+import { parseBoxLabelText, isBoxLabel } from '../services/labelParser';
 import { DEFAULT_SUPABASE_URL } from '../services/supabase';
 
 export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPallets: () => void }) {
@@ -37,7 +37,7 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
   const [successBanner, setSuccessBanner] = useState<string | null>(null);
   const bannerAnim = useRef(new Animated.Value(0)).current;
 
-  // Pallet Creation Modal
+  // Pallet Creation Modal (NEVER forced automatically on app start)
   const [isNewPalletModal, setIsNewPalletModal] = useState(false);
   const [newPalletCode, setNewPalletCode] = useState('');
   const [newTargetQty, setNewTargetQty] = useState('30');
@@ -58,7 +58,7 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
     loadActivePallet();
   }, []);
 
-  // AUTO SCAN INTERVAL LOOP
+  // AUTO SCAN INTERVAL LOOP - ONLY RUNS WHEN activePallet EXISTS!
   useEffect(() => {
     let scanTimer: any = null;
 
@@ -81,8 +81,9 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
         const boxList = await getBoxesByPallet(pallet.id);
         setBoxes(boxList);
       } else {
-        setNewPalletCode('');
-        setIsNewPalletModal(true);
+        // DO NOT FORCE MODAL! Let user explore app or choose when to start
+        setActivePallet(null);
+        setBoxes([]);
       }
     } catch (e: any) {
       console.error('Error loading pallet:', e);
@@ -100,7 +101,7 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
 
   async function processBoxData(parsedData: ParsedLabelData, isAuto = false) {
     if (!activePallet) {
-      if (!isAuto) Alert.alert('Chưa có Pallet', 'Vui lòng chọn hoặc tạo Pallet trước');
+      if (!isAuto) Alert.alert('Chưa có Pallet', 'Vui lòng chọn hoặc tạo Pallet trước khi quét');
       return;
     }
 
@@ -114,7 +115,7 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
 
       lastScannedBoxRef.current = box.box_index;
       lastScannedTimeRef.current = Date.now();
-      pauseUntilRef.current = Date.now() + 1800; // Pause auto-scan for 1.8s so worker moves to next box
+      pauseUntilRef.current = Date.now() + 2000; // Pause auto-scan for 2.0s so worker comfortably moves to next box
 
       showSuccessFlash(`✅ ĐÃ QUÉT THÙNG #${box.box_index} (${box.weight}kg)`);
 
@@ -147,24 +148,27 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
     }
   }
 
-  // 100% OFFLINE RECOGNITION CORE
+  // 100% OFFLINE RECOGNITION CORE WITH STRICT LABEL VALIDATION
   async function recognizeImage(photo: any): Promise<ParsedLabelData | null> {
     // 1. Priority 1: Google ML Kit ON-DEVICE (100% Offline, ~80ms)
     try {
       if (TextRecognition && typeof TextRecognition.recognize === 'function') {
         const mlResult = await TextRecognition.recognize(photo.uri);
         if (mlResult?.text && mlResult.text.trim()) {
-          const parsed = parseBoxLabelText(mlResult.text);
-          if (parsed && parsed.box_index) {
-            return parsed;
+          // Strictly validate that this text is an actual carton box label
+          if (isBoxLabel(mlResult.text)) {
+            const parsed = parseBoxLabelText(mlResult.text);
+            if (parsed && parsed.box_index) {
+              return parsed;
+            }
           }
         }
       }
     } catch (mlErr) {
-      console.log('[Native ML Kit Not Available, using Server Fallback]');
+      // Native ML Kit not available
     }
 
-    // 2. Priority 2: Server Fallback via API (when device is connected to wifi/tunnel)
+    // 2. Priority 2: Server Fallback via API (only when connected)
     if (photo.base64) {
       try {
         const storedUrl = await AsyncStorage.getItem('config_supabase_url');
@@ -190,6 +194,7 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
 
   // AUTO SCAN CYCLE
   async function runAutoScanCycle() {
+    // Strict Guard: ONLY scan if an active pallet is selected and not paused
     if (!cameraRef.current || !activePallet || isProcessingFrame.current || isScanning) return;
     if (Date.now() < pauseUntilRef.current) return;
 
@@ -204,9 +209,10 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
       if (!photo?.uri) return;
 
       const parsed = await recognizeImage(photo);
+      // Strictly require a valid box index extracted from a validated label
       if (parsed && parsed.box_index) {
-        // Debounce: If same box index scanned within last 3 seconds, skip
-        if (parsed.box_index === lastScannedBoxRef.current && (Date.now() - lastScannedTimeRef.current < 3000)) {
+        // Debounce: If same box index scanned within last 4 seconds, ignore
+        if (parsed.box_index === lastScannedBoxRef.current && (Date.now() - lastScannedTimeRef.current < 4000)) {
           return;
         }
         await processBoxData(parsed, true);
@@ -222,7 +228,10 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
   async function handleManualCapture() {
     if (!cameraRef.current) return;
     if (!activePallet) {
-      Alert.alert('Chưa có Pallet', 'Vui lòng nhập STT Pallet trước');
+      Alert.alert('Chưa có Pallet', 'Vui lòng bấm [+ Nhập STT Pallet] trước khi quét', [
+        { text: 'Huỷ', style: 'cancel' },
+        { text: 'Nhập STT Pallet', onPress: () => setIsNewPalletModal(true) }
+      ]);
       return;
     }
 
@@ -241,7 +250,7 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
 
       const parsed = await recognizeImage(photo);
       if (!parsed || !parsed.box_index) {
-        throw new Error('Không nhận diện được chữ trên tem');
+        throw new Error('Không phát hiện con tem thùng hợp lệ trong khung hình');
       }
 
       await processBoxData(parsed, false);
@@ -249,7 +258,7 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       Alert.alert(
         'Không nhận diện được tem',
-        err.message || 'Chưa đọc rõ số STT thùng.\n\n👉 Bạn có thể bấm "Sửa / Nhập tay" để điền số thùng nhanh.',
+        err.message || 'Không tìm thấy số STT trên tem.\n\n👉 Bạn có thể bấm "Sửa / Nhập tay" để điền số thùng nhanh.',
         [
           { text: 'Đóng', style: 'cancel' },
           { text: 'Nhập tay ngay', onPress: () => setIsManualModal(true) }
@@ -262,7 +271,7 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
 
   async function handleCreatePallet() {
     if (!newPalletCode.trim()) {
-      Alert.alert('Lỗi', 'Vui lòng nhập số thực tế (STT) Pallet (Ví dụ: F3500)');
+      Alert.alert('Lỗi', 'Vui lòng nhập số thực tế (STT) Pallet (Ví dụ: F3500 hoặc F5556)');
       return;
     }
 
@@ -316,7 +325,6 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
     Alert.alert('Thành công', `Đã chốt Pallet ${activePallet.code} với ${boxes.length} thùng!\nDữ liệu đã lưu ngoại tuyến.`);
     setActivePallet(null);
     setBoxes([]);
-    setIsNewPalletModal(true);
   }
 
   async function handleDeleteBox(box: BoxLabel) {
@@ -388,14 +396,14 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
 
   const scannedCount = boxes.length;
   const targetCount = activePallet?.target_qty || 30;
-  const progressPercent = Math.min(100, Math.round((scannedCount / targetCount) * 100));
+  const progressPercent = activePallet ? Math.min(100, Math.round((scannedCount / targetCount) * 100)) : 0;
 
   return (
     <View style={styles.container}>
       {/* 🔴 HEADER: PALLET STT & PROGRESS */}
       <View style={styles.topInfoBar}>
         <View style={styles.palletMetaCol}>
-          <Text style={styles.palletLabel}>STT PALLET</Text>
+          <Text style={styles.palletLabel}>STT PALLET HIỆN TẠI</Text>
           <TouchableOpacity
             style={styles.palletCodeRow}
             onPress={() => {
@@ -403,8 +411,17 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
               setIsNewPalletModal(true);
             }}
           >
-            <Text style={styles.palletCodeText}>{activePallet ? activePallet.code : 'CHƯA CHỌN'}</Text>
-            <Ionicons name="create-outline" size={18} color="#f59e0b" style={{ marginLeft: 6 }} />
+            {activePallet ? (
+              <>
+                <Text style={styles.palletCodeText}>{activePallet.code}</Text>
+                <Ionicons name="create-outline" size={18} color="#f59e0b" style={{ marginLeft: 6 }} />
+              </>
+            ) : (
+              <View style={styles.selectPalletPrompt}>
+                <Ionicons name="add-circle" size={18} color="#10b981" />
+                <Text style={styles.selectPalletPromptText}>Chọn / Nhập STT Pallet</Text>
+              </View>
+            )}
           </TouchableOpacity>
         </View>
 
@@ -414,29 +431,40 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
         </View>
       </View>
 
-      {/* PROGRESS BAR */}
-      <View style={styles.progressContainer}>
-        <View style={styles.progressRow}>
-          <Text style={styles.progressLabel}>Tiến độ Pallet: <Text style={styles.progressBold}>{scannedCount} / {targetCount} thùng</Text></Text>
-          <Text style={styles.progressPercent}>{progressPercent}%</Text>
+      {/* PROGRESS BAR (Only visible when activePallet exists) */}
+      {activePallet ? (
+        <View style={styles.progressContainer}>
+          <View style={styles.progressRow}>
+            <Text style={styles.progressLabel}>Tiến độ Pallet: <Text style={styles.progressBold}>{scannedCount} / {targetCount} thùng</Text></Text>
+            <Text style={styles.progressPercent}>{progressPercent}%</Text>
+          </View>
+          <View style={styles.progressBarTrack}>
+            <View style={[styles.progressBarFill, { width: `${progressPercent}%` }]} />
+          </View>
         </View>
-        <View style={styles.progressBarTrack}>
-          <View style={[styles.progressBarFill, { width: `${progressPercent}%` }]} />
+      ) : (
+        <View style={styles.noPalletTipBar}>
+          <Ionicons name="information-circle-outline" size={16} color="#38bdf8" />
+          <Text style={styles.noPalletTipText}>Bạn chưa chọn Pallet. Hãy bấm chọn Pallet để kích hoạt quét.</Text>
         </View>
-      </View>
+      )}
 
       {/* AUTO SCAN MODE TOGGLE BAR */}
       <View style={styles.autoScanBar}>
         <TouchableOpacity
-          style={[styles.autoScanToggle, isAutoScan ? styles.autoScanActive : styles.autoScanInactive]}
+          style={[styles.autoScanToggle, (isAutoScan && activePallet) ? styles.autoScanActive : styles.autoScanInactive]}
           onPress={() => {
+            if (!activePallet) {
+              setIsNewPalletModal(true);
+              return;
+            }
             setIsAutoScan(prev => !prev);
             Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
           }}
         >
-          <Ionicons name={isAutoScan ? "flash" : "flash-off"} size={16} color={isAutoScan ? "#10b981" : "#94a3b8"} />
-          <Text style={[styles.autoScanText, isAutoScan && { color: '#10b981', fontWeight: '700' }]}>
-            {isAutoScan ? "Tự động quét: ĐANG BẬT" : "Tự động quét: ĐÃ TẮT"}
+          <Ionicons name={(isAutoScan && activePallet) ? "flash" : "flash-off"} size={16} color={(isAutoScan && activePallet) ? "#10b981" : "#94a3b8"} />
+          <Text style={[styles.autoScanText, (isAutoScan && activePallet) && { color: '#10b981', fontWeight: '700' }]}>
+            {activePallet ? (isAutoScan ? "Tự động quét: ĐANG BẬT" : "Tự động quét: ĐÃ TẮT") : "Tự động quét: CHỜ CHỌN PALLET"}
           </Text>
         </TouchableOpacity>
 
@@ -456,17 +484,32 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
 
         {/* Viewfinder Overlay Frame */}
         <View style={styles.viewfinderFrame}>
-          <View style={[styles.cornerTL, isAutoScan && styles.cornerActive]} />
-          <View style={[styles.cornerTR, isAutoScan && styles.cornerActive]} />
-          <View style={[styles.cornerBL, isAutoScan && styles.cornerActive]} />
-          <View style={[styles.cornerBR, isAutoScan && styles.cornerActive]} />
+          <View style={[styles.cornerTL, (isAutoScan && activePallet) && styles.cornerActive]} />
+          <View style={[styles.cornerTR, (isAutoScan && activePallet) && styles.cornerActive]} />
+          <View style={[styles.cornerBL, (isAutoScan && activePallet) && styles.cornerActive]} />
+          <View style={[styles.cornerBR, (isAutoScan && activePallet) && styles.cornerActive]} />
 
           <View style={styles.scanHintBox}>
             <Text style={styles.scanHintText}>
-              {isAutoScan ? "⚡ ĐANG TỰ ĐỘNG QUÉT TEM..." : "CĂN KHUNG VÀO CON TEM THÙNG"}
+              {!activePallet
+                ? "CHỌN PALLET ĐỂ BẮT ĐẦU"
+                : (isAutoScan ? "⚡ ĐANG TỰ ĐỘNG QUÉT TEM..." : "CĂN KHUNG VÀO CON TEM THÙNG")}
             </Text>
           </View>
         </View>
+
+        {/* Overlay when no active pallet */}
+        {!activePallet && (
+          <View style={styles.noPalletOverlay}>
+            <Ionicons name="cube-outline" size={36} color="#38bdf8" />
+            <Text style={styles.noPalletOverlayTitle}>Chưa chọn Pallet</Text>
+            <Text style={styles.noPalletOverlaySub}>Để tránh quét nhầm hàng, vui lòng chọn hoặc nhập số Pallet trước.</Text>
+            <TouchableOpacity style={styles.selectPalletOverlayBtn} onPress={() => setIsNewPalletModal(true)}>
+              <Ionicons name="add-circle-outline" size={18} color="#fff" />
+              <Text style={styles.selectPalletOverlayBtnText}>Chọn / Nhập Pallet Ngay</Text>
+            </TouchableOpacity>
+          </View>
+        )}
 
         {/* SUCCESS POPUP BANNER */}
         {successBanner && (
@@ -487,7 +530,7 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
       {/* ACTION BUTTONS */}
       <View style={styles.actionRow}>
         <TouchableOpacity
-          style={[styles.simulateScanBtn, isScanning && { opacity: 0.7 }]}
+          style={[styles.simulateScanBtn, (!activePallet || isScanning) && { opacity: 0.6 }]}
           disabled={isScanning}
           onPress={handleManualCapture}
         >
@@ -505,14 +548,20 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
         </TouchableOpacity>
 
         <TouchableOpacity
-          style={styles.manualBtn}
-          onPress={() => setIsManualModal(true)}
+          style={[styles.manualBtn, !activePallet && { opacity: 0.6 }]}
+          onPress={() => {
+            if (!activePallet) {
+              setIsNewPalletModal(true);
+              return;
+            }
+            setIsManualModal(true);
+          }}
         >
           <Ionicons name="keypad-outline" size={20} color="#38bdf8" />
           <Text style={styles.manualBtnText}>Sửa / Nhập tay</Text>
         </TouchableOpacity>
 
-        {scannedCount > 0 && (
+        {activePallet && scannedCount > 0 && (
           <TouchableOpacity
             style={styles.completeBtn}
             onPress={handleCompletePallet}
@@ -525,17 +574,27 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
 
       {/* 📦 RECENT SCANNED BOXES LIST */}
       <View style={styles.listHeaderRow}>
-        <Text style={styles.listHeaderTitle}>Danh sách thùng đã quét ({boxes.length})</Text>
+        <Text style={styles.listHeaderTitle}>
+          {activePallet ? `Danh sách thùng đã quét (${boxes.length})` : 'Thùng hàng'}
+        </Text>
         <TouchableOpacity onPress={onNavigateToPallets}>
           <Text style={styles.seeAllText}>Xem tất cả Pallet →</Text>
         </TouchableOpacity>
       </View>
 
       <ScrollView style={styles.boxList}>
-        {boxes.length === 0 ? (
+        {!activePallet ? (
+          <View style={styles.emptyBox}>
+            <Ionicons name="cube-outline" size={32} color="#64748b" />
+            <Text style={styles.emptyText}>Chưa có Pallet nào đang chọn</Text>
+            <TouchableOpacity onPress={() => setIsNewPalletModal(true)} style={{ marginTop: 8 }}>
+              <Text style={{ color: '#10b981', fontWeight: '700' }}>+ Bấm để chọn hoặc nhập Pallet mới</Text>
+            </TouchableOpacity>
+          </View>
+        ) : boxes.length === 0 ? (
           <View style={styles.emptyBox}>
             <Ionicons name="barcode-outline" size={32} color="#64748b" />
-            <Text style={styles.emptyText}>Chưa có thùng nào trong Pallet này</Text>
+            <Text style={styles.emptyText}>Chưa có thùng nào trong Pallet {activePallet.code}</Text>
             <Text style={styles.emptySubText}>
               {isAutoScan ? "Hướng camera vào tem thùng để tự động quét" : "Hướng camera vào tem rồi bấm [Chụp Quét Tem]"}
             </Text>
@@ -590,14 +649,12 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
             />
 
             <View style={styles.modalBtnRow}>
-              {activePallet && (
-                <TouchableOpacity
-                  style={styles.modalCancelBtn}
-                  onPress={() => setIsNewPalletModal(false)}
-                >
-                  <Text style={styles.modalCancelText}>Đóng</Text>
-                </TouchableOpacity>
-              )}
+              <TouchableOpacity
+                style={styles.modalCancelBtn}
+                onPress={() => setIsNewPalletModal(false)}
+              >
+                <Text style={styles.modalCancelText}>Đóng</Text>
+              </TouchableOpacity>
               <TouchableOpacity
                 style={styles.modalSaveBtn}
                 onPress={handleCreatePallet}
@@ -688,6 +745,17 @@ const styles = StyleSheet.create({
   palletLabel: { color: '#94a3b8', fontSize: 11, fontWeight: '700', letterSpacing: 0.5 },
   palletCodeRow: { flexDirection: 'row', alignItems: 'center', marginTop: 2 },
   palletCodeText: { color: '#ffffff', fontSize: 22, fontWeight: '800' },
+  selectPalletPrompt: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#064e3b',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 6,
+    marginTop: 2
+  },
+  selectPalletPromptText: { color: '#10b981', fontSize: 13, fontWeight: '700' },
 
   weightBadge: {
     backgroundColor: '#1e293b',
@@ -708,6 +776,21 @@ const styles = StyleSheet.create({
   progressPercent: { color: '#10b981', fontWeight: '700', fontSize: 13 },
   progressBarTrack: { height: 6, backgroundColor: '#1e293b', borderRadius: 3, overflow: 'hidden' },
   progressBarFill: { height: '100%', backgroundColor: '#10b981' },
+
+  noPalletTipBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: 'rgba(56, 189, 248, 0.1)',
+    marginHorizontal: 16,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(56, 189, 248, 0.25)',
+    marginBottom: 8
+  },
+  noPalletTipText: { color: '#38bdf8', fontSize: 12, flex: 1 },
 
   autoScanBar: {
     flexDirection: 'row',
@@ -765,6 +848,26 @@ const styles = StyleSheet.create({
     borderRadius: 6
   },
   scanHintText: { color: '#ffffff', fontSize: 11, fontWeight: '700', letterSpacing: 0.5 },
+
+  noPalletOverlay: {
+    ...StyleSheet.absoluteFill,
+    backgroundColor: 'rgba(9, 13, 22, 0.88)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20
+  },
+  noPalletOverlayTitle: { color: '#ffffff', fontSize: 16, fontWeight: '800', marginTop: 8 },
+  noPalletOverlaySub: { color: '#94a3b8', fontSize: 12, textAlign: 'center', marginTop: 4, marginBottom: 14, paddingHorizontal: 10 },
+  selectPalletOverlayBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#10b981',
+    paddingHorizontal: 18,
+    paddingVertical: 9,
+    borderRadius: 8
+  },
+  selectPalletOverlayBtnText: { color: '#ffffff', fontWeight: '700', fontSize: 13 },
 
   successBanner: {
     position: 'absolute',

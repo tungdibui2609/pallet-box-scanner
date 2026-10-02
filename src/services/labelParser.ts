@@ -1,11 +1,46 @@
 import { ParsedLabelData } from '../types';
 
 /**
- * Intelligent parser specifically tuned for Fruit / Cold Warehouse labels:
- * Handles 2-column OCR or sequential line OCR, messy spaces, missing fields.
+ * Checks if the text has signatures of a real fruit warehouse carton box label.
+ * Must match at least 2 distinct label markers to prevent false positives (sky, wall, etc.)
  */
-export function parseBoxLabelText(cleanText: string): ParsedLabelData {
+export function isBoxLabel(cleanText: string): boolean {
+  if (!cleanText || cleanText.trim().length < 10) return false;
+
+  const t = cleanText.toLowerCase();
+  let score = 0;
+
+  // Marker 1: SKU or Product keywords
+  if (/sku|tp10|sầu riêng|sau rieng|monthong|ri6|cấp đông|cap dong/i.test(t)) score++;
+
+  // Marker 2: Lot indicators
+  if (/lot|lôs*:|d009|tn08|tn18/i.test(t)) score++;
+
+  // Marker 3: STT / Index
+  if (/stt|index|thùng|túi/i.test(t)) score++;
+
+  // Marker 4: Spec & Weight
+  if (/spec|weight|khối lượng|khoi luong|20kg|20s*kg/i.test(t)) score++;
+
+  // Marker 5: Dates or Region
+  if (/ngày sx|ngay sx|ngày đg|ngay dg|nsx|ndg|tây nguyên|tay nguyen/i.test(t)) score++;
+
+  // Must have at least 2 markers to be considered a real label!
+  return score >= 2;
+}
+
+/**
+ * Intelligent parser specifically tuned for Fruit / Cold Warehouse labels:
+ * Rejects non-label text (sky, walls, etc.) and strictly validates STT/Index.
+ */
+export function parseBoxLabelText(cleanText: string): ParsedLabelData | null {
   const clean = (cleanText || '').replace(/\r/g, '');
+  
+  // 0. Strict validation: If not a label, DO NOT PARSE!
+  if (!isBoxLabel(clean)) {
+    return null;
+  }
+
   const lines = clean.split('\n').map(l => l.trim()).filter(Boolean);
 
   let sku = '';
@@ -16,8 +51,8 @@ export function parseBoxLabelText(cleanText: string): ParsedLabelData {
   let unit = 'Kg';
   let shift_group = 'Nguyên';
   let region = 'Tây Nguyên';
-  let production_date = '07/09/2026';
-  let packaging_date = '08/09/2026';
+  let production_date = '';
+  let packaging_date = '';
   let spec = 'Thùng/túi: 20kg';
 
   // 1. SKU Extraction
@@ -61,38 +96,30 @@ export function parseBoxLabelText(cleanText: string): ParsedLabelData {
     region = regionMatch[1].replace(/Ng[aà]y\s*SX.*/i, '').trim();
   }
 
-  // 6. STT / INDEX
-  const directIndexMatch = clean.match(/(?:STT\s*\/\s*INDEX|INDEX|STT)[\s\S]{0,25}?(\b[0-9]{1,4}\b)/i);
+  // 6. STT / INDEX Extraction (STRICT)
+  // Pattern A: STT / INDEX followed by 1 to 4 digits
+  const directIndexMatch = clean.match(/(?:STT\s*\/\s*INDEX|INDEX|STT)[^0-9\n]{0,20}(\b[0-9]{1,4}\b)/i);
   if (directIndexMatch) {
     box_index = directIndexMatch[1].trim();
   }
 
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (/STT|INDEX/i.test(line)) {
-      const numsInLine = line.match(/\b([0-9]{1,4})\b/g);
-      if (numsInLine && numsInLine.length > 0) {
-        box_index = numsInLine[numsInLine.length - 1];
-        break;
-      }
-      if (i + 1 < lines.length) {
-        const nextNums = lines[i + 1].match(/\b([0-9]{1,4})\b/g);
-        if (nextNums && nextNums.length > 0) {
-          box_index = nextNums[nextNums.length - 1];
+  // Pattern B: Search on lines around STT/INDEX
+  if (!box_index) {
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (/STT|INDEX/i.test(line)) {
+        const numsInLine = line.match(/\b([0-9]{1,4})\b/g);
+        if (numsInLine && numsInLine.length > 0) {
+          box_index = numsInLine[numsInLine.length - 1];
           break;
         }
-      }
-    }
-  }
-
-  // Fallback for box index
-  if (!box_index) {
-    const linesNoDates = lines.filter(l => !/202[0-9]|\/20/i.test(l) && !/kg/i.test(l));
-    for (let i = linesNoDates.length - 1; i >= 0; i--) {
-      const match = linesNoDates[i].match(/\b([0-9]{2,4})\b/);
-      if (match) {
-        box_index = match[1];
-        break;
+        if (i + 1 < lines.length) {
+          const nextNums = lines[i + 1].match(/\b([0-9]{1,4})\b/g);
+          if (nextNums && nextNums.length > 0) {
+            box_index = nextNums[nextNums.length - 1];
+            break;
+          }
+        }
       }
     }
   }
@@ -103,17 +130,22 @@ export function parseBoxLabelText(cleanText: string): ParsedLabelData {
     product_name = prodLine;
   }
 
+  // CRITICAL: If no box_index was found from a genuine label, return null! DO NOT GUESS OR DEFAULT!
+  if (!box_index) {
+    return null;
+  }
+
   return {
     sku: sku || 'TP101020104.002',
     lot_code: lot_code || 'D009TN08096',
     product_name,
-    box_index: box_index || '',
+    box_index,
     weight: weight || 20,
     unit,
     shift_group,
     region,
-    production_date,
-    packaging_date,
+    production_date: production_date || '07/09/2026',
+    packaging_date: packaging_date || '08/09/2026',
     spec,
     raw_text: cleanText
   };
