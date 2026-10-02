@@ -6,13 +6,14 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { Pallet, BoxLabel } from '../types';
-import { getAllPallets, getBoxesByPallet, deletePallet } from '../services/database';
-import { syncPalletToSupabase, testConnection } from '../services/supabase';
+import { getAllPallets, getBoxesByPallet, deletePallet, deleteBox } from '../services/database';
+import { syncPalletToSupabase, testConnection, pullPalletFromSupabase, unlinkBoxOnSupabase } from '../services/supabase';
 
 export default function PalletListScreen({ onBackToScanner }: { onBackToScanner: () => void }) {
   const [pallets, setPallets] = useState<Pallet[]>([]);
   const [loading, setLoading] = useState(false);
   const [syncingId, setSyncingId] = useState<string | null>(null);
+  const [pullingId, setPullingId] = useState<string | null>(null);
   const [isSyncingAll, setIsSyncingAll] = useState(false);
 
   // Connection status
@@ -89,6 +90,70 @@ export default function PalletListScreen({ onBackToScanner }: { onBackToScanner:
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     Alert.alert('Đồng bộ xong', `Đã đồng bộ thành công ${successCount} / ${pending.length} Pallet lên Anywarehouse!`);
     loadPallets();
+  }
+
+
+  async function handlePullFromSupabase(pallet: Pallet) {
+    setPullingId(pallet.id);
+    try {
+      const res = await pullPalletFromSupabase(pallet.id, pallet.code);
+      if (res.success) {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        Alert.alert('Đồng bộ từ web thành công', res.message);
+        await loadPallets();
+        if (selectedPallet?.id === pallet.id) {
+          const updatedBoxes = await getBoxesByPallet(pallet.id);
+          setSelectedBoxes(updatedBoxes);
+          const updatedPallets = await getAllPallets();
+          const cur = updatedPallets.find(p => p.id === pallet.id);
+          if (cur) setSelectedPallet(cur);
+        }
+      } else {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+        Alert.alert('Không thể đồng bộ', res.message);
+      }
+    } catch (err: any) {
+      Alert.alert('Lỗi', err.message);
+    } finally {
+      setPullingId(null);
+    }
+  }
+
+  async function handleDeleteBox(box: BoxLabel) {
+    if (!selectedPallet) return;
+    Alert.alert(
+      'Xóa thùng này',
+      `Bạn có chắc muốn xóa Thùng #${box.box_index} (Lô ${box.lot_code}) khỏi Pallet ${selectedPallet.code}?\n\nThao tác này sẽ cập nhật lại số lượng và tổng kg của Pallet.`,
+      [
+        { text: 'Hủy', style: 'cancel' },
+        {
+          text: 'Xóa ngay',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await deleteBox(box.id, selectedPallet.id);
+              // Nếu đang có mạng và tem đã từng sync, gỡ liên kết trên Supabase
+              const cleanSku = (box.sku || 'SKU').replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+              const cleanLot = (box.lot_code || 'LOT').replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+              const idxStr = String(box.box_index || '0').padStart(3, '0');
+              const boxCode = `BOX-${cleanLot}-${cleanSku}-${idxStr}`;
+              unlinkBoxOnSupabase(boxCode).catch(() => {});
+
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+              // Refresh boxes & pallet
+              const updatedBoxes = await getBoxesByPallet(selectedPallet.id);
+              setSelectedBoxes(updatedBoxes);
+              await loadPallets();
+              const updatedPallets = await getAllPallets();
+              const cur = updatedPallets.find(p => p.id === selectedPallet.id);
+              if (cur) setSelectedPallet(cur);
+            } catch (err: any) {
+              Alert.alert('Lỗi khi xóa', err.message);
+            }
+          }
+        }
+      ]
+    );
   }
 
   async function handleOpenDetail(pallet: Pallet) {
@@ -217,6 +282,21 @@ export default function PalletListScreen({ onBackToScanner }: { onBackToScanner:
 
                 <View style={styles.palletCardFooter}>
                   <TouchableOpacity
+                    style={styles.pullBtn}
+                    disabled={pullingId === item.id}
+                    onPress={() => handlePullFromSupabase(item)}
+                  >
+                    {pullingId === item.id ? (
+                      <ActivityIndicator color="#38bdf8" size="small" />
+                    ) : (
+                      <>
+                        <Ionicons name="cloud-download-outline" size={16} color="#38bdf8" />
+                        <Text style={styles.pullBtnText}>Kéo từ Web</Text>
+                      </>
+                    )}
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
                     style={styles.deleteBtn}
                     onPress={() => handleDelete(item)}
                   >
@@ -277,6 +357,13 @@ export default function PalletListScreen({ onBackToScanner }: { onBackToScanner:
                       <View style={styles.boxWeightTag}>
                         <Text style={styles.boxWeightTagText}>{b.weight} {b.unit}</Text>
                       </View>
+                      <TouchableOpacity
+                        style={styles.deleteBoxBtn}
+                        onPress={() => handleDeleteBox(b)}
+                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                      >
+                        <Ionicons name="trash-outline" size={16} color="#ef4444" />
+                      </TouchableOpacity>
                     </View>
 
                     {/* Product Name Full without truncation */}
@@ -438,6 +525,28 @@ const styles = StyleSheet.create({
     paddingTop: 10,
     borderTopWidth: 1,
     borderTopColor: '#334155',
+  },
+
+  pullBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    backgroundColor: '#0c4a6e',
+    marginRight: 8,
+  },
+  pullBtnText: {
+    color: '#38bdf8',
+    fontSize: 12,
+    fontWeight: '700',
+    marginLeft: 4,
+  },
+  deleteBoxBtn: {
+    padding: 6,
+    borderRadius: 6,
+    backgroundColor: '#450a0a',
+    marginLeft: 6,
   },
   deleteBtn: {
     flexDirection: 'row',

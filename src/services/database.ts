@@ -273,3 +273,62 @@ export async function getPendingSyncPallets(): Promise<{ pallet: Pallet; boxes: 
   }
   return results;
 }
+
+export async function replacePalletBoxesFromCloud(
+  palletId: string,
+  cloudBoxes: any[]
+): Promise<void> {
+  const db = await getDb();
+  const now = new Date().toISOString();
+
+  // Xóa các thùng hiện tại của Pallet này trong SQLite để nạp lại từ Cloud
+  await db.runAsync('DELETE FROM boxes WHERE pallet_id = ?', [palletId]);
+
+  for (const cb of cloudBoxes) {
+    const id = cb.id || ('bx_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7));
+    let boxIndex = 'N/A';
+    if (cb.code) {
+      const parts = cb.code.split('-');
+      const last = parts[parts.length - 1];
+      if (!isNaN(parseInt(last))) {
+        boxIndex = parseInt(last, 10).toString();
+      }
+    }
+    const weight = parseFloat(cb.quantity) || 20;
+
+    await db.runAsync(
+      `INSERT INTO boxes (
+        id, pallet_id, sku, lot_code, product_name, box_index, weight, unit,
+        shift_group, region, production_date, packaging_date, spec, raw_text, sync_status, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'synced', ?)`,
+      [
+        id,
+        palletId,
+        cb.products?.sku || cb.sku || 'SKU',
+        cb.finished_lot_code || cb.semi_finished_lot_code || 'LOT',
+        cb.products?.name || cb.products?.internal_name || 'Hàng đông lạnh',
+        boxIndex,
+        weight,
+        cb.unit || 'Kg',
+        cb.shift_group || '',
+        cb.region || '',
+        cb.production_date || '',
+        cb.packaging_date || '',
+        cb.spec || '',
+        cb.raw_text || '',
+        cb.created_at || now
+      ]
+    );
+  }
+
+  // Cập nhật lại số lượng và tổng kg của Pallet
+  await db.runAsync(
+    `UPDATE pallets SET 
+       scanned_qty = (SELECT COUNT(*) FROM boxes WHERE pallet_id = ?),
+       total_weight = (SELECT COALESCE(SUM(weight), 0) FROM boxes WHERE pallet_id = ?),
+       sync_status = 'synced',
+       updated_at = ?
+     WHERE id = ?`,
+    [palletId, palletId, now, palletId]
+  );
+}
