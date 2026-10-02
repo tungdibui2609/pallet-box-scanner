@@ -5,6 +5,7 @@ import {
 } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import TextRecognition from '@react-native-ml-kit/text-recognition';
+import { VolumeManager } from 'react-native-volume-manager';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Haptics from 'expo-haptics';
 import { Ionicons } from '@expo/vector-icons';
@@ -26,18 +27,21 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
   const [isScanning, setIsScanning] = useState(false);
   const [torch, setTorch] = useState(false);
 
-  // AUTO-SCAN STATE
-  const [isAutoScan, setIsAutoScan] = useState(true);
+  // AUTO-SCAN STATE: Mặc định TẮT theo yêu cầu của người dùng
+  const [isAutoScan, setIsAutoScan] = useState(false);
   const isProcessingFrame = useRef(false);
   const lastScannedBoxRef = useRef<string | null>(null);
   const lastScannedTimeRef = useRef<number>(0);
   const pauseUntilRef = useRef<number>(0);
 
+  // Hardware Volume Trigger Tracking
+  const lastVolumeRef = useRef<number>(0.5);
+
   // Success Feedback Banner
   const [successBanner, setSuccessBanner] = useState<string | null>(null);
   const bannerAnim = useRef(new Animated.Value(0)).current;
 
-  // Pallet Creation Modal (NEVER forced automatically on app start)
+  // Pallet Creation Modal
   const [isNewPalletModal, setIsNewPalletModal] = useState(false);
   const [newPalletCode, setNewPalletCode] = useState('');
   const [newTargetQty, setNewTargetQty] = useState('30');
@@ -54,11 +58,84 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
   // Duplicate Warning Alert
   const [duplicateWarning, setDuplicateWarning] = useState<string | null>(null);
 
+  // 1. KHỞI ĐỘNG: HỎI NGƯỜI DÙNG CÓ TIẾP TỤC QUÉT PALLET CŨ HAY HỦY ĐỔI PALLET KHÁC
   useEffect(() => {
-    loadActivePallet();
+    loadActivePalletWithPrompt();
   }, []);
 
-  // AUTO SCAN INTERVAL LOOP - ONLY RUNS WHEN activePallet EXISTS!
+  async function loadActivePalletWithPrompt() {
+    try {
+      const pallet = await getActivePallet();
+      if (pallet) {
+        const boxList = await getBoxesByPallet(pallet.id);
+        Alert.alert(
+          `📦 ĐANG QUÉT PALLET: ${pallet.code}`,
+          `Hệ thống ghi nhận bạn đang quét dở Pallet STT: ${pallet.code}\nTiến độ hiện tại: ${boxList.length}/${pallet.target_qty} thùng (${pallet.total_weight} Kg).\n\nBạn có muốn TIẾP TỤC quét Pallet này không?`,
+          [
+            {
+              text: '❌ HỦY (Đổi Pallet)',
+              style: 'destructive',
+              onPress: async () => {
+                await completePallet(pallet.id);
+                setActivePallet(null);
+                setBoxes([]);
+              }
+            },
+            {
+              text: '✅ TIẾP TỤC QUÉT',
+              onPress: () => {
+                setActivePallet(pallet);
+                setBoxes(boxList);
+              }
+            }
+          ],
+          { cancelable: false }
+        );
+      } else {
+        setActivePallet(null);
+        setBoxes([]);
+      }
+    } catch (e: any) {
+      console.error('Error loading pallet:', e);
+    }
+  }
+
+  // 2. HARDWARE KEY TRIGGER: BẤM NÚT GIẢM ÂM LƯỢNG LÀ CHỤP QUÉT
+  useEffect(() => {
+    let volumeListener: any = null;
+
+    async function setupVolumeTrigger() {
+      try {
+        await VolumeManager.showNativeVolumeUI({ enabled: false });
+        await VolumeManager.setVolume(0.5);
+        lastVolumeRef.current = 0.5;
+
+        volumeListener = VolumeManager.addVolumeListener(async (result) => {
+          // Khi bấm Giảm âm lượng -> result.volume < lastVolume
+          if (result.volume < lastVolumeRef.current) {
+            handleManualCapture();
+          }
+
+          // Reset volume về mức 0.5 ngầm để người dùng bấm liên tục nhiều lần mà không bị về 0
+          lastVolumeRef.current = 0.5;
+          await VolumeManager.setVolume(0.5, { showUI: false, playSound: false });
+        });
+      } catch (err) {
+        console.warn('VolumeManager listener setup:', err);
+      }
+    }
+
+    setupVolumeTrigger();
+
+    return () => {
+      if (volumeListener && typeof volumeListener.remove === 'function') {
+        volumeListener.remove();
+      }
+      VolumeManager.showNativeVolumeUI({ enabled: true }).catch(() => {});
+    };
+  }, [activePallet]);
+
+  // 3. AUTO SCAN INTERVAL LOOP (Chỉ chạy khi người dùng chủ động BẬT và có Pallet)
   useEffect(() => {
     let scanTimer: any = null;
 
@@ -72,23 +149,6 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
       if (scanTimer) clearInterval(scanTimer);
     };
   }, [isAutoScan, activePallet, permission?.granted]);
-
-  async function loadActivePallet() {
-    try {
-      const pallet = await getActivePallet();
-      if (pallet) {
-        setActivePallet(pallet);
-        const boxList = await getBoxesByPallet(pallet.id);
-        setBoxes(boxList);
-      } else {
-        // DO NOT FORCE MODAL! Let user explore app or choose when to start
-        setActivePallet(null);
-        setBoxes([]);
-      }
-    } catch (e: any) {
-      console.error('Error loading pallet:', e);
-    }
-  }
 
   function showSuccessFlash(msg: string) {
     setSuccessBanner(msg);
@@ -115,7 +175,7 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
 
       lastScannedBoxRef.current = box.box_index;
       lastScannedTimeRef.current = Date.now();
-      pauseUntilRef.current = Date.now() + 2000; // Pause auto-scan for 2.0s so worker comfortably moves to next box
+      pauseUntilRef.current = Date.now() + 2000;
 
       showSuccessFlash(`✅ ĐÃ QUÉT THÙNG #${box.box_index} (${box.weight}kg)`);
 
@@ -155,7 +215,6 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
       if (TextRecognition && typeof TextRecognition.recognize === 'function') {
         const mlResult = await TextRecognition.recognize(photo.uri);
         if (mlResult?.text && mlResult.text.trim()) {
-          // Strictly validate that this text is an actual carton box label
           if (isBoxLabel(mlResult.text)) {
             const parsed = parseBoxLabelText(mlResult.text);
             if (parsed && parsed.box_index) {
@@ -168,7 +227,7 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
       // Native ML Kit not available
     }
 
-    // 2. Priority 2: Server Fallback via API (only when connected)
+    // 2. Priority 2: Server Fallback via API (when connected)
     if (photo.base64) {
       try {
         const storedUrl = await AsyncStorage.getItem('config_supabase_url');
@@ -185,7 +244,7 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
           return resJson.data;
         }
       } catch (srvErr) {
-        // Offline with no native ML Kit
+        // Offline
       }
     }
 
@@ -194,7 +253,6 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
 
   // AUTO SCAN CYCLE
   async function runAutoScanCycle() {
-    // Strict Guard: ONLY scan if an active pallet is selected and not paused
     if (!cameraRef.current || !activePallet || isProcessingFrame.current || isScanning) return;
     if (Date.now() < pauseUntilRef.current) return;
 
@@ -209,22 +267,20 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
       if (!photo?.uri) return;
 
       const parsed = await recognizeImage(photo);
-      // Strictly require a valid box index extracted from a validated label
       if (parsed && parsed.box_index) {
-        // Debounce: If same box index scanned within last 4 seconds, ignore
         if (parsed.box_index === lastScannedBoxRef.current && (Date.now() - lastScannedTimeRef.current < 4000)) {
           return;
         }
         await processBoxData(parsed, true);
       }
     } catch (err) {
-      // Ignore background cycle hiccups
+      // Ignore background hiccups
     } finally {
       isProcessingFrame.current = false;
     }
   }
 
-  // MANUAL CAPTURE BUTTON
+  // MANUAL CAPTURE BUTTON (Triggered by either on-screen button OR Hardware Volume Down Key)
   async function handleManualCapture() {
     if (!cameraRef.current) return;
     if (!activePallet) {
@@ -431,7 +487,7 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
         </View>
       </View>
 
-      {/* PROGRESS BAR (Only visible when activePallet exists) */}
+      {/* PROGRESS BAR */}
       {activePallet ? (
         <View style={styles.progressContainer}>
           <View style={styles.progressRow}>
@@ -445,11 +501,11 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
       ) : (
         <View style={styles.noPalletTipBar}>
           <Ionicons name="information-circle-outline" size={16} color="#38bdf8" />
-          <Text style={styles.noPalletTipText}>Bạn chưa chọn Pallet. Hãy bấm chọn Pallet để kích hoạt quét.</Text>
+          <Text style={styles.noPalletTipText}>Bạn chưa chọn Pallet. Hãy bấm chọn Pallet để bắt đầu.</Text>
         </View>
       )}
 
-      {/* AUTO SCAN MODE TOGGLE BAR */}
+      {/* HARDWARE VOLUME KEY HINT & CONTROLS */}
       <View style={styles.autoScanBar}>
         <TouchableOpacity
           style={[styles.autoScanToggle, (isAutoScan && activePallet) ? styles.autoScanActive : styles.autoScanInactive]}
@@ -464,9 +520,15 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
         >
           <Ionicons name={(isAutoScan && activePallet) ? "flash" : "flash-off"} size={16} color={(isAutoScan && activePallet) ? "#10b981" : "#94a3b8"} />
           <Text style={[styles.autoScanText, (isAutoScan && activePallet) && { color: '#10b981', fontWeight: '700' }]}>
-            {activePallet ? (isAutoScan ? "Tự động quét: ĐANG BẬT" : "Tự động quét: ĐÃ TẮT") : "Tự động quét: CHỜ CHỌN PALLET"}
+            {activePallet ? (isAutoScan ? "Tự động: BẬT" : "Tự động: TẮT") : "Tự động: TẮT"}
           </Text>
         </TouchableOpacity>
+
+        {/* Volume Down Key Quick Hint */}
+        <View style={styles.volumeKeyHintBadge}>
+          <Ionicons name="volume-low" size={15} color="#38bdf8" />
+          <Text style={styles.volumeKeyHintText}>Bấm [Giảm âm lượng] để chụp</Text>
+        </View>
 
         <TouchableOpacity style={styles.torchBtn} onPress={() => setTorch(t => !t)}>
           <Ionicons name={torch ? "flash" : "flash-outline"} size={18} color={torch ? "#facc15" : "#94a3b8"} />
@@ -493,7 +555,7 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
             <Text style={styles.scanHintText}>
               {!activePallet
                 ? "CHỌN PALLET ĐỂ BẮT ĐẦU"
-                : (isAutoScan ? "⚡ ĐANG TỰ ĐỘNG QUÉT TEM..." : "CĂN KHUNG VÀO CON TEM THÙNG")}
+                : (isAutoScan ? "⚡ ĐANG TỰ ĐỘNG QUÉT TEM..." : "BẤM NÚT HOẶC GIẢM ÂM LƯỢNG ĐỂ QUÉT")}
             </Text>
           </View>
         </View>
@@ -596,7 +658,7 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
             <Ionicons name="barcode-outline" size={32} color="#64748b" />
             <Text style={styles.emptyText}>Chưa có thùng nào trong Pallet {activePallet.code}</Text>
             <Text style={styles.emptySubText}>
-              {isAutoScan ? "Hướng camera vào tem thùng để tự động quét" : "Hướng camera vào tem rồi bấm [Chụp Quét Tem]"}
+              Bấm nút [Chụp Quét Tem] hoặc bấm phím [Giảm âm lượng] để quét
             </Text>
           </View>
         ) : (
@@ -807,20 +869,37 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingHorizontal: 16,
-    marginBottom: 6
+    marginBottom: 6,
+    gap: 8,
   },
   autoScanToggle: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 12,
+    paddingHorizontal: 10,
     paddingVertical: 6,
     borderRadius: 20,
     backgroundColor: '#1e293b',
-    gap: 6
+    gap: 5
   },
   autoScanActive: { backgroundColor: '#064e3b', borderWidth: 1, borderColor: '#10b981' },
   autoScanInactive: { backgroundColor: '#1e293b' },
-  autoScanText: { color: '#94a3b8', fontSize: 12 },
+  autoScanText: { color: '#94a3b8', fontSize: 11, fontWeight: '600' },
+
+  volumeKeyHintBadge: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(56, 189, 248, 0.12)',
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(56, 189, 248, 0.3)',
+    gap: 5
+  },
+  volumeKeyHintText: { color: '#38bdf8', fontSize: 11, fontWeight: '700' },
+
   torchBtn: {
     padding: 6,
     borderRadius: 8,
@@ -961,7 +1040,6 @@ const styles = StyleSheet.create({
   emptyText: { color: '#e2e8f0', fontSize: 14, fontWeight: '700', marginTop: 8 },
   emptySubText: { color: '#64748b', fontSize: 12, marginTop: 4, textAlign: 'center' },
 
-  
   richBoxCard: {
     backgroundColor: '#131b2e',
     borderRadius: 10,
