@@ -304,22 +304,20 @@ export default function PalletListScreen({ onBackToScanner }: { onBackToScanner:
                     <Text style={styles.deleteBtnText}>Xóa</Text>
                   </TouchableOpacity>
 
-                  {!isSynced && (
-                    <TouchableOpacity
-                      style={styles.syncSingleBtn}
-                      disabled={isSyncing}
-                      onPress={() => handleSyncSingle(item)}
-                    >
-                      {isSyncing ? (
-                        <ActivityIndicator color="#fff" size="small" />
-                      ) : (
-                        <>
-                          <Ionicons name="cloud-upload-outline" size={16} color="#fff" />
-                          <Text style={styles.syncSingleText}>Tải lên web</Text>
-                        </>
-                      )}
-                    </TouchableOpacity>
-                  )}
+                  <TouchableOpacity
+                    style={[styles.syncSingleBtn, isSynced && styles.resyncBtn]}
+                    disabled={isSyncing}
+                    onPress={() => handleSyncSingle(item)}
+                  >
+                    {isSyncing ? (
+                      <ActivityIndicator color="#fff" size="small" />
+                    ) : (
+                      <>
+                        <Ionicons name={isSynced ? "refresh-outline" : "cloud-upload-outline"} size={16} color="#fff" />
+                        <Text style={styles.syncSingleText}>{isSynced ? "Đẩy lại" : "Tải lên web"}</Text>
+                      </>
+                    )}
+                  </TouchableOpacity>
                 </View>
               </TouchableOpacity>
             );
@@ -567,6 +565,9 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     borderRadius: 8,
     gap: 6,
+  },
+  resyncBtn: {
+    backgroundColor: '#1e3a8a',
   },
   syncSingleText: {
     color: '#fff',

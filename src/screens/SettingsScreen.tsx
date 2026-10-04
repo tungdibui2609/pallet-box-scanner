@@ -5,14 +5,22 @@ import {
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
-import { testConnection, DEFAULT_SUPABASE_URL, DEFAULT_ANON_KEY } from '../services/supabase';
+import { testConnection, syncStampDictionariesFromSupabase, DEFAULT_SUPABASE_URL, DEFAULT_ANON_KEY } from '../services/supabase';
+import { getStampDictionariesCount } from '../services/database';
+import { useAuth } from '../contexts/AuthContext';
 
 export default function SettingsScreen({ onBack }: { onBack: () => void }) {
+  const { user, logout } = useAuth();
   const [url, setUrl] = useState(DEFAULT_SUPABASE_URL);
   const [anonKey, setAnonKey] = useState(DEFAULT_ANON_KEY);
   const [systemCode, setSystemCode] = useState('KHO_DONG_LANH');
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<string | null>(null);
+
+  // Stamp Rules Sync
+  const [stampRulesCount, setStampRulesCount] = useState(0);
+  const [lastStampSync, setLastStampSync] = useState<string | null>(null);
+  const [syncingStamp, setSyncingStamp] = useState(false);
 
   useEffect(() => {
     loadSettings();
@@ -25,6 +33,13 @@ export default function SettingsScreen({ onBack }: { onBack: () => void }) {
     if (savedUrl) setUrl(savedUrl);
     if (savedKey) setAnonKey(savedKey);
     if (savedSys) setSystemCode(savedSys);
+
+    try {
+      const count = await getStampDictionariesCount();
+      setStampRulesCount(count);
+      const lastSync = await AsyncStorage.getItem('last_stamp_sync_time');
+      if (lastSync) setLastStampSync(lastSync);
+    } catch {}
   }
 
   async function handleSave() {
@@ -47,6 +62,41 @@ export default function SettingsScreen({ onBack }: { onBack: () => void }) {
     }
   }
 
+  async function handleSyncStampRules() {
+    setSyncingStamp(true);
+    try {
+      const res = await syncStampDictionariesFromSupabase();
+      if (res.success) {
+        setStampRulesCount(res.count);
+        setLastStampSync(new Date().toISOString());
+        Alert.alert('Thành công', res.message);
+      } else {
+        Alert.alert('Không thể tải', res.message);
+      }
+    } catch (err: any) {
+      Alert.alert('Lỗi', err.message);
+    } finally {
+      setSyncingStamp(false);
+    }
+  }
+
+  function handleLogoutConfirm() {
+    Alert.alert(
+      'Xác nhận đăng xuất',
+      `Bạn có chắc chắn muốn đăng xuất tài khoản ${user?.full_name || user?.email} không?`,
+      [
+        { text: 'Hủy', style: 'cancel' },
+        {
+          text: 'Đăng xuất',
+          style: 'destructive',
+          onPress: async () => {
+            await logout();
+          },
+        },
+      ]
+    );
+  }
+
   return (
     <ScrollView style={styles.container}>
       <View style={styles.header}>
@@ -57,7 +107,96 @@ export default function SettingsScreen({ onBack }: { onBack: () => void }) {
         <Text style={styles.title}>CÀI ĐẶT HỆ THỐNG</Text>
       </View>
 
+      {/* ── THÔNG TIN TÀI KHOẢN ĐĂNG NHẬP ────── */}
+      {user && (
+        <View style={styles.userCard}>
+          <View style={styles.userHeader}>
+            <View style={styles.userAvatar}>
+              <Ionicons name="person" size={24} color="#38bdf8" />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.userName}>{user.full_name}</Text>
+              <Text style={styles.userEmail}>{user.email || user.username}</Text>
+            </View>
+          </View>
+
+          {/* Company Badge */}
+          <View style={styles.companyBox}>
+            <Ionicons name="business-outline" size={18} color="#10b981" />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.companyLabel}>Công ty trực thuộc:</Text>
+              <Text style={styles.companyName}>
+                {user.company?.name || 'Công Ty Cổ Phần Tập Đoàn XNK Trái Cây Chánh Thu'}
+                {user.company?.code ? ` (${user.company.code})` : ''}
+              </Text>
+            </View>
+          </View>
+
+          {/* Department / Employee code if available */}
+          {(user.employee_code || user.department) && (
+            <View style={styles.userMetaRow}>
+              {user.employee_code && (
+                <Text style={styles.userMetaText}>Mã NV: <Text style={styles.userMetaBold}>{user.employee_code}</Text></Text>
+              )}
+              {user.department && (
+                <Text style={styles.userMetaText}>Phòng ban: <Text style={styles.userMetaBold}>{user.department}</Text></Text>
+              )}
+            </View>
+          )}
+
+          <TouchableOpacity style={styles.logoutBtn} onPress={handleLogoutConfirm}>
+            <Ionicons name="log-out-outline" size={18} color="#ef4444" />
+            <Text style={styles.logoutBtnText}>Đăng xuất tài khoản</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {/* ── CẬP NHẬT QUY TẮC DẤU ĐÓNG TỪ WEB ─────── */}
       <View style={styles.card}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+          <Ionicons name="barcode-outline" size={20} color="#a855f7" />
+          <Text style={[styles.sectionTitle, { color: '#a855f7', marginBottom: 0 }]}>
+            QUY TẮC GIẢI MÃ DẤU ĐÓNG (OFFLINE)
+          </Text>
+        </View>
+
+        <Text style={{ color: '#94a3b8', fontSize: 12, lineHeight: 18, marginBottom: 12 }}>
+          Dữ liệu này được lưu trong bộ nhớ máy để tự động giải mã 2 dòng dấu đóng ngay cả khi không có mạng wifi trong kho lạnh.
+        </Text>
+
+        <View style={{ backgroundColor: '#0f172a', padding: 12, borderRadius: 12, marginBottom: 14, borderWidth: 1, borderColor: '#334155' }}>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 }}>
+            <Text style={{ color: '#94a3b8', fontSize: 12 }}>Số quy tắc trong máy:</Text>
+            <Text style={{ color: '#38bdf8', fontSize: 13, fontWeight: '700' }}>{stampRulesCount} quy tắc</Text>
+          </View>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+            <Text style={{ color: '#94a3b8', fontSize: 12 }}>Cập nhật lần cuối:</Text>
+            <Text style={{ color: '#cbd5e1', fontSize: 11, fontStyle: 'italic' }}>
+              {lastStampSync ? new Date(lastStampSync).toLocaleString('vi-VN') : 'Dữ liệu mặc định'}
+            </Text>
+          </View>
+        </View>
+
+        <TouchableOpacity 
+          style={{ backgroundColor: '#7c3aed', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 12, borderRadius: 12 }}
+          onPress={handleSyncStampRules}
+          disabled={syncingStamp}
+        >
+          {syncingStamp ? (
+            <ActivityIndicator color="#fff" size="small" />
+          ) : (
+            <Ionicons name="cloud-download-outline" size={18} color="#fff" />
+          )}
+          <Text style={{ color: '#fff', fontWeight: '700', fontSize: 13 }}>
+            {syncingStamp ? 'Đang tải từ máy chủ web...' : 'Tải / Cập nhật quy tắc từ Web mẹ'}
+          </Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* ── CẤU HÌNH MÁY CHỦ ─────────────────── */}
+      <View style={styles.card}>
+        <Text style={styles.sectionTitle}>CẤU HÌNH KẾT NỐI MÁY CHỦ</Text>
+
         <Text style={styles.label}>Tên miền máy chủ Supabase:</Text>
         <TextInput
           style={styles.input}
@@ -126,7 +265,102 @@ const styles = StyleSheet.create({
     borderBottomColor: '#1e293b'
   },
   title: { color: '#fff', fontSize: 16, fontWeight: '900' },
+  userCard: {
+    margin: 16,
+    marginBottom: 0,
+    backgroundColor: '#1e293b',
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  userHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  userAvatar: {
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+    backgroundColor: '#0f172a',
+    borderWidth: 1.5,
+    borderColor: '#38bdf8',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  userName: {
+    color: '#ffffff',
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  userEmail: {
+    color: '#94a3b8',
+    fontSize: 12,
+    marginTop: 2,
+  },
+  companyBox: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+    backgroundColor: '#0f172a',
+    borderRadius: 12,
+    padding: 12,
+    marginTop: 14,
+    borderWidth: 1,
+    borderColor: 'rgba(16, 185, 129, 0.3)',
+  },
+  companyLabel: {
+    color: '#64748b',
+    fontSize: 10,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+  },
+  companyName: {
+    color: '#10b981',
+    fontSize: 13,
+    fontWeight: '800',
+    marginTop: 2,
+  },
+  userMetaRow: {
+    flexDirection: 'row',
+    gap: 16,
+    marginTop: 10,
+    paddingHorizontal: 4,
+  },
+  userMetaText: {
+    color: '#64748b',
+    fontSize: 11,
+  },
+  userMetaBold: {
+    color: '#cbd5e1',
+    fontWeight: '700',
+  },
+  logoutBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    marginTop: 14,
+    paddingVertical: 10,
+    borderRadius: 10,
+    backgroundColor: 'rgba(239, 68, 68, 0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(239, 68, 68, 0.3)',
+  },
+  logoutBtnText: {
+    color: '#ef4444',
+    fontSize: 13,
+    fontWeight: '800',
+  },
   card: { padding: 16 },
+  sectionTitle: {
+    color: '#94a3b8',
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 1,
+    marginBottom: 8,
+  },
   label: { color: '#cbd5e1', fontSize: 12, fontWeight: '700', marginTop: 12, marginBottom: 4 },
   input: {
     backgroundColor: '#1e293b',
