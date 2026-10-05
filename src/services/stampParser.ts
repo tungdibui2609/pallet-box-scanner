@@ -20,7 +20,7 @@
  * - Ký tự 15..16 (ZZ): Mã vùng nguyên liệu / Tỉnh (66: Đắk Lắk, 71: Bến Tre...)
  */
 
-import { ParsedStampData, DecodedStampDetails } from '../types';
+import { ParsedStampData, DecodedStampDetails, StampFormat } from '../types';
 
 export const DEFAULT_STAMP_DICTIONARY: Record<string, Record<string, string>> = {
   fruit_type: {
@@ -66,9 +66,7 @@ export const DEFAULT_STAMP_DICTIONARY: Record<string, Record<string, string>> = 
     '2': 'Nhà máy Đắk Lắk'
   },
   supplier: {
-    '001': 'Nhà cung cấp 001',
-    '002': 'Nhà cung cấp 002',
-    '047': 'Nhà cung cấp 047'
+    // Để trống - bảo mật sản xuất, người dùng khai báo hoặc đồng bộ khi có danh sách
   },
   province: {
     '66': 'Đắk Lắk',
@@ -123,18 +121,64 @@ export function cleanStampNumericString(input: string): string {
 export function decodeStamp(
   line1: string,
   line2: string,
-  customDict?: Record<string, Record<string, string>>
+  customDict?: Record<string, Record<string, string>>,
+  template?: StampFormat | null
 ): DecodedStampDetails {
   const dict = customDict || DEFAULT_STAMP_DICTIONARY;
-
   const result: DecodedStampDetails = {};
 
   // 1. Giải mã Dòng 1 (Phân cấp sản phẩm)
   const cleanL1 = (line1 || '').trim().replace(/[^0-9\-]/g, '');
-  // Bỏ dấu gạch ngang để lấy theo index chuẩn nếu có
   const digitsOnlyL1 = cleanL1.replace(/-/g, '');
+  const l1Config = template?.line1_config;
 
-  if (digitsOnlyL1.length >= 12) {
+  if (l1Config && Array.isArray(l1Config.fields) && l1Config.fields.length > 0) {
+    // Dynamic decoding theo cấu hình mẫu
+    const delimiter = l1Config.delimiter_char || '-';
+    const dashIdx = cleanL1.indexOf(delimiter);
+
+    for (const f of l1Config.fields) {
+      let raw = '';
+      if (f.afterDelimiter && dashIdx !== -1) {
+        raw = cleanL1.substring(dashIdx + 1, dashIdx + 1 + f.length);
+      } else {
+        raw = digitsOnlyL1.substring(f.start, f.start + f.length);
+      }
+
+      if (!raw) continue;
+
+      if (f.key === 'fruit_type') {
+        result.fruit_type_code = raw;
+        result.fruit_type_name = dict.fruit_type?.[raw] || `Chủng loại ${raw}`;
+      } else if (f.key === 'freeze_style') {
+        result.freeze_style_code = raw;
+        result.freeze_style_name = dict.freeze_style?.[raw] || `Hình thức ${raw}`;
+      } else if (f.key === 'variety') {
+        result.variety_code = raw;
+        result.variety_name = dict.variety?.[raw] || `Giống ${raw}`;
+      } else if (f.key === 'product_grade') {
+        result.product_grade_code = raw;
+        result.product_grade_name = dict.product_grade?.[raw] || `Loại ${raw}`;
+      } else if (f.key === 'package_spec') {
+        result.package_spec_code = raw;
+        result.package_spec_name = dict.package_spec?.[raw] || `${raw} túi/thùng`;
+      } else if (f.key === 'freeze_method') {
+        result.freeze_method_code = raw;
+        result.freeze_method_name = dict.freeze_method?.[raw] || `Phương pháp ${raw}`;
+      } else if (f.key === 'customer_quality') {
+        result.customer_quality_code = raw;
+        result.customer_quality_name = dict.customer_quality?.[raw] || (raw === '0' ? 'Không phân chia' : `Tiêu chuẩn KH ${raw}`);
+      }
+    }
+
+    result.product_name_full = [
+      result.fruit_type_name,
+      result.variety_name,
+      result.freeze_style_name,
+      result.product_grade_name
+    ].filter(Boolean).join(' ');
+  } else if (digitsOnlyL1.length >= 12) {
+    // Fallback mặc định
     const cFruit = digitsOnlyL1.substring(0, 1);
     const cStyle = digitsOnlyL1.substring(1, 3);
     const cVariety = digitsOnlyL1.substring(3, 5);
@@ -142,7 +186,6 @@ export function decodeStamp(
     const cSpec = digitsOnlyL1.substring(7, 9);
     const cMethod = digitsOnlyL1.substring(9, 12);
     
-    // Ký tự chất lượng sau dấu gạch ngang hoặc ký tự thứ 13
     let cQuality = '0';
     if (cleanL1.includes('-')) {
       const parts = cleanL1.split('-');
@@ -172,13 +215,61 @@ export function decodeStamp(
     result.customer_quality_code = cQuality;
     result.customer_quality_name = dict.customer_quality?.[cQuality] || (cQuality === '0' ? 'Không phân chia' : `Tiêu chuẩn KH ${cQuality}`);
 
-    // Tóm tắt sản phẩm
     result.product_name_full = `${result.fruit_type_name} ${result.variety_name} ${result.freeze_style_name} ${result.product_grade_name}`;
   }
 
   // 2. Giải mã Dòng 2 (Nguồn gốc & Truy xuất)
-  const cleanL2 = (line2 || '').trim().replace(/[^0-9]/g, '');
-  if (cleanL2.length >= 16) {
+  const cleanL2 = (line2 || '').trim().replace(/[^0-9\-]/g, '');
+  const digitsOnlyL2 = cleanL2.replace(/-/g, '');
+  const l2Config = template?.line2_config;
+
+  if (l2Config && Array.isArray(l2Config.fields) && l2Config.fields.length > 0) {
+    // Dynamic decoding theo cấu hình mẫu
+    const delimiter2 = l2Config.delimiter_char || '-';
+    const dashIdx2 = cleanL2.indexOf(delimiter2);
+
+    for (const f of l2Config.fields) {
+      let raw = '';
+      if (f.afterDelimiter && dashIdx2 !== -1) {
+        raw = cleanL2.substring(dashIdx2 + 1, dashIdx2 + 1 + f.length);
+      } else {
+        raw = digitsOnlyL2.substring(f.start, f.start + f.length);
+      }
+      if (!raw) continue;
+
+      if (f.key === 'factory') {
+        result.factory_code = raw;
+        result.factory_name = dict.factory?.[raw] || `Nhà máy ${raw}`;
+      } else if (f.key === 'pkg_date' || f.key === 'packaging_date') {
+        const dd = raw.substring(0, 2);
+        const mm = raw.substring(2, 4);
+        result.packaging_date = `${dd}/${mm}`;
+      } else if (f.key === 'inbound_date') {
+        const dd = raw.substring(0, 2);
+        const mm = raw.substring(2, 4);
+        const yy = raw.substring(4, 6);
+        result.inbound_date = `${dd}/${mm}/20${yy}`;
+      } else if (f.key === 'supplier') {
+        result.supplier_code = raw;
+        const declaredSupplier = dict.supplier?.[raw];
+        result.supplier_name = declaredSupplier
+          ? `${raw} (${declaredSupplier})`
+          : `${raw}`;
+      } else if (f.key === 'province') {
+        result.province_code = raw;
+        result.province_name = dict.province?.[raw] || `Tỉnh mã ${raw}`;
+      }
+    }
+
+    result.traceability_full = [
+      result.factory_name,
+      result.packaging_date ? `ĐG: ${result.packaging_date}` : '',
+      result.inbound_date ? `Nhập: ${result.inbound_date}` : '',
+      result.supplier_name ? `NCC: ${result.supplier_name}` : '',
+      result.province_name ? `Vùng: ${result.province_name}` : ''
+    ].filter(Boolean).join(' • ');
+  } else if (cleanL2.length >= 16) {
+    // Fallback mặc định
     const cFactory = cleanL2.substring(0, 1);
     const dd = cleanL2.substring(1, 3);
     const mm = cleanL2.substring(3, 5);
@@ -195,12 +286,14 @@ export function decodeStamp(
     result.inbound_date = `${DD}/${MM}/20${YY}`;
 
     result.supplier_code = cSupplier;
-    result.supplier_name = dict.supplier?.[cSupplier] || `Nhà cung cấp ${cSupplier}`;
+    const declaredSupplier = dict.supplier?.[cSupplier];
+    result.supplier_name = declaredSupplier
+      ? `${cSupplier} (${declaredSupplier})`
+      : `${cSupplier}`;
 
     result.province_code = cProvince;
     result.province_name = dict.province?.[cProvince] || `Tỉnh mã ${cProvince}`;
 
-    // Tóm tắt truy xuất
     result.traceability_full = `${result.factory_name} • ĐG: ${result.packaging_date} • Nhập: ${result.inbound_date} • NCC: ${result.supplier_name} • Vùng: ${result.province_name}`;
   }
 
@@ -212,7 +305,8 @@ export function decodeStamp(
  */
 export function parseStampText(
   rawText: string,
-  customDict?: Record<string, Record<string, string>>
+  customDict?: Record<string, Record<string, string>>,
+  template?: StampFormat | null
 ): ParsedStampData | null {
   if (!rawText) return null;
 
@@ -228,11 +322,12 @@ export function parseStampText(
   }
 
   // Nếu gom 2 dãy số trên cùng 1 dòng
+  const l1Total = template?.line1_config?.total_length || 14;
   if (numericLines.length === 1 && numericLines[0].replace(/-/g, '').length >= 26) {
     const full = numericLines[0];
-    const l1 = full.slice(0, 14);
-    const l2 = full.slice(14);
-    const decoded = decodeStamp(l1, l2, customDict);
+    const l1 = full.slice(0, l1Total);
+    const l2 = full.slice(l1Total);
+    const decoded = decodeStamp(l1, l2, customDict, template);
     return {
       stamp_line1: l1,
       stamp_line2: l2,
@@ -262,7 +357,7 @@ export function parseStampText(
     }
   }
 
-  const decoded = decodeStamp(line1, line2, customDict);
+  const decoded = decodeStamp(line1, line2, customDict, template);
 
   return {
     stamp_line1: line1,

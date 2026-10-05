@@ -1,5 +1,5 @@
 import * as SQLite from 'expo-sqlite';
-import { Pallet, BoxLabel, ParsedLabelData, ParsedStampData, AppConfig, StampDictionaryItem } from '../types';
+import { Pallet, BoxLabel, ParsedLabelData, ParsedStampData, AppConfig, StampDictionaryItem, StampFormat } from '../types';
 import { decodeStamp, DEFAULT_STAMP_DICTIONARY } from './stampParser';
 
 let dbInstance: SQLite.SQLiteDatabase | null = null;
@@ -65,6 +65,18 @@ async function initTables(db: SQLite.SQLiteDatabase) {
       description TEXT,
       sort_order INTEGER DEFAULT 0,
       PRIMARY KEY (category, code)
+    );
+
+    CREATE TABLE IF NOT EXISTS stamp_formats (
+      id TEXT PRIMARY KEY,
+      code TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      description TEXT,
+      is_default INTEGER DEFAULT 1,
+      is_active INTEGER DEFAULT 1,
+      line1_config TEXT NOT NULL,
+      line2_config TEXT NOT NULL,
+      updated_at TEXT
     );
   `);
 
@@ -534,4 +546,64 @@ export async function getStampDictionariesCount(): Promise<number> {
     return 0;
   }
 }
+
+export async function saveStampFormats(formats: StampFormat[]): Promise<void> {
+  if (!formats || formats.length === 0) return;
+  const db = await getDb();
+
+  for (const f of formats) {
+    await db.runAsync(
+      `INSERT OR REPLACE INTO stamp_formats (id, code, name, description, is_default, is_active, line1_config, line2_config, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        f.id || f.code,
+        f.code,
+        f.name,
+        f.description || null,
+        f.is_default ? 1 : 0,
+        f.is_active !== false ? 1 : 0,
+        typeof f.line1_config === 'string' ? f.line1_config : JSON.stringify(f.line1_config),
+        typeof f.line2_config === 'string' ? f.line2_config : JSON.stringify(f.line2_config),
+        f.updated_at || new Date().toISOString()
+      ]
+    );
+  }
+}
+
+export async function getActiveStampFormat(): Promise<StampFormat | null> {
+  try {
+    const db = await getDb();
+    const row = await db.getFirstAsync<{
+      id: string;
+      code: string;
+      name: string;
+      description: string | null;
+      is_default: number;
+      is_active: number;
+      line1_config: string;
+      line2_config: string;
+      updated_at: string | null;
+    }>(
+      `SELECT * FROM stamp_formats WHERE is_active = 1 ORDER BY is_default DESC, updated_at DESC LIMIT 1`
+    );
+
+    if (!row) return null;
+
+    return {
+      id: row.id,
+      code: row.code,
+      name: row.name,
+      description: row.description,
+      is_default: row.is_default === 1,
+      is_active: row.is_active === 1,
+      line1_config: typeof row.line1_config === 'string' ? JSON.parse(row.line1_config) : row.line1_config,
+      line2_config: typeof row.line2_config === 'string' ? JSON.parse(row.line2_config) : row.line2_config,
+      updated_at: row.updated_at || undefined
+    };
+  } catch (err) {
+    console.warn('Error reading active stamp format:', err);
+    return null;
+  }
+}
+
 

@@ -7,11 +7,12 @@ import { CameraView, useCameraPermissions } from 'expo-camera';
 import TextRecognition from '@react-native-ml-kit/text-recognition';
 import * as Haptics from 'expo-haptics';
 import { Ionicons } from '@expo/vector-icons';
-import { Pallet, BoxLabel, ParsedStampData } from '../types';
+import { Pallet, BoxLabel, ParsedStampData, StampFormat } from '../types';
 import {
   getActivePallet, createNewPallet, completePallet,
   getBoxesByPallet, addStampBoxToPallet, deleteBox,
-  getPalletByCode, activateExistingPallet, getStampDictionariesMap
+  getPalletByCode, activateExistingPallet, getStampDictionariesMap,
+  getActiveStampFormat
 } from '../services/database';
 import { parseStampText, isStampContent, decodeStamp } from '../services/stampParser';
 
@@ -44,12 +45,14 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
   const [successBanner, setSuccessBanner] = useState<string | null>(null);
   const bannerAnim = useRef(new Animated.Value(0)).current;
 
-  // Offline Stamp Dictionary Map
+  // Offline Stamp Dictionary Map & Active Template
   const [dictMap, setDictMap] = useState<Record<string, Record<string, string>>>({});
+  const [activeFormat, setActiveFormat] = useState<StampFormat | null>(null);
 
   useEffect(() => {
     loadActivePallet();
     getStampDictionariesMap().then(map => setDictMap(map)).catch(() => {});
+    getActiveStampFormat().then(fmt => setActiveFormat(fmt)).catch(() => {});
   }, []);
 
   async function loadActivePallet() {
@@ -115,7 +118,7 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
           return;
         }
 
-        const parsed = parseStampText(raw);
+        const parsed = parseStampText(raw, dictMap, activeFormat);
         if (parsed && (parsed.stamp_line1 || parsed.stamp_line2)) {
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
           Vibration.vibrate(80);
@@ -173,7 +176,8 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
         stamp_line1: manualLine1.trim(),
         stamp_line2: manualLine2.trim(),
         raw_text: `${manualLine1.trim()}\n${manualLine2.trim()}`,
-        detected_lines: [manualLine1.trim(), manualLine2.trim()].filter(Boolean)
+        detected_lines: [manualLine1.trim(), manualLine2.trim()].filter(Boolean),
+        decoded: decodeStamp(manualLine1.trim(), manualLine2.trim(), dictMap, activeFormat)
       };
 
       const w = parseFloat(manualWeight) || 20;

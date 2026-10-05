@@ -2,7 +2,7 @@ import 'react-native-url-polyfill/auto';
 import { createClient } from '@supabase/supabase-js';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Pallet, BoxLabel } from '../types';
-import { markPalletSynced, markPalletSyncError, replacePalletBoxesFromCloud, saveStampDictionaries } from './database';
+import { markPalletSynced, markPalletSyncError, replacePalletBoxesFromCloud, saveStampDictionaries, saveStampFormats } from './database';
 
 export const DEFAULT_SUPABASE_URL = 'https://api.chanhthu.click';
 export const DEFAULT_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6ImFub24iLCJleHAiOjE5ODM4MTI5OTZ9.CRXP1A7WOeoJeXxjNni43kdQwgnWNReilDMblYTn_I0';
@@ -310,12 +310,26 @@ export async function syncStampDictionariesFromSupabase(): Promise<{ success: bo
     }
 
     const savedCount = await saveStampDictionaries(data as any);
+
+    // Đồng bộ cấu hình mẫu định dạng dấu đóng động
+    try {
+      const { data: formatsData } = await client
+        .from('stamp_formats')
+        .select('*')
+        .eq('is_active', true);
+      if (formatsData && formatsData.length > 0) {
+        await saveStampFormats(formatsData as any);
+      }
+    } catch (fmtErr) {
+      console.warn('Lỗi tải stamp_formats:', fmtErr);
+    }
+
     await AsyncStorage.setItem('last_stamp_sync_time', new Date().toISOString());
 
     return {
       success: true,
       count: savedCount,
-      message: `Đã đồng bộ thành công ${savedCount} quy tắc từ máy chủ web về điện thoại!`
+      message: `Đã đồng bộ thành công ${savedCount} quy tắc và mẫu định dạng từ máy chủ!`
     };
   } catch (err: any) {
     console.error('Lỗi syncStampDictionariesFromSupabase:', err);

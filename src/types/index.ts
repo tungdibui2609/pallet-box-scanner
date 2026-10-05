@@ -74,6 +74,40 @@ export interface StampDictionaryItem {
   sort_order?: number;
 }
 
+export interface StampFieldConfig {
+  key: string;
+  name: string;
+  shortName: string;
+  start: number;
+  length: number;
+  type: 'dictionary' | 'date_ddmm' | 'date_ddmmyy' | 'supplier' | 'raw';
+  dictCategory?: string;
+  format?: string;
+  color?: string;
+  afterDelimiter?: boolean;
+}
+
+export interface StampLineConfig {
+  title?: string;
+  total_length: number;
+  has_delimiter?: boolean;
+  delimiter_char?: string;
+  sample?: string;
+  fields: StampFieldConfig[];
+}
+
+export interface StampFormat {
+  id?: string;
+  code: string;
+  name: string;
+  description?: string | null;
+  is_default?: boolean;
+  is_active?: boolean;
+  line1_config: StampLineConfig;
+  line2_config: StampLineConfig;
+  updated_at?: string;
+}
+
 export interface ParsedStampData {
   stamp_line1: string;
   stamp_line2: string;
