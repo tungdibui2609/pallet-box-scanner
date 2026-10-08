@@ -53,10 +53,11 @@ import { encodeSTT, decodeSTT } from '../utils/numberUtils';
 
 /**
  * Sync Pallet & Boxes into Supabase:
- * QUY TẮC NGHIÊM NGẶT:
+ * QUY TẮC:
  * 1. Lot là do Web Mẹ tạo, mỗi Lot có 1 STT (daily_seq).
  * 2. Khi điện thoại gửi STT lên:
  *    - Nếu tìm thấy Lot có STT khớp trên Web: KẾT NỐI ngay vào lot_id đó (status = 'linked').
+ *      (Server Database Trigger sẽ tự động cập nhật ngày sản xuất / ngày nguyên liệu vào bảng lots).
  *    - Nếu KHÔNG tìm thấy Lot khớp STT: TUYỆT ĐỐI KHÔNG TỰ TẠO LOT!
  *      Thay vào đó lưu các thùng vào box_labels với lot_id = null, status = 'unlinked',
  *      và lưu thông tin STT vào metadata để nằm ở mục "Chưa kết nối" trên Web mẹ.
@@ -161,7 +162,7 @@ export async function syncPalletToSupabase(pallet: Pallet, boxes: BoxLabel[]): P
       return row;
     });
 
-    // 3. Upsert vào bảng box_labels
+    // 3. Upsert vào bảng box_labels (Trigger trên Database sẽ tự động đồng bộ ngày vào lots)
     const { error: boxErr } = await (client.from('box_labels') as any)
       .upsert(boxRows, { onConflict: 'code' });
 
@@ -169,7 +170,7 @@ export async function syncPalletToSupabase(pallet: Pallet, boxes: BoxLabel[]): P
       throw new Error('Lỗi đồng bộ thùng: ' + boxErr.message);
     }
 
-    // 4. Đánh dấu Pallet trên thiết bị là đã đồng bộ (TUYỆT ĐỐI không thay đổi thông tin ở bảng lots trên Web mẹ)
+    // 4. Đánh dấu Pallet trên thiết bị là đã đồng bộ
     await markPalletSynced(pallet.id);
 
     if (isLinked) {
