@@ -383,6 +383,192 @@ export async function deleteBox(boxId: string, palletId: string): Promise<void> 
   );
 }
 
+/**
+ * Nhân bản một thùng mẫu sang nhiều thùng tiếp theo trên cùng một Pallet
+ * - Tự động bỏ qua số index trên tem gốc và gán index liên tiếp chưa sử dụng
+ * - Sao chép toàn bộ thông tin (SKU, Lot, Ngày SX, Ngày ĐG, Vùng, Dấu mực...)
+ */
+export async function cloneBoxToPallet(
+  palletId: string,
+  sampleBox: BoxLabel,
+  quantityToClone: number
+): Promise<{ addedCount: number; newBoxes: BoxLabel[] }> {
+  if (quantityToClone <= 0) return { addedCount: 0, newBoxes: [] };
+
+  const db = await getDb();
+  const existingBoxes = await db.getAllAsync<{ box_index: string }>(
+    `SELECT box_index FROM boxes WHERE pallet_id = ?`,
+    [palletId]
+  );
+
+  const usedIndexes = new Set<number>();
+  existingBoxes.forEach(b => {
+    const num = parseInt(b.box_index, 10);
+    if (!isNaN(num) && num > 0) usedIndexes.add(num);
+  });
+
+  // Tìm danh sách số index chưa sử dụng tiếp theo
+  let candidateIndex = 1;
+  const newIndexes: string[] = [];
+  while (newIndexes.length < quantityToClone) {
+    if (!usedIndexes.has(candidateIndex)) {
+      newIndexes.push(String(candidateIndex));
+      usedIndexes.add(candidateIndex);
+    }
+    candidateIndex++;
+  }
+
+  const now = new Date().toISOString();
+  const createdBoxes: BoxLabel[] = [];
+
+  for (let i = 0; i < newIndexes.length; i++) {
+    const newIdx = newIndexes[i];
+    const newId = 'bx_cl_' + Date.now() + '_' + i + '_' + Math.random().toString(36).substring(2, 6);
+
+    await db.runAsync(
+      `INSERT INTO boxes (
+        id, pallet_id, sku, lot_code, product_name, box_index, weight, unit,
+        shift_group, region, production_date, packaging_date, spec, raw_text,
+        scan_type, stamp_line1, stamp_line2, sync_status, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`,
+      [
+        newId, palletId, sampleBox.sku || 'UNKNOWN', sampleBox.lot_code || 'UNKNOWN',
+        sampleBox.product_name, newIdx, sampleBox.weight || 20, sampleBox.unit || 'Kg',
+        sampleBox.shift_group || '', sampleBox.region || '', sampleBox.production_date || '',
+        sampleBox.packaging_date || '', sampleBox.spec || '', sampleBox.raw_text || '',
+        sampleBox.scan_type || 'label', sampleBox.stamp_line1 || null, sampleBox.stamp_line2 || null,
+        now
+      ]
+    );
+
+    createdBoxes.push({
+      ...sampleBox,
+      id: newId,
+      box_index: newIdx,
+      created_at: now,
+      sync_status: 'pending'
+    });
+  }
+
+  // Cập nhật lại số lượng và tổng trọng lượng của Pallet
+  await db.runAsync(
+    `UPDATE pallets SET 
+       scanned_qty = (SELECT COUNT(*) FROM boxes WHERE pallet_id = ?),
+       total_weight = (SELECT COALESCE(SUM(weight), 0) FROM boxes WHERE pallet_id = ?),
+       updated_at = ?
+     WHERE id = ?`,
+    [palletId, palletId, now, palletId]
+  );
+
+  return { addedCount: createdBoxes.length, newBoxes: createdBoxes };
+}
+
+/**
+ * Thêm hàng loạt thùng từ con dấu mực vừa quét vào Pallet (nhân bản dấu mực)
+ */
+export async function addStampBoxesBulkToPallet(
+  palletId: string,
+  stampData: ParsedStampData,
+  weight: number = 20,
+  countToCreate: number = 1
+): Promise<{ addedCount: number; newBoxes: BoxLabel[] }> {
+  if (countToCreate <= 0) return { addedCount: 0, newBoxes: [] };
+
+  const db = await getDb();
+
+  let dictMap: Record<string, Record<string, string>> = DEFAULT_STAMP_DICTIONARY;
+  try {
+    dictMap = await getStampDictionariesMap();
+  } catch {}
+
+  const decoded = decodeStamp(stampData.stamp_line1, stampData.stamp_line2, dictMap);
+  const productName = decoded.product_name_full || 'Thùng đóng dấu mực';
+  const cleanSku = decoded.fruit_type_code 
+    ? `${decoded.fruit_type_code}${decoded.freeze_style_code || '00'}${decoded.variety_code || '00'}${decoded.product_grade_code || '00'}`
+    : (stampData.stamp_line1 || 'STAMP');
+  const specText = decoded.package_spec_name 
+    ? `${decoded.package_spec_name} (${decoded.freeze_method_name || 'Hầm đông'})` 
+    : '';
+
+  // Lấy danh sách số index đang có
+  const existingBoxes = await db.getAllAsync<{ box_index: string }>(
+    `SELECT box_index FROM boxes WHERE pallet_id = ?`,
+    [palletId]
+  );
+  const usedIndexes = new Set<number>();
+  existingBoxes.forEach(b => {
+    const num = parseInt(b.box_index, 10);
+    if (!isNaN(num) && num > 0) usedIndexes.add(num);
+  });
+
+  let candidateIndex = 1;
+  const newIndexes: string[] = [];
+  while (newIndexes.length < countToCreate) {
+    if (!usedIndexes.has(candidateIndex)) {
+      newIndexes.push(String(candidateIndex));
+      usedIndexes.add(candidateIndex);
+    }
+    candidateIndex++;
+  }
+
+  const now = new Date().toISOString();
+  const createdBoxes: BoxLabel[] = [];
+
+  for (let i = 0; i < newIndexes.length; i++) {
+    const newIdx = newIndexes[i];
+    const newId = 'bx_st_' + Date.now() + '_' + i + '_' + Math.random().toString(36).substring(2, 7);
+
+    await db.runAsync(
+      `INSERT INTO boxes (
+        id, pallet_id, sku, lot_code, product_name, box_index, weight, unit,
+        shift_group, region, production_date, packaging_date, spec, raw_text,
+        scan_type, stamp_line1, stamp_line2, sync_status, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'Kg', ?, ?, ?, ?, ?, ?, 'stamp', ?, ?, 'pending', ?)`,
+      [
+        newId, palletId, cleanSku, stampData.stamp_line2 || 'STAMP',
+        productName, newIdx, weight,
+        decoded.factory_name || '', decoded.province_name || '',
+        decoded.inbound_date || '', decoded.packaging_date || '', specText,
+        stampData.raw_text, stampData.stamp_line1, stampData.stamp_line2, now
+      ]
+    );
+
+    createdBoxes.push({
+      id: newId,
+      pallet_id: palletId,
+      sku: cleanSku,
+      lot_code: stampData.stamp_line2 || 'STAMP',
+      product_name: productName,
+      box_index: newIdx,
+      weight,
+      unit: 'Kg',
+      shift_group: decoded.factory_name || '',
+      region: decoded.province_name || '',
+      production_date: decoded.inbound_date || '',
+      packaging_date: decoded.packaging_date || '',
+      spec: specText,
+      scan_type: 'stamp',
+      stamp_line1: stampData.stamp_line1,
+      stamp_line2: stampData.stamp_line2,
+      raw_text: stampData.raw_text,
+      sync_status: 'pending',
+      created_at: now
+    });
+  }
+
+  // Cập nhật lại số lượng và tổng trọng lượng của Pallet
+  await db.runAsync(
+    `UPDATE pallets SET 
+       scanned_qty = (SELECT COUNT(*) FROM boxes WHERE pallet_id = ?),
+       total_weight = (SELECT COALESCE(SUM(weight), 0) FROM boxes WHERE pallet_id = ?),
+       updated_at = ?
+     WHERE id = ?`,
+    [palletId, palletId, now, palletId]
+  );
+
+  return { addedCount: createdBoxes.length, newBoxes: createdBoxes };
+}
+
 // ── Sync status ───────────────────────────────────────────────
 
 export async function markPalletSynced(palletId: string): Promise<void> {

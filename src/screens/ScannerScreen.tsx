@@ -13,7 +13,8 @@ import { Pallet, BoxLabel, ParsedLabelData } from '../types';
 import {
   getActivePallet, createNewPallet, completePallet,
   getBoxesByPallet, addBoxToPallet, deleteBox,
-  getPalletByCode, resetPalletBoxes, activateExistingPallet
+  getPalletByCode, resetPalletBoxes, activateExistingPallet,
+  cloneBoxToPallet
 } from '../services/database';
 import { parseBoxLabelText, isBoxLabel } from '../services/labelParser';
 import { DEFAULT_SUPABASE_URL } from '../services/supabase';
@@ -54,6 +55,12 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
   const [manualWeight, setManualWeight] = useState('20');
   const [manualShift, setManualShift] = useState('Nguyên');
   const [manualDate, setManualDate] = useState('07/09/2026');
+
+  // Clone Modal State
+  const [cloneModalVisible, setCloneModalVisible] = useState(false);
+  const [cloneSampleBox, setCloneSampleBox] = useState<BoxLabel | null>(null);
+  const [cloneCount, setCloneCount] = useState('1');
+  const [isCloning, setIsCloning] = useState(false);
 
   // Duplicate Warning Alert
   const [duplicateWarning, setDuplicateWarning] = useState<string | null>(null);
@@ -408,6 +415,41 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
     );
   }
 
+  function handleOpenCloneModal(box: BoxLabel) {
+    if (!activePallet) return;
+    const remaining = Math.max(1, activePallet.target_qty - boxes.length);
+    setCloneSampleBox(box);
+    setCloneCount(String(remaining));
+    setCloneModalVisible(true);
+  }
+
+  async function handleConfirmClone() {
+    if (!activePallet || !cloneSampleBox) return;
+    const qty = parseInt(cloneCount, 10);
+    if (isNaN(qty) || qty <= 0) {
+      Alert.alert('Số lượng không hợp lệ', 'Vui lòng nhập số thùng cần nhân bản lớn hơn 0.');
+      return;
+    }
+    try {
+      setIsCloning(true);
+      const res = await cloneBoxToPallet(activePallet.id, cloneSampleBox, qty);
+      const updated = await getBoxesByPallet(activePallet.id);
+      setBoxes(updated);
+      setActivePallet(prev => prev ? {
+        ...prev,
+        scanned_qty: updated.length,
+        total_weight: updated.reduce((s, b) => s + b.weight, 0)
+      } : null);
+      setCloneModalVisible(false);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      showSuccessFlash(`✨ Đã nhân bản ${res.addedCount} thùng (bỏ qua index cũ, cấp STT mới liên tiếp)!`);
+    } catch (err: any) {
+      Alert.alert('Lỗi nhân bản', err.message);
+    } finally {
+      setIsCloning(false);
+    }
+  }
+
   async function handleSaveManual() {
     if (!manualIndex.trim()) {
       Alert.alert('Thiếu thông tin', 'Vui lòng nhập số thứ tự thùng (INDEX)');
@@ -662,33 +704,54 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
             </Text>
           </View>
         ) : (
-          boxes.map((b, idx) => (
-            <View key={b.id} style={styles.richBoxCard}>
-              <View style={styles.richBoxHeader}>
-                <View style={styles.richBoxIndexBadge}>
-                  <Text style={styles.richBoxIndexText}>#{b.box_index}</Text>
+          <>
+            {boxes.length < activePallet.target_qty && (
+              <TouchableOpacity
+                style={styles.quickCloneBanner}
+                onPress={() => handleOpenCloneModal(boxes[0])}
+                activeOpacity={0.8}
+              >
+                <Ionicons name="copy" size={16} color="#38bdf8" />
+                <Text style={styles.quickCloneBannerText}>
+                  ⚡ Nhân bản thùng #{boxes[0].box_index} cho {activePallet.target_qty - boxes.length} thùng còn lại
+                </Text>
+                <Ionicons name="chevron-forward" size={16} color="#38bdf8" />
+              </TouchableOpacity>
+            )}
+            {boxes.map((b, idx) => (
+              <View key={b.id} style={styles.richBoxCard}>
+                <View style={styles.richBoxHeader}>
+                  <View style={styles.richBoxIndexBadge}>
+                    <Text style={styles.richBoxIndexText}>#{b.box_index}</Text>
+                  </View>
+                  <Text style={styles.richBoxSkuText}>SKU: {b.sku}</Text>
+                  <View style={styles.richBoxWeightBadge}>
+                    <Text style={styles.richBoxWeightText}>{b.weight} {b.unit}</Text>
+                  </View>
+                  <TouchableOpacity
+                    onPress={() => handleOpenCloneModal(b)}
+                    style={styles.cloneBoxBtn}
+                  >
+                    <Ionicons name="copy-outline" size={16} color="#38bdf8" />
+                  </TouchableOpacity>
+                  <TouchableOpacity onPress={() => handleDeleteBox(b)} style={styles.deleteBoxBtn}>
+                    <Ionicons name="trash-outline" size={18} color="#ef4444" />
+                  </TouchableOpacity>
                 </View>
-                <Text style={styles.richBoxSkuText}>SKU: {b.sku}</Text>
-                <View style={styles.richBoxWeightBadge}>
-                  <Text style={styles.richBoxWeightText}>{b.weight} {b.unit}</Text>
+
+                <Text style={styles.richBoxTitle}>{b.product_name}</Text>
+
+                <View style={styles.richBoxMetaRow}>
+                  <Text style={styles.richMetaText}><Text style={styles.metaLabel}>Lot:</Text> {b.lot_code}</Text>
+                  <Text style={styles.richMetaText}><Text style={styles.metaLabel}>Quy cách:</Text> {b.spec || '20kg'}</Text>
+                  <Text style={styles.richMetaText}><Text style={styles.metaLabel}>Tổ:</Text> {b.shift_group || 'Nguyên'}</Text>
+                  <Text style={styles.richMetaText}><Text style={styles.metaLabel}>Vùng:</Text> {b.region || 'Tây Nguyên'}</Text>
+                  <Text style={styles.richMetaText}><Text style={styles.metaLabel}>NSX:</Text> {b.production_date}</Text>
+                  <Text style={styles.richMetaText}><Text style={styles.metaLabel}>NĐG:</Text> {b.packaging_date || b.production_date}</Text>
                 </View>
-                <TouchableOpacity onPress={() => handleDeleteBox(b)} style={styles.deleteBoxBtn}>
-                  <Ionicons name="trash-outline" size={18} color="#ef4444" />
-                </TouchableOpacity>
               </View>
-
-              <Text style={styles.richBoxTitle}>{b.product_name}</Text>
-
-              <View style={styles.richBoxMetaRow}>
-                <Text style={styles.richMetaText}><Text style={styles.metaLabel}>Lot:</Text> {b.lot_code}</Text>
-                <Text style={styles.richMetaText}><Text style={styles.metaLabel}>Quy cách:</Text> {b.spec || '20kg'}</Text>
-                <Text style={styles.richMetaText}><Text style={styles.metaLabel}>Tổ:</Text> {b.shift_group || 'Nguyên'}</Text>
-                <Text style={styles.richMetaText}><Text style={styles.metaLabel}>Vùng:</Text> {b.region || 'Tây Nguyên'}</Text>
-                <Text style={styles.richMetaText}><Text style={styles.metaLabel}>NSX:</Text> {b.production_date}</Text>
-                <Text style={styles.richMetaText}><Text style={styles.metaLabel}>NĐG:</Text> {b.packaging_date || b.production_date}</Text>
-              </View>
-            </View>
-          ))
+            ))}
+          </>
         )}
       </ScrollView>
 
@@ -789,6 +852,90 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
                 onPress={handleSaveManual}
               >
                 <Text style={styles.modalSaveText}>Thêm Vào Pallet</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* 📋 MODAL: CLONE / NHÂN BẢN THÙNG */}
+      <Modal visible={cloneModalVisible} transparent animationType="slide">
+        <View style={styles.modalBg}>
+          <View style={styles.modalCard}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+              <Ionicons name="copy" size={20} color="#38bdf8" />
+              <Text style={styles.modalTitle}>NHÂN BẢN THÙNG HÀNG</Text>
+            </View>
+            <Text style={styles.modalSub}>
+              Sao chép thùng mẫu sang các thùng còn lại. Số INDEX in trên tem gốc sẽ tự động bỏ qua và cấp số mới liên tiếp.
+            </Text>
+
+            {cloneSampleBox && (
+              <View style={styles.sampleBoxInfoCard}>
+                <Text style={styles.sampleBoxInfoTitle}>
+                  📦 Thùng mẫu: #{cloneSampleBox.box_index} · {cloneSampleBox.sku}
+                </Text>
+                <Text style={styles.sampleBoxInfoSub}>
+                  {cloneSampleBox.product_name}
+                </Text>
+                <Text style={styles.sampleBoxInfoMeta}>
+                  Lot: {cloneSampleBox.lot_code} | NSX: {cloneSampleBox.production_date} | {cloneSampleBox.weight}Kg
+                </Text>
+              </View>
+            )}
+
+            <Text style={styles.inputLabel}>Số lượng thùng cần nhân bản thêm:</Text>
+            <TextInput
+              style={[styles.modalInput, { fontSize: 20, fontWeight: '700', color: '#38bdf8' }]}
+              value={cloneCount}
+              onChangeText={setCloneCount}
+              keyboardType="number-pad"
+              placeholder="1"
+              placeholderTextColor="#64748b"
+            />
+
+            {activePallet && (
+              <View style={styles.quickChipsRow}>
+                {activePallet.target_qty - boxes.length > 0 && (
+                  <TouchableOpacity
+                    style={[styles.quickChip, styles.quickChipActive]}
+                    onPress={() => setCloneCount(String(Math.max(1, activePallet.target_qty - boxes.length)))}
+                  >
+                    <Text style={styles.quickChipActiveText}>
+                      Điền đủ ({activePallet.target_qty - boxes.length} thùng)
+                    </Text>
+                  </TouchableOpacity>
+                )}
+                <TouchableOpacity style={styles.quickChip} onPress={() => setCloneCount('5')}>
+                  <Text style={styles.quickChipText}>+5</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.quickChip} onPress={() => setCloneCount('10')}>
+                  <Text style={styles.quickChipText}>+10</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.quickChip} onPress={() => setCloneCount('20')}>
+                  <Text style={styles.quickChipText}>+20</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
+            <View style={styles.modalBtnRow}>
+              <TouchableOpacity
+                style={styles.modalCancelBtn}
+                onPress={() => setCloneModalVisible(false)}
+                disabled={isCloning}
+              >
+                <Text style={styles.modalCancelText}>Huỷ</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.modalSaveBtn, isCloning && { opacity: 0.6 }]}
+                onPress={handleConfirmClone}
+                disabled={isCloning}
+              >
+                {isCloning ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <Text style={styles.modalSaveText}>Xác Nhận Nhân Bản</Text>
+                )}
               </TouchableOpacity>
             </View>
           </View>
@@ -1111,6 +1258,81 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   deleteBoxBtn: { padding: 4 },
+  cloneBoxBtn: {
+    padding: 5,
+    marginRight: 6,
+    backgroundColor: '#0c4a6e',
+    borderRadius: 6,
+  },
+  quickCloneBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(14, 165, 233, 0.15)',
+    borderWidth: 1,
+    borderColor: '#0284c7',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    marginBottom: 10,
+    gap: 8,
+  },
+  quickCloneBannerText: {
+    flex: 1,
+    color: '#38bdf8',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  sampleBoxInfoCard: {
+    backgroundColor: '#1e293b',
+    borderRadius: 8,
+    padding: 10,
+    marginBottom: 12,
+    borderLeftWidth: 3,
+    borderLeftColor: '#38bdf8',
+  },
+  sampleBoxInfoTitle: {
+    color: '#f8fafc',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  sampleBoxInfoSub: {
+    color: '#94a3b8',
+    fontSize: 11,
+    marginTop: 2,
+  },
+  sampleBoxInfoMeta: {
+    color: '#cbd5e1',
+    fontSize: 11,
+    marginTop: 4,
+  },
+  quickChipsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 14,
+  },
+  quickChip: {
+    backgroundColor: '#1e293b',
+    borderWidth: 1,
+    borderColor: '#38bdf8',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 6,
+  },
+  quickChipActive: {
+    backgroundColor: '#0284c7',
+    borderColor: '#38bdf8',
+  },
+  quickChipText: {
+    color: '#38bdf8',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  quickChipActiveText: {
+    color: '#ffffff',
+    fontSize: 12,
+    fontWeight: '700',
+  },
 
   modalBg: { flex: 1, backgroundColor: 'rgba(0,0,0,0.75)', justifyContent: 'center', padding: 20 },
   modalCard: { backgroundColor: '#131b2e', borderRadius: 16, padding: 20, borderWidth: 1, borderColor: '#334155' },

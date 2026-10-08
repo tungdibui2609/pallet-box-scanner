@@ -6,7 +6,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { Pallet, BoxLabel } from '../types';
-import { getAllPallets, getBoxesByPallet, deletePallet, deleteBox } from '../services/database';
+import { getAllPallets, getBoxesByPallet, deletePallet, deleteBox, cloneBoxToPallet } from '../services/database';
 import { syncPalletToSupabase, testConnection, pullPalletFromSupabase, unlinkBoxOnSupabase } from '../services/supabase';
 
 export default function PalletListScreen({ onBackToScanner }: { onBackToScanner: () => void }) {
@@ -154,6 +154,47 @@ export default function PalletListScreen({ onBackToScanner }: { onBackToScanner:
         }
       ]
     );
+  }
+
+  async function handleCloneBox(box: BoxLabel) {
+    if (!selectedPallet) return;
+    const remaining = Math.max(1, selectedPallet.target_qty - selectedBoxes.length);
+    Alert.alert(
+      'Nhân bản thùng hàng',
+      `Sao chép thùng #${box.box_index} (${box.sku}) sang ${remaining} thùng tiếp theo trên Pallet ${selectedPallet.code}?\n\n(Hệ thống sẽ cấp số STT INDEX mới liên tiếp, giữ nguyên thông tin sản phẩm và ngày tháng)`,
+      [
+        { text: 'Hủy', style: 'cancel' },
+        {
+          text: `Nhân bản +1 thùng`,
+          onPress: async () => {
+            await executeClone(box, 1);
+          }
+        },
+        {
+          text: `Điền đủ +${remaining} thùng`,
+          onPress: async () => {
+            await executeClone(box, remaining);
+          }
+        }
+      ]
+    );
+  }
+
+  async function executeClone(box: BoxLabel, count: number) {
+    if (!selectedPallet) return;
+    try {
+      const res = await cloneBoxToPallet(selectedPallet.id, box, count);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      const updatedBoxes = await getBoxesByPallet(selectedPallet.id);
+      setSelectedBoxes(updatedBoxes);
+      await loadPallets();
+      const updatedPallets = await getAllPallets();
+      const cur = updatedPallets.find(p => p.id === selectedPallet.id);
+      if (cur) setSelectedPallet(cur);
+      Alert.alert('Thành công', `Đã nhân bản thêm ${res.addedCount} thùng vào Pallet ${selectedPallet.code}!`);
+    } catch (e: any) {
+      Alert.alert('Lỗi nhân bản', e.message);
+    }
   }
 
   async function handleOpenDetail(pallet: Pallet) {
@@ -355,6 +396,13 @@ export default function PalletListScreen({ onBackToScanner }: { onBackToScanner:
                       <View style={styles.boxWeightTag}>
                         <Text style={styles.boxWeightTagText}>{b.weight} {b.unit}</Text>
                       </View>
+                      <TouchableOpacity
+                        style={styles.cloneBoxBtn}
+                        onPress={() => handleCloneBox(b)}
+                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                      >
+                        <Ionicons name="copy-outline" size={16} color="#38bdf8" />
+                      </TouchableOpacity>
                       <TouchableOpacity
                         style={styles.deleteBoxBtn}
                         onPress={() => handleDeleteBox(b)}
@@ -684,5 +732,11 @@ const styles = StyleSheet.create({
   closeDetailText: {
     color: '#fff',
     fontWeight: '700',
+  },
+  cloneBoxBtn: {
+    padding: 5,
+    marginRight: 6,
+    backgroundColor: '#0c4a6e',
+    borderRadius: 6,
   },
 });

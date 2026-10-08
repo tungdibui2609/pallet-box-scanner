@@ -12,7 +12,7 @@ import {
   getActivePallet, createNewPallet, completePallet,
   getBoxesByPallet, addStampBoxToPallet, deleteBox,
   getPalletByCode, activateExistingPallet, getStampDictionariesMap,
-  getActiveStampFormat
+  getActiveStampFormat, cloneBoxToPallet, addStampBoxesBulkToPallet
 } from '../services/database';
 import { parseStampText, isStampContent, decodeStamp } from '../services/stampParser';
 
@@ -33,6 +33,7 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
   // Stamp Scanned Confirmation Modal
   const [pendingStamp, setPendingStamp] = useState<ParsedStampData | null>(null);
   const [pendingWeight, setPendingWeight] = useState('20');
+  const [pendingCount, setPendingCount] = useState('1');
   const [isSaving, setIsSaving] = useState(false);
 
   // Manual Input Modal
@@ -40,6 +41,13 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
   const [manualLine1, setManualLine1] = useState('10102010204001');
   const [manualLine2, setManualLine2] = useState('1110926001471609');
   const [manualWeight, setManualWeight] = useState('20');
+  const [manualCount, setManualCount] = useState('1');
+
+  // Clone Existing Box Modal
+  const [cloneModalVisible, setCloneModalVisible] = useState(false);
+  const [cloneSampleBox, setCloneSampleBox] = useState<BoxLabel | null>(null);
+  const [cloneCount, setCloneCount] = useState('1');
+  const [isCloning, setIsCloning] = useState(false);
 
   // Success Feedback Banner
   const [successBanner, setSuccessBanner] = useState<string | null>(null);
@@ -148,12 +156,20 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
     setIsSaving(true);
     try {
       const w = parseFloat(pendingWeight) || 20;
-      const res = await addStampBoxToPallet(activePallet.id, pendingStamp, w);
-      
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      triggerSuccessBanner(`✅ Đã lưu thùng #${res.box.box_index} (Dòng 1: ${pendingStamp.stamp_line1})`);
+      const count = parseInt(pendingCount, 10) || 1;
+
+      if (count > 1) {
+        const res = await addStampBoxesBulkToPallet(activePallet.id, pendingStamp, w, count);
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        triggerSuccessBanner(`✨ Đã nhân bản ${res.addedCount} thùng con dấu vào Pallet ${activePallet.code}!`);
+      } else {
+        const res = await addStampBoxToPallet(activePallet.id, pendingStamp, w);
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        triggerSuccessBanner(`✅ Đã lưu thùng #${res.box.box_index} (Dòng 1: ${pendingStamp.stamp_line1})`);
+      }
       
       setPendingStamp(null);
+      setPendingCount('1');
       await loadActivePallet();
     } catch (err: any) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
@@ -181,14 +197,54 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
       };
 
       const w = parseFloat(manualWeight) || 20;
-      const res = await addStampBoxToPallet(activePallet.id, stampData, w);
+      const count = parseInt(manualCount, 10) || 1;
 
-      setIsManualModal(false);
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      triggerSuccessBanner(`✅ Đã lưu thùng #${res.box.box_index} (${stampData.stamp_line1})`);
+      if (count > 1) {
+        const res = await addStampBoxesBulkToPallet(activePallet.id, stampData, w, count);
+        setIsManualModal(false);
+        setManualCount('1');
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        triggerSuccessBanner(`✨ Đã tạo & nhân bản ${res.addedCount} thùng vào Pallet ${activePallet.code}!`);
+      } else {
+        const res = await addStampBoxToPallet(activePallet.id, stampData, w);
+        setIsManualModal(false);
+        setManualCount('1');
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        triggerSuccessBanner(`✅ Đã lưu thùng #${res.box.box_index} (${stampData.stamp_line1})`);
+      }
       await loadActivePallet();
     } catch (err: any) {
       Alert.alert('Lỗi', err.message);
+    }
+  }
+
+  // ── Nhân bản từ thùng đã quét ────────────────────────────
+  function handleOpenCloneModal(box: BoxLabel) {
+    if (!activePallet) return;
+    const remaining = Math.max(1, activePallet.target_qty - boxes.length);
+    setCloneSampleBox(box);
+    setCloneCount(String(remaining));
+    setCloneModalVisible(true);
+  }
+
+  async function handleConfirmClone() {
+    if (!activePallet || !cloneSampleBox) return;
+    const qty = parseInt(cloneCount, 10);
+    if (isNaN(qty) || qty <= 0) {
+      Alert.alert('Số lượng không hợp lệ', 'Vui lòng nhập số lượng thùng cần nhân bản lớn hơn 0.');
+      return;
+    }
+    try {
+      setIsCloning(true);
+      const res = await cloneBoxToPallet(activePallet.id, cloneSampleBox, qty);
+      await loadActivePallet();
+      setCloneModalVisible(false);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      triggerSuccessBanner(`✨ Đã nhân bản ${res.addedCount} thùng vào Pallet ${activePallet.code}!`);
+    } catch (err: any) {
+      Alert.alert('Lỗi nhân bản', err.message);
+    } finally {
+      setIsCloning(false);
     }
   }
 
@@ -369,6 +425,21 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
         )}
       </View>
 
+      {/* ── BANNER NHÂN BẢN THÙNG NHANH ───────────────────── */}
+      {activePallet && boxes.length > 0 && boxes.length < activePallet.target_qty && (
+        <TouchableOpacity
+          style={styles.quickStampCloneBanner}
+          onPress={() => handleOpenCloneModal(boxes[boxes.length - 1])}
+          activeOpacity={0.8}
+        >
+          <Ionicons name="copy" size={15} color="#fbbf24" />
+          <Text style={styles.quickStampCloneText}>
+            ⚡ Nhân bản thùng #{boxes[boxes.length - 1].box_index} cho {activePallet.target_qty - boxes.length} thùng còn lại
+          </Text>
+          <Ionicons name="chevron-forward" size={15} color="#fbbf24" />
+        </TouchableOpacity>
+      )}
+
       {/* ── BOTTOM TRIGGER CONTROLS ───────────────────────── */}
       <View style={styles.bottomControls}>
         <View style={styles.triggerRow}>
@@ -486,6 +557,62 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
                 />
               </View>
 
+              {/* Số lượng thùng (Nhân bản nhanh) */}
+              <View style={styles.countInputRow}>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <Text style={styles.weightLabel}>Số lượng thùng tạo:</Text>
+                  {parseInt(pendingCount, 10) > 1 && (
+                    <Text style={styles.bulkNoticeTag}>Nhân bản {pendingCount} thùng</Text>
+                  )}
+                </View>
+                <TextInput
+                  style={[styles.countInput, parseInt(pendingCount, 10) > 1 && styles.countInputBulk]}
+                  value={pendingCount}
+                  onChangeText={setPendingCount}
+                  keyboardType="number-pad"
+                  placeholder="1"
+                  placeholderTextColor="#64748b"
+                />
+                {activePallet && (
+                  <View style={styles.quickChipsRow}>
+                    <TouchableOpacity
+                      style={[styles.quickChip, pendingCount === '1' && styles.quickChipActive]}
+                      onPress={() => setPendingCount('1')}
+                    >
+                      <Text style={[styles.quickChipText, pendingCount === '1' && styles.quickChipActiveText]}>1 thùng</Text>
+                    </TouchableOpacity>
+                    {activePallet.target_qty - boxes.length > 0 && (
+                      <TouchableOpacity
+                        style={[styles.quickChip, pendingCount === String(activePallet.target_qty - boxes.length) && styles.quickChipActive]}
+                        onPress={() => setPendingCount(String(Math.max(1, activePallet.target_qty - boxes.length)))}
+                      >
+                        <Text style={[styles.quickChipText, pendingCount === String(activePallet.target_qty - boxes.length) && styles.quickChipActiveText]}>
+                          Điền đủ ({activePallet.target_qty - boxes.length})
+                        </Text>
+                      </TouchableOpacity>
+                    )}
+                    <TouchableOpacity
+                      style={[styles.quickChip, pendingCount === '5' && styles.quickChipActive]}
+                      onPress={() => setPendingCount('5')}
+                    >
+                      <Text style={[styles.quickChipText, pendingCount === '5' && styles.quickChipActiveText]}>+5</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[styles.quickChip, pendingCount === '10' && styles.quickChipActive]}
+                      onPress={() => setPendingCount('10')}
+                    >
+                      <Text style={[styles.quickChipText, pendingCount === '10' && styles.quickChipActiveText]}>+10</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[styles.quickChip, pendingCount === '20' && styles.quickChipActive]}
+                      onPress={() => setPendingCount('20')}
+                    >
+                      <Text style={[styles.quickChipText, pendingCount === '20' && styles.quickChipActiveText]}>+20</Text>
+                    </TouchableOpacity>
+                  </View>
+                )}
+              </View>
+
               {/* Action Buttons */}
               <View style={styles.confirmActionRow}>
                 <TouchableOpacity
@@ -505,8 +632,10 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
                     <ActivityIndicator size="small" color="#fff" />
                   ) : (
                     <>
-                      <Ionicons name="save" size={16} color="#fff" />
-                      <Text style={styles.btnConfirmSaveText}>Lưu Vào Pallet</Text>
+                      <Ionicons name={parseInt(pendingCount, 10) > 1 ? "copy" : "save"} size={16} color="#fff" />
+                      <Text style={styles.btnConfirmSaveText}>
+                        {parseInt(pendingCount, 10) > 1 ? `Nhân Bản (${pendingCount} Thùng)` : 'Lưu Vào Pallet'}
+                      </Text>
                     </>
                   )}
                 </TouchableOpacity>
@@ -561,6 +690,37 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
               placeholderTextColor="#64748b"
               keyboardType="decimal-pad"
             />
+
+            <Text style={styles.inputLabel}>Số lượng thùng tạo (Nhân bản):</Text>
+            <TextInput
+              style={[styles.textInput, parseInt(manualCount, 10) > 1 && { borderColor: '#fbbf24', color: '#fbbf24' }]}
+              value={manualCount}
+              onChangeText={setManualCount}
+              placeholder="1"
+              placeholderTextColor="#64748b"
+              keyboardType="number-pad"
+            />
+
+            {activePallet && (
+              <View style={[styles.quickChipsRow, { marginTop: 8 }]}>
+                {activePallet.target_qty - boxes.length > 0 && (
+                  <TouchableOpacity
+                    style={[styles.quickChip, styles.quickChipActive]}
+                    onPress={() => setManualCount(String(Math.max(1, activePallet.target_qty - boxes.length)))}
+                  >
+                    <Text style={styles.quickChipActiveText}>
+                      Điền đủ ({activePallet.target_qty - boxes.length})
+                    </Text>
+                  </TouchableOpacity>
+                )}
+                <TouchableOpacity style={styles.quickChip} onPress={() => setManualCount('5')}>
+                  <Text style={styles.quickChipText}>+5</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.quickChip} onPress={() => setManualCount('10')}>
+                  <Text style={styles.quickChipText}>+10</Text>
+                </TouchableOpacity>
+              </View>
+            )}
 
             <View style={styles.modalActions}>
               <TouchableOpacity
@@ -630,6 +790,97 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
                 onPress={handleCreateNewPallet}
               >
                 <Text style={styles.modalSaveText}>Xác Nhận Pallet</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+      {/* ── MODAL NHÂN BẢN THÙNG MẪU ────────────────────── */}
+      <Modal
+        visible={cloneModalVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setCloneModalVisible(false)}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={styles.modalCard}>
+            <View style={styles.modalHeader}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <Ionicons name="copy" size={20} color="#fbbf24" />
+                <Text style={styles.modalTitle}>Nhân Bản Thùng Dấu Mực</Text>
+              </View>
+              <TouchableOpacity onPress={() => setCloneModalVisible(false)}>
+                <Ionicons name="close" size={20} color="#94a3b8" />
+              </TouchableOpacity>
+            </View>
+
+            {cloneSampleBox && (
+              <View style={styles.sampleBoxCard}>
+                <Text style={styles.sampleBoxTitle}>
+                  Thùng mẫu: #{cloneSampleBox.box_index} · {cloneSampleBox.sku}
+                </Text>
+                <Text style={styles.sampleBoxSub}>
+                  {cloneSampleBox.product_name}
+                </Text>
+                <Text style={styles.sampleBoxMeta}>
+                  Dòng 1: {cloneSampleBox.stamp_line1 || 'N/A'} | Dòng 2: {cloneSampleBox.stamp_line2 || 'N/A'}
+                </Text>
+              </View>
+            )}
+
+            <Text style={styles.inputLabel}>Số lượng thùng cần nhân bản thêm:</Text>
+            <TextInput
+              style={[styles.textInput, { fontSize: 18, fontWeight: '700', color: '#fbbf24' }]}
+              value={cloneCount}
+              onChangeText={setCloneCount}
+              keyboardType="number-pad"
+              placeholder="1"
+              placeholderTextColor="#64748b"
+            />
+
+            {activePallet && (
+              <View style={[styles.quickChipsRow, { marginTop: 10 }]}>
+                {activePallet.target_qty - boxes.length > 0 && (
+                  <TouchableOpacity
+                    style={[styles.quickChip, styles.quickChipActive]}
+                    onPress={() => setCloneCount(String(Math.max(1, activePallet.target_qty - boxes.length)))}
+                  >
+                    <Text style={styles.quickChipActiveText}>
+                      Điền đủ ({activePallet.target_qty - boxes.length} thùng)
+                    </Text>
+                  </TouchableOpacity>
+                )}
+                <TouchableOpacity style={styles.quickChip} onPress={() => setCloneCount('5')}>
+                  <Text style={styles.quickChipText}>+5</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.quickChip} onPress={() => setCloneCount('10')}>
+                  <Text style={styles.quickChipText}>+10</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.quickChip} onPress={() => setCloneCount('20')}>
+                  <Text style={styles.quickChipText}>+20</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
+            <View style={styles.modalActions}>
+              <TouchableOpacity
+                style={styles.modalCancelBtn}
+                onPress={() => setCloneModalVisible(false)}
+                disabled={isCloning}
+              >
+                <Text style={styles.modalCancelText}>Hủy</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.modalSaveBtn, isCloning && { opacity: 0.6 }]}
+                onPress={handleConfirmClone}
+                disabled={isCloning}
+              >
+                {isCloning ? (
+                  <ActivityIndicator size="small" color="#0f172a" />
+                ) : (
+                  <Text style={styles.modalSaveText}>Xác Nhận Nhân Bản</Text>
+                )}
               </TouchableOpacity>
             </View>
           </View>
@@ -1147,5 +1398,99 @@ const styles = StyleSheet.create({
     color: '#0f172a',
     fontWeight: '800',
     fontSize: 13,
+  },
+
+  // Clone & Bulk styles
+  quickStampCloneBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(251, 191, 36, 0.15)',
+    borderWidth: 1,
+    borderColor: 'rgba(251, 191, 36, 0.5)',
+    borderRadius: 10,
+    marginHorizontal: 16,
+    marginBottom: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    gap: 8,
+  },
+  quickStampCloneText: {
+    flex: 1,
+    color: '#fbbf24',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  countInputRow: {
+    marginBottom: 14,
+  },
+  countInput: {
+    backgroundColor: '#0f172a',
+    color: '#f8fafc',
+    fontSize: 16,
+    fontWeight: '700',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  countInputBulk: {
+    borderColor: '#fbbf24',
+    color: '#fbbf24',
+  },
+  bulkNoticeTag: {
+    fontSize: 11,
+    color: '#fbbf24',
+    fontWeight: '700',
+  },
+  quickChipsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    marginTop: 8,
+  },
+  quickChip: {
+    backgroundColor: '#1e293b',
+    borderWidth: 1,
+    borderColor: '#334155',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 8,
+  },
+  quickChipActive: {
+    backgroundColor: '#854d0e',
+    borderColor: '#fbbf24',
+  },
+  quickChipText: {
+    color: '#94a3b8',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  quickChipActiveText: {
+    color: '#fbbf24',
+    fontWeight: '800',
+  },
+  sampleBoxCard: {
+    backgroundColor: '#0f172a',
+    borderRadius: 10,
+    padding: 10,
+    marginBottom: 12,
+    borderLeftWidth: 3,
+    borderLeftColor: '#fbbf24',
+  },
+  sampleBoxTitle: {
+    color: '#f8fafc',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  sampleBoxSub: {
+    color: '#94a3b8',
+    fontSize: 11,
+    marginTop: 2,
+  },
+  sampleBoxMeta: {
+    color: '#cbd5e1',
+    fontSize: 10,
+    marginTop: 4,
   },
 });
