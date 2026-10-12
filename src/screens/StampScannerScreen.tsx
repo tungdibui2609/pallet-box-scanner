@@ -525,12 +525,19 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
                 const dec = decodeStamp(pendingStamp.stamp_line1, pendingStamp.stamp_line2, dictMap);
                 return (
                   <View style={{ backgroundColor: '#1e1b4b', padding: 12, borderRadius: 14, borderWidth: 1, borderColor: '#4338ca', marginBottom: 12 }}>
-                    <Text style={{ color: '#a5b4fc', fontSize: 10, fontWeight: '800', letterSpacing: 0.5, marginBottom: 4 }}>
-                      🔍 GIẢI MÃ TỨC THÌ (OFFLINE):
-                    </Text>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+                      <Text style={{ color: '#a5b4fc', fontSize: 10, fontWeight: '800', letterSpacing: 0.5 }}>
+                        🔍 GIẢI MÃ TỨC THÌ (OFFLINE):
+                      </Text>
+                      {dec.is_special_12 && (
+                        <View style={{ backgroundColor: '#065f46', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6, borderWidth: 1, borderColor: '#34d399' }}>
+                          <Text style={{ color: '#6ee7b7', fontSize: 9, fontWeight: '800' }}>⭐ NGOẠI LỆ 12 SỐ</Text>
+                        </View>
+                      )}
+                    </View>
                     {dec.product_name_full ? (
                       <Text style={{ color: '#f8fafc', fontSize: 13, fontWeight: '700', marginBottom: 3 }}>
-                        {dec.product_name_full} {dec.package_spec_name ? `• ${dec.package_spec_name}` : ''}
+                        {dec.product_name_full} {dec.package_spec_name && !dec.is_special_12 ? `• ${dec.package_spec_name}` : ''}
                       </Text>
                     ) : (
                       <Text style={{ color: '#94a3b8', fontSize: 11, fontStyle: 'italic' }}>
@@ -680,6 +687,34 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
               placeholderTextColor="#64748b"
               keyboardType="number-pad"
             />
+
+            {/* Live preview giải mã trong modal thủ công */}
+            {(() => {
+              const dec = decodeStamp(manualLine1, manualLine2, dictMap, activeFormat);
+              if (!dec.product_name_full && !dec.traceability_full) return null;
+              return (
+                <View style={{ backgroundColor: '#1e1b4b', padding: 10, borderRadius: 12, borderWidth: 1, borderColor: '#4338ca', marginVertical: 8 }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 3 }}>
+                    <Text style={{ color: '#a5b4fc', fontSize: 9, fontWeight: '800' }}>XEM TRƯỚC GIẢI MÃ:</Text>
+                    {dec.is_special_12 && (
+                      <View style={{ backgroundColor: '#065f46', paddingHorizontal: 5, paddingVertical: 1, borderRadius: 4, borderWidth: 1, borderColor: '#34d399' }}>
+                        <Text style={{ color: '#6ee7b7', fontSize: 8, fontWeight: '800' }}>⭐ NGOẠI LỆ 12 SỐ</Text>
+                      </View>
+                    )}
+                  </View>
+                  {dec.product_name_full && (
+                    <Text style={{ color: '#f8fafc', fontSize: 12, fontWeight: '700', marginBottom: 2 }}>
+                      {dec.product_name_full}
+                    </Text>
+                  )}
+                  {dec.traceability_full && (
+                    <Text style={{ color: '#cbd5e1', fontSize: 10 }}>
+                      {dec.traceability_full}
+                    </Text>
+                  )}
+                </View>
+              );
+            })()}
 
             <Text style={styles.inputLabel}>Khối lượng (Kg):</Text>
             <TextInput

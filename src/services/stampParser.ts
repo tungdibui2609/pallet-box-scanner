@@ -94,6 +94,44 @@ export const DEFAULT_STAMP_DICTIONARY: Record<string, Record<string, string>> = 
     '56': 'Khánh Hòa',
     '54': 'Phú Yên',
     '52': 'Bình Định'
+  },
+  special_12: {
+    '101010202002': 'TP cấp đông sầu riêng trái ri 6 loại A - Nito',
+    '101010202004': 'TP cấp đông sầu riêng trái ri 6 loại A - Hàng đóng thùng tạm',
+    '101010402004': 'TP cấp đông sầu riêng trái Musaking loại A - Nito - Hàng đóng thùng tạm',
+    '101010403004': 'TP cấp đông sầu riêng trái Musaking loại B - Nito - Hàng đóng thùng tạm',
+    '102010201001': 'TP cấp đông sầu riêng múi monthong A (1 túi) - Hầm đông',
+    '102010201002': 'TP cấp đông sầu riêng múi monthong A (1 túi) - Nito',
+    '102010201004': 'TP cấp đông sầu riêng múi monthong A (1 túi) - múi to (>750gram) - Hầm đông',
+    '102010201005': 'TP cấp đông sầu riêng múi monthong A (1 túi) - múi nhỏ (< 60 gram) - Hầm đông',
+    '102010204001': 'TP cấp đông sầu riêng múi monthong A (4 túi) - Hầm đông',
+    '102010301001': 'TP cấp đông sầu riêng múi monthong B (1 túi) - Hầm đông',
+    '102010301002': 'TP cấp đông sầu riêng múi monthong B (1 túi) - Nito',
+    '102010301004': 'TP cấp đông sầu riêng múi monthong B (1 túi) - múi to (>750gram) - Hầm đông',
+    '102010301005': 'TP cấp đông sầu riêng múi monthong B (1 túi) - múi nhỏ (< 60 gram) - Hầm đông',
+    '102010304001': 'TP cấp đông sầu riêng múi monthong B (4 túi) - Hầm đông',
+    '102010401001': 'TP cấp đông sầu riêng múi monthong C - Hàng không hạt - Hầm đông',
+    '102010402001': 'TP cấp đông sầu riêng múi monthong C - Hàng có hạt - Hầm đông',
+    '102020201001': 'TP cấp đông sầu riêng múi ri 6 A (1 túi) - Hầm đông',
+    '102020204001': 'TP cấp đông sầu riêng múi ri 6 A (4 túi) - Hầm đông',
+    '102020301001': 'TP cấp đông sầu riêng múi ri 6 B (1 túi) - Hầm đông',
+    '102020304001': 'TP cấp đông sầu riêng múi ri 6 B (4 túi) - Hầm đông',
+    '102020401001': 'TP cấp đông sầu riêng múi ri 6 C - Hàng có hạt - Hầm đông',
+    '102020402001': 'TP cấp đông sầu riêng múi ri 6 C - Hàng tách hạt - Hầm đông',
+    '102020701000': 'TP cấp đông sầu riêng múi ri 6 khay (có hạt)',
+    '202010100000': 'TP cấp đông múi mít đỏ loại A',
+    '202010200000': 'TP cấp đông múi mít đỏ loại B',
+    '202010300000': 'TP cấp đông múi mít đỏ loại C',
+    '202010400000': 'TP cấp đông múi mít đỏ loại D',
+    '201090200102': 'TP cấp đông xoài Keaw cắt má loại A (Thùng 10 Kg)',
+    '201090200302': 'TP cấp đông xoài Keaw cắt má loại B (Thùng 10 Kg)',
+    '201090200402': 'TP cấp đông xoài Keaw cắt má loại C (Thùng 10 Kg)',
+    '201090200702': 'TP cấp đông xoài Keaw vụn (Thùng 10 Kg)',
+    '201090300200': 'TP cấp đông xoài Keaw cắt dice 20x20mm',
+    '301010400000': 'TP cấp đông thanh long đỏ 6x6mm',
+    '301020200000': 'TP cấp đông thanh long trắng 15x15mm',
+    '901010050000': 'TP cấp đông dứa queen (1/2 trái)',
+    '901030050000': 'TP cấp đông dứa cayenne (1/2 trái)'
   }
 };
 
@@ -131,6 +169,18 @@ export function decodeStamp(
   const cleanL1 = (line1 || '').trim().replace(/[^0-9\-]/g, '');
   const digitsOnlyL1 = cleanL1.replace(/-/g, '');
   const l1Config = template?.line1_config;
+
+  // 0. KIỂM TRA TRƯỜNG HỢP NGOẠI LỆ ƯU TIÊN (12 KÝ TỰ ĐẦU TIÊN)
+  let special12MatchName: string | undefined;
+  if (digitsOnlyL1.length >= 12) {
+    const code12 = digitsOnlyL1.substring(0, 12);
+    const matched = dict.special_12?.[code12] || DEFAULT_STAMP_DICTIONARY.special_12?.[code12];
+    if (matched) {
+      result.is_special_12 = true;
+      result.special_12_code = code12;
+      special12MatchName = matched;
+    }
+  }
 
   if (l1Config && Array.isArray(l1Config.fields) && l1Config.fields.length > 0) {
     // Dynamic decoding theo cấu hình mẫu
@@ -216,6 +266,12 @@ export function decodeStamp(
     result.customer_quality_name = dict.customer_quality?.[cQuality] || (cQuality === '0' ? 'Không phân chia' : `Tiêu chuẩn KH ${cQuality}`);
 
     result.product_name_full = `${result.fruit_type_name} ${result.variety_name} ${result.freeze_style_name} ${result.product_grade_name}`;
+  }
+
+  // ⭐ ƯU TIÊN TUYỆT ĐỐI QUY CÁCH NGOẠI LỆ (12 SỐ ĐẦU):
+  // Ghi đè trực tiếp tên và quy cách sản phẩm trọn gói từ danh mục ngoại lệ
+  if (special12MatchName) {
+    result.product_name_full = special12MatchName;
   }
 
   // 2. Giải mã Dòng 2 (Nguồn gốc & Truy xuất)
@@ -309,6 +365,7 @@ export function parseStampText(
   template?: StampFormat | null
 ): ParsedStampData | null {
   if (!rawText) return null;
+  const dict = customDict || DEFAULT_STAMP_DICTIONARY;
 
   const rawLines = rawText.split('\n').map(l => l.trim()).filter(Boolean);
   const numericLines: string[] = [];
@@ -325,8 +382,20 @@ export function parseStampText(
   const l1Total = template?.line1_config?.total_length || 14;
   if (numericLines.length === 1 && numericLines[0].replace(/-/g, '').length >= 26) {
     const full = numericLines[0];
-    const l1 = full.slice(0, l1Total);
-    const l2 = full.slice(l1Total);
+    const fullDigits = full.replace(/[^0-9]/g, '');
+    const isHeadSpecial12 = fullDigits.length >= 12 && !!(dict.special_12?.[fullDigits.substring(0, 12)] || DEFAULT_STAMP_DICTIONARY.special_12?.[fullDigits.substring(0, 12)]);
+    
+    let l1Cut = l1Total;
+    if (isHeadSpecial12) {
+      if (full.length > 12 && full[12] === '-') {
+        l1Cut = 14; // Có gạch nối và ký tự thứ 14
+      } else if (fullDigits.length === 28) {
+        l1Cut = 12; // 12 ký tự dòng 1 + 16 ký tự dòng 2
+      }
+    }
+
+    const l1 = full.slice(0, l1Cut);
+    const l2 = full.slice(l1Cut);
     const decoded = decodeStamp(l1, l2, customDict, template);
     return {
       stamp_line1: l1,
@@ -345,12 +414,28 @@ export function parseStampText(
   let line2 = '';
 
   if (numericLines.length >= 2) {
-    line1 = numericLines[0];
-    line2 = numericLines[1];
+    const d0 = numericLines[0].replace(/[^0-9]/g, '');
+    const d1 = numericLines[1].replace(/[^0-9]/g, '');
+    const d0IsSpecial = d0.length >= 12 && !!(dict.special_12?.[d0.substring(0, 12)] || DEFAULT_STAMP_DICTIONARY.special_12?.[d0.substring(0, 12)]);
+    const d1IsSpecial = d1.length >= 12 && !!(dict.special_12?.[d1.substring(0, 12)] || DEFAULT_STAMP_DICTIONARY.special_12?.[d1.substring(0, 12)]);
+
+    // Đảo ngược vị trí nếu OCR đọc ngược Dòng 2 trước Dòng 1
+    if (!d0IsSpecial && d1IsSpecial) {
+      line1 = numericLines[1];
+      line2 = numericLines[0];
+    } else {
+      line1 = numericLines[0];
+      line2 = numericLines[1];
+    }
   } else {
     // Nếu chỉ đọc được 1 dòng, xem nó giống dòng 1 hay dòng 2
     const single = numericLines[0];
-    if (single.length >= 15) {
+    const singleDigits = single.replace(/[^0-9]/g, '');
+    const isSpecial12Single = singleDigits.length >= 12 && !!(dict.special_12?.[singleDigits.substring(0, 12)] || DEFAULT_STAMP_DICTIONARY.special_12?.[singleDigits.substring(0, 12)]);
+    
+    if (isSpecial12Single) {
+      line1 = single;
+    } else if (single.length >= 15) {
       line2 = single;
     } else {
       line1 = single;

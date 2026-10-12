@@ -35,6 +35,10 @@ export interface BoxLabel {
 }
 
 export interface DecodedStampDetails {
+  // Ngoại lệ 12 số ưu tiên
+  is_special_12?: boolean;
+  special_12_code?: string;
+
   // Dòng 1: Phân cấp sản phẩm
   fruit_type_code?: string;
   fruit_type_name?: string;

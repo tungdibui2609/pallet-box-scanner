@@ -309,9 +309,11 @@ export async function addStampBoxToPallet(
   const decoded = decodeStamp(stampData.stamp_line1, stampData.stamp_line2, dictMap);
 
   const productName = decoded.product_name_full || 'Thùng đóng dấu mực';
-  const cleanSku = decoded.fruit_type_code 
-    ? `${decoded.fruit_type_code}${decoded.freeze_style_code || '00'}${decoded.variety_code || '00'}${decoded.product_grade_code || '00'}`
-    : (stampData.stamp_line1 || 'STAMP');
+  const cleanSku = decoded.special_12_code
+    ? decoded.special_12_code
+    : (decoded.fruit_type_code 
+        ? `${decoded.fruit_type_code}${decoded.freeze_style_code || '00'}${decoded.variety_code || '00'}${decoded.product_grade_code || '00'}`
+        : (stampData.stamp_line1 || 'STAMP'));
   const specText = decoded.package_spec_name 
     ? `${decoded.package_spec_name} (${decoded.freeze_method_name || 'Hầm đông'})` 
     : '';
@@ -483,9 +485,11 @@ export async function addStampBoxesBulkToPallet(
 
   const decoded = decodeStamp(stampData.stamp_line1, stampData.stamp_line2, dictMap);
   const productName = decoded.product_name_full || 'Thùng đóng dấu mực';
-  const cleanSku = decoded.fruit_type_code 
-    ? `${decoded.fruit_type_code}${decoded.freeze_style_code || '00'}${decoded.variety_code || '00'}${decoded.product_grade_code || '00'}`
-    : (stampData.stamp_line1 || 'STAMP');
+  const cleanSku = decoded.special_12_code
+    ? decoded.special_12_code
+    : (decoded.fruit_type_code 
+        ? `${decoded.fruit_type_code}${decoded.freeze_style_code || '00'}${decoded.variety_code || '00'}${decoded.product_grade_code || '00'}`
+        : (stampData.stamp_line1 || 'STAMP'));
   const specText = decoded.package_spec_name 
     ? `${decoded.package_spec_name} (${decoded.freeze_method_name || 'Hầm đông'})` 
     : '';
