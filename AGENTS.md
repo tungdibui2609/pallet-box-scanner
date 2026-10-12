@@ -51,6 +51,13 @@ Docs: https://docs.expo.dev/eas/index.md
 2. **KHI SỬA CODE HOẶC PHÁT TRIỂN TÍNH NĂNG MỚI:**
    - Agent chỉ được phép:
      - Viết mã nguồn, sửa code, refactor.
-     - Kiểm tra lỗi cú pháp và kiểu dữ liệu bằng 
-px tsc --noEmit.
+     - Kiểm tra lỗi cú pháp và kiểu dữ liệu bằng `npx tsc --noEmit`.
      - Báo cáo rõ ràng các thay đổi đã thực hiện và chờ lệnh từ người dùng.
+
+# 📌 QUY TẮC BẮT BUỘC: QUẢN LÝ PHIÊN BẢN ỨNG DỤNG (APP VERSIONING POLICY)
+
+**MỖI KHI CÓ SỬA ĐỔI MÃ NGUỒN HOẶC PHÁT TRIỂN TÍNH NĂNG MỚI TRÊN APP, BẮT BUỘC PHẢI:**
+1. Tăng phiên bản `version` trong `app.json` (ví dụ `1.0.0` -> `1.0.1` -> `1.0.2`...).
+2. Tăng `android.versionCode` trong `app.json` tương ứng (`1` -> `2` -> `3`...).
+3. Đồng bộ trường `version` trong `package.json`.
+4. Cập nhật chuỗi hiển thị phiên bản tại màn hình Cài Đặt (SettingsScreen.tsx).

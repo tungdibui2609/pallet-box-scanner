@@ -249,6 +249,11 @@ export default function SettingsScreen({ onBack }: { onBack: () => void }) {
             <Text style={styles.resultText}>{testResult}</Text>
           </View>
         )}
+
+        <View style={styles.versionContainer}>
+          <Text style={styles.versionText}>Phiên bản v1.0.1 (Build 2)</Text>
+          <Text style={styles.versionSubText}>Hệ thống Quản lý Tem & Pallet • Chánh Thu</Text>
+        </View>
       </View>
     </ScrollView>
   );
@@ -404,5 +409,24 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#334155'
   },
-  resultText: { color: '#38bdf8', fontSize: 12, fontWeight: '600' }
+  resultText: { color: '#38bdf8', fontSize: 12, fontWeight: '600' },
+  versionContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 28,
+    marginBottom: 16,
+    paddingVertical: 12,
+  },
+  versionText: {
+    color: '#94a3b8',
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+  },
+  versionSubText: {
+    color: '#475569',
+    fontSize: 10,
+    marginTop: 4,
+    fontWeight: '500',
+  }
 });
