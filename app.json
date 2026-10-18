@@ -2,7 +2,7 @@
   "expo": {
     "name": "Anywarehouse",
     "slug": "bao-duy",
-    "version": "1.0.24",
+    "version": "1.0.25",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -16,7 +16,7 @@
       },
       "predictiveBackGestureEnabled": false,
       "package": "com.anywarehouse.scanner",
-      "versionCode": 25,
+      "versionCode": 26,
       "permissions": [
         "android.permission.CAMERA",
         "android.permission.RECORD_AUDIO"

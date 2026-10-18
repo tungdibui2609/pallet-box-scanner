@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View, Text, StyleSheet, TextInput, TouchableOpacity,
   Alert, ActivityIndicator, ScrollView, Switch
@@ -32,6 +32,34 @@ export default function SettingsScreen({ onBack }: { onBack: () => void }) {
   const [lastOfflineSync, setLastOfflineSync] = useState<string | null>(null);
   const [syncingOfflinePallets, setSyncingOfflinePallets] = useState(false);
   const [autoSyncEnabled, setAutoSyncEnabledState] = useState(true);
+
+  // Advanced Technician Server Config
+  const [showAdvancedConfig, setShowAdvancedConfig] = useState(false);
+  const [showKeyPlain, setShowKeyPlain] = useState(false);
+  const versionTapCountRef = useRef(0);
+  const lastTapTimeRef = useRef(0);
+
+  const handleVersionTap = () => {
+    const now = Date.now();
+    if (now - lastTapTimeRef.current < 600) {
+      versionTapCountRef.current += 1;
+    } else {
+      versionTapCountRef.current = 1;
+    }
+    lastTapTimeRef.current = now;
+
+    if (versionTapCountRef.current >= 5) {
+      versionTapCountRef.current = 0;
+      const next = !showAdvancedConfig;
+      setShowAdvancedConfig(next);
+      Alert.alert(
+        next ? '🔓 Chế độ Kỹ thuật viên' : '🔒 Đã khóa',
+        next
+          ? 'Đã mở khóa Cấu hình máy chủ nâng cao. Vui lòng cẩn thận khi chỉnh sửa các thông số kỹ thuật này!'
+          : 'Đã ẩn và khóa cấu hình máy chủ an toàn.'
+      );
+    }
+  };
 
   useEffect(() => {
     loadSettings();
@@ -293,68 +321,104 @@ export default function SettingsScreen({ onBack }: { onBack: () => void }) {
         </TouchableOpacity>
       </View>
 
-      {/* ── CẤU HÌNH MÁY CHỦ ─────────────────── */}
-      <View style={styles.card}>
-        <Text style={styles.sectionTitle}>CẤU HÌNH KẾT NỐI MÁY CHỦ</Text>
-
-        <Text style={styles.label}>Tên miền máy chủ Supabase:</Text>
-        <TextInput
-          style={styles.input}
-          value={url}
-          onChangeText={setUrl}
-          placeholder="https://api.chanhthu.click"
-          placeholderTextColor="#64748b"
-          autoCapitalize="none"
-        />
-
-        <Text style={styles.label}>Mã hệ thống kho (system_code):</Text>
-        <TextInput
-          style={styles.input}
-          value={systemCode}
-          onChangeText={setSystemCode}
-          placeholder="KHO_DONG_LANH"
-          placeholderTextColor="#64748b"
-        />
-
-        <Text style={styles.label}>Anon Key:</Text>
-        <TextInput
-          style={[styles.input, { height: 70, fontSize: 11 }]}
-          value={anonKey}
-          onChangeText={setAnonKey}
-          multiline
-          placeholder="eyJhbGciOi..."
-          placeholderTextColor="#64748b"
-        />
-
-        <View style={styles.btnRow}>
-          <TouchableOpacity style={styles.testBtn} onPress={handleTest} disabled={testing}>
-            {testing ? (
-              <ActivityIndicator color="#38bdf8" />
-            ) : (
-              <>
-                <Ionicons name="pulse-outline" size={18} color="#38bdf8" />
-                <Text style={styles.testBtnText}>Kiểm tra kết nối</Text>
-              </>
-            )}
-          </TouchableOpacity>
-
-          <TouchableOpacity style={styles.saveBtn} onPress={handleSave}>
-            <Ionicons name="save-outline" size={18} color="#fff" />
-            <Text style={styles.saveBtnText}>Lưu Cài Đặt</Text>
-          </TouchableOpacity>
-        </View>
-
-        {testResult && (
-          <View style={styles.resultBox}>
-            <Text style={styles.resultText}>{testResult}</Text>
+      {/* ── CẤU HÌNH MÁY CHỦ (NÂNG CAO - ẨN MẶC ĐỊNH) ─────────────────── */}
+      {showAdvancedConfig && (
+        <View style={[styles.card, { borderColor: 'rgba(245, 158, 11, 0.4)', borderWidth: 1.5 }]}>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <Ionicons name="construct" size={17} color="#f59e0b" />
+              <Text style={[styles.sectionTitle, { marginBottom: 0, color: '#f59e0b' }]}>CẤU HÌNH MÁY CHỦ (KỸ THUẬT)</Text>
+            </View>
+            <TouchableOpacity 
+              onPress={() => setShowAdvancedConfig(false)}
+              style={{ backgroundColor: '#1e293b', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6 }}
+            >
+              <Text style={{ color: '#94a3b8', fontSize: 11, fontWeight: '700' }}>Đóng lại</Text>
+            </TouchableOpacity>
           </View>
-        )}
 
-        <View style={styles.versionContainer}>
-          <Text style={styles.versionText}>Phiên bản v1.0.24 (Build 25)</Text>
-          <Text style={styles.versionSubText}>Hệ thống Quản lý Tem & Pallet • Chánh Thu</Text>
+          <Text style={styles.label}>Tên miền máy chủ Supabase:</Text>
+          <TextInput
+            style={styles.input}
+            value={url}
+            onChangeText={setUrl}
+            placeholder="https://api.chanhthu.click"
+            placeholderTextColor="#64748b"
+            autoCapitalize="none"
+          />
+
+          <Text style={styles.label}>Mã hệ thống kho (system_code):</Text>
+          <TextInput
+            style={styles.input}
+            value={systemCode}
+            onChangeText={setSystemCode}
+            placeholder="KHO_DONG_LANH"
+            placeholderTextColor="#64748b"
+          />
+
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 10, marginBottom: 4 }}>
+            <Text style={[styles.label, { marginTop: 0, marginBottom: 0 }]}>Anon Key (Mã truy cập Client):</Text>
+            <TouchableOpacity 
+              onPress={() => setShowKeyPlain(s => !s)} 
+              style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}
+            >
+              <Ionicons name={showKeyPlain ? "eye-off-outline" : "eye-outline"} size={14} color="#38bdf8" />
+              <Text style={{ color: '#38bdf8', fontSize: 11, fontWeight: '700' }}>
+                {showKeyPlain ? 'Ẩn mã' : 'Xem mã'}
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          <TextInput
+            style={[styles.input, { height: showKeyPlain ? 70 : 44, fontSize: 11 }]}
+            value={anonKey}
+            onChangeText={setAnonKey}
+            secureTextEntry={!showKeyPlain}
+            multiline={showKeyPlain}
+            placeholder="eyJhbGciOi..."
+            placeholderTextColor="#64748b"
+          />
+
+          <View style={styles.btnRow}>
+            <TouchableOpacity style={styles.testBtn} onPress={handleTest} disabled={testing}>
+              {testing ? (
+                <ActivityIndicator color="#38bdf8" />
+              ) : (
+                <>
+                  <Ionicons name="pulse-outline" size={18} color="#38bdf8" />
+                  <Text style={styles.testBtnText}>Kiểm tra kết nối</Text>
+                </>
+              )}
+            </TouchableOpacity>
+
+            <TouchableOpacity style={styles.saveBtn} onPress={handleSave}>
+              <Ionicons name="save-outline" size={18} color="#fff" />
+              <Text style={styles.saveBtnText}>Lưu Cài Đặt</Text>
+            </TouchableOpacity>
+          </View>
+
+          {testResult && (
+            <View style={styles.resultBox}>
+              <Text style={styles.resultText}>{testResult}</Text>
+            </View>
+          )}
         </View>
-      </View>
+      )}
+
+      {/* ── THÔNG TIN PHIÊN BẢN (CHẠM 5 LẦN ĐỂ MỞ CẤU HÌNH KỸ THUẬT) ─── */}
+      <TouchableOpacity 
+        style={styles.versionContainer}
+        onPress={handleVersionTap}
+        activeOpacity={0.8}
+      >
+        <Text style={styles.versionText}>Phiên bản v1.0.25 (Build 26)</Text>
+        <Text style={styles.versionSubText}>Hệ thống Quản lý Tem & Pallet • Chánh Thu</Text>
+        {showAdvancedConfig && (
+          <Text style={{ color: '#f59e0b', fontSize: 10, fontWeight: '700', marginTop: 4 }}>
+            ⚠️ Chế độ kỹ thuật viên đang mở (Chạm để ẩn lại)
+          </Text>
+        )}
+      </TouchableOpacity>
     </ScrollView>
   );
 }
