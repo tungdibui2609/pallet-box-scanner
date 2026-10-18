@@ -2,7 +2,7 @@
   "expo": {
     "name": "Anywarehouse",
     "slug": "bao-duy",
-    "version": "1.0.1",
+    "version": "1.0.24",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -16,7 +16,7 @@
       },
       "predictiveBackGestureEnabled": false,
       "package": "com.anywarehouse.scanner",
-      "versionCode": 2,
+      "versionCode": 25,
       "permissions": [
         "android.permission.CAMERA",
         "android.permission.RECORD_AUDIO"
@@ -32,7 +32,8 @@
         {
           "cameraPermission": "Cho phép ứng dụng sử dụng Camera để quét tem thùng hàng."
         }
-      ]
+      ],
+      "expo-font"
     ],
     "extra": {
       "eas": {

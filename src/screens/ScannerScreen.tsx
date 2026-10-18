@@ -1,11 +1,21 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, ScrollView,
-  Alert, Modal, TextInput, ActivityIndicator, Vibration, Animated
+  Alert, Modal, TextInput, ActivityIndicator, Vibration, Animated,
+  NativeModules
 } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import TextRecognition from '@react-native-ml-kit/text-recognition';
-import { VolumeManager } from 'react-native-volume-manager';
+
+// Safe dynamic load: Tránh crash runtime trên Expo Go (do Expo Go thiếu native module react-native-volume-manager)
+let VolumeManager: any = null;
+if (NativeModules && NativeModules.VolumeManager) {
+  try {
+    VolumeManager = require('react-native-volume-manager').VolumeManager;
+  } catch (err) {
+    console.warn('VolumeManager not linked:', err);
+  }
+}
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Haptics from 'expo-haptics';
 import { Ionicons } from '@expo/vector-icons';
@@ -14,7 +24,7 @@ import {
   getActivePallet, createNewPallet, completePallet,
   getBoxesByPallet, addBoxToPallet, deleteBox,
   getPalletByCode, resetPalletBoxes, activateExistingPallet,
-  cloneBoxToPallet
+  cloneBoxToPallet, updatePalletTag, updatePalletTagAndNotes
 } from '../services/database';
 import { parseBoxLabelText, isBoxLabel } from '../services/labelParser';
 import { DEFAULT_SUPABASE_URL } from '../services/supabase';
@@ -45,6 +55,8 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
   // Pallet Creation Modal
   const [isNewPalletModal, setIsNewPalletModal] = useState(false);
   const [newPalletCode, setNewPalletCode] = useState('');
+  const [newPalletTag, setNewPalletTag] = useState('');
+  const [newPalletNotes, setNewPalletNotes] = useState('');
   const [newTargetQty, setNewTargetQty] = useState('30');
 
   // Manual Input Modal
@@ -109,6 +121,7 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
 
   // 2. HARDWARE KEY TRIGGER: BẤM NÚT GIẢM ÂM LƯỢNG LÀ CHỤP QUÉT
   useEffect(() => {
+    if (!VolumeManager) return;
     let volumeListener: any = null;
 
     async function setupVolumeTrigger() {
@@ -117,7 +130,7 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
         await VolumeManager.setVolume(0.5);
         lastVolumeRef.current = 0.5;
 
-        volumeListener = VolumeManager.addVolumeListener(async (result) => {
+        volumeListener = VolumeManager.addVolumeListener(async (result: any) => {
           // Khi bấm Giảm âm lượng -> result.volume < lastVolume
           if (result.volume < lastVolumeRef.current) {
             handleManualCapture();
@@ -138,7 +151,7 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
       if (volumeListener && typeof volumeListener.remove === 'function') {
         volumeListener.remove();
       }
-      VolumeManager.showNativeVolumeUI({ enabled: true }).catch(() => {});
+      VolumeManager?.showNativeVolumeUI({ enabled: true })?.catch(() => {});
     };
   }, [activePallet]);
 
@@ -350,9 +363,14 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
             text: '🔄 Quét lại từ đầu (Xoá cũ)',
             style: 'destructive',
             onPress: async () => {
+              await updatePalletTagAndNotes(existing.id, newPalletTag.trim() || null, newPalletNotes.trim() || null);
               await resetPalletBoxes(existing.id);
-              const activated = await activateExistingPallet(existing.id);
-              setActivePallet(activated);
+              const activated = (await activateExistingPallet(existing.id)) || existing;
+              setActivePallet({
+                ...activated,
+                tag: newPalletTag.trim() || existing.tag,
+                notes: newPalletNotes.trim() || existing.notes
+              });
               setBoxes([]);
               setIsNewPalletModal(false);
               Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -361,8 +379,13 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
           {
             text: 'Tiếp tục quét thêm',
             onPress: async () => {
-              const activated = await activateExistingPallet(existing.id);
-              setActivePallet(activated);
+              await updatePalletTagAndNotes(existing.id, newPalletTag.trim() || null, newPalletNotes.trim() || null);
+              const activated = (await activateExistingPallet(existing.id)) || existing;
+              setActivePallet({
+                ...activated,
+                tag: newPalletTag.trim() || existing.tag,
+                notes: newPalletNotes.trim() || existing.notes
+              });
               const existingBoxes = await getBoxesByPallet(existing.id);
               setBoxes(existingBoxes);
               setIsNewPalletModal(false);
@@ -375,7 +398,13 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
     }
 
     const target = parseInt(newTargetQty) || 30;
-    const pallet = await createNewPallet(cleanCode, target);
+    const pallet = await createNewPallet(
+      cleanCode,
+      target,
+      'KHO_DONG_LANH',
+      newPalletTag.trim() || null,
+      newPalletNotes.trim() || null
+    );
     setActivePallet(pallet);
     setBoxes([]);
     setIsNewPalletModal(false);
@@ -506,12 +535,25 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
             style={styles.palletCodeRow}
             onPress={() => {
               setNewPalletCode(activePallet?.code || '');
+              setNewPalletTag(activePallet?.tag || '');
+              setNewPalletNotes(activePallet?.notes || '');
+              setNewTargetQty(String(activePallet?.target_qty || 30));
               setIsNewPalletModal(true);
             }}
           >
             {activePallet ? (
               <>
                 <Text style={styles.palletCodeText}>{activePallet.code}</Text>
+                {activePallet.tag ? (
+                  <View style={{ backgroundColor: '#ea580c', paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6, marginLeft: 6 }}>
+                    <Text style={{ color: '#fff', fontSize: 11, fontWeight: '800' }}>🏷️ {activePallet.tag}</Text>
+                  </View>
+                ) : null}
+                {activePallet.notes ? (
+                  <View style={{ backgroundColor: '#2563eb', paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6, marginLeft: 6 }}>
+                    <Text style={{ color: '#fff', fontSize: 11, fontWeight: '800' }}>📝 Ghi chú</Text>
+                  </View>
+                ) : null}
                 <Ionicons name="create-outline" size={18} color="#f59e0b" style={{ marginLeft: 6 }} />
               </>
             ) : (
@@ -762,12 +804,12 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
             <Text style={styles.modalTitle}>📦 CHỌN / NHẬP STT PALLET</Text>
             <Text style={styles.modalSub}>Nhập số thực tế của Pallet đang xếp hàng (Ví dụ: F3500 hoặc F5556)</Text>
 
-            <Text style={styles.inputLabel}>Số thực tế Pallet (STT):</Text>
+            <Text style={styles.inputLabel}>Số thực tế Pallet (STT) *:</Text>
             <TextInput
               style={styles.modalInput}
               value={newPalletCode}
               onChangeText={setNewPalletCode}
-              placeholder="Ví dụ: F3500"
+              placeholder="Ví dụ: F3500 hoặc G22"
               placeholderTextColor="#64748b"
               autoCapitalize="characters"
               autoFocus
@@ -780,6 +822,25 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
               onChangeText={setNewTargetQty}
               keyboardType="number-pad"
               placeholder="30"
+              placeholderTextColor="#64748b"
+            />
+
+            <Text style={styles.inputLabel}>Mã phụ (Tag):</Text>
+            <TextInput
+              style={styles.modalInput}
+              value={newPalletTag}
+              onChangeText={setNewPalletTag}
+              placeholder="Ví dụ: OEM-A, XK-HQ, HÀNG LOẠI 1..."
+              placeholderTextColor="#64748b"
+              autoCapitalize="characters"
+            />
+
+            <Text style={styles.inputLabel}>Ghi chú Pallet / LOT hàng:</Text>
+            <TextInput
+              style={[styles.modalInput, { minHeight: 44 }]}
+              value={newPalletNotes}
+              onChangeText={setNewPalletNotes}
+              placeholder="Nhập ghi chú cho LOT hàng (nếu có)..."
               placeholderTextColor="#64748b"
             />
 

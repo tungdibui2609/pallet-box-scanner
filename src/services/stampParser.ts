@@ -269,9 +269,27 @@ export function decodeStamp(
   }
 
   // ⭐ ƯU TIÊN TUYỆT ĐỐI QUY CÁCH NGOẠI LỆ (12 SỐ ĐẦU):
-  // Ghi đè trực tiếp tên và quy cách sản phẩm trọn gói từ danh mục ngoại lệ
+  // Ghi đè trực tiếp tên và quy cách sản phẩm trọn gói từ danh mục ngoại lệ (giống Web Mẹ)
   if (special12MatchName) {
+    result.is_special_12 = true;
+    result.special_12_name = special12MatchName;
     result.product_name_full = special12MatchName;
+
+    // Phân tách quy cách sản phẩm và phương thức cấp đông từ chuỗi tên ngoại lệ trọn gói
+    // VD: "TP cấp đông sầu riêng múi monthong C - Hàng có hạt - Hầm đông"
+    // Part 1: "Hàng có hạt"
+    // Part 2: "Hầm đông"
+    const nameParts = special12MatchName.split(' - ').map((s: string) => s.trim());
+    if (nameParts.length >= 3) {
+      result.package_spec_name = nameParts[1];
+      result.freeze_method_name = nameParts[2];
+    } else if (nameParts.length === 2) {
+      result.package_spec_name = nameParts[1];
+      result.freeze_method_name = '';
+    } else {
+      result.package_spec_name = 'Ngoại lệ trọn gói';
+      result.freeze_method_name = '';
+    }
   }
 
   // 2. Giải mã Dòng 2 (Nguồn gốc & Truy xuất)
@@ -305,12 +323,13 @@ export function decodeStamp(
         const mm = raw.substring(2, 4);
         const yy = raw.substring(4, 6);
         result.inbound_date = `${dd}/${mm}/20${yy}`;
+        result.raw_material_date = result.inbound_date;
       } else if (f.key === 'supplier') {
         result.supplier_code = raw;
         const declaredSupplier = dict.supplier?.[raw];
         result.supplier_name = declaredSupplier
           ? `${raw} (${declaredSupplier})`
-          : `${raw}`;
+          : (raw ? `Mã NCC ${raw}` : '');
       } else if (f.key === 'province') {
         result.province_code = raw;
         result.province_name = dict.province?.[raw] || `Tỉnh mã ${raw}`;
@@ -320,7 +339,7 @@ export function decodeStamp(
     result.traceability_full = [
       result.factory_name,
       result.packaging_date ? `ĐG: ${result.packaging_date}` : '',
-      result.inbound_date ? `Nhập: ${result.inbound_date}` : '',
+      result.inbound_date ? `Nhập NL: ${result.inbound_date}` : '',
       result.supplier_name ? `NCC: ${result.supplier_name}` : '',
       result.province_name ? `Vùng: ${result.province_name}` : ''
     ].filter(Boolean).join(' • ');
@@ -340,17 +359,18 @@ export function decodeStamp(
 
     result.packaging_date = `${dd}/${mm}`;
     result.inbound_date = `${DD}/${MM}/20${YY}`;
+    result.raw_material_date = `${DD}/${MM}/20${YY}`;
 
     result.supplier_code = cSupplier;
     const declaredSupplier = dict.supplier?.[cSupplier];
     result.supplier_name = declaredSupplier
       ? `${cSupplier} (${declaredSupplier})`
-      : `${cSupplier}`;
+      : (cSupplier ? `Mã NCC ${cSupplier}` : '');
 
     result.province_code = cProvince;
     result.province_name = dict.province?.[cProvince] || `Tỉnh mã ${cProvince}`;
 
-    result.traceability_full = `${result.factory_name} • ĐG: ${result.packaging_date} • Nhập: ${result.inbound_date} • NCC: ${result.supplier_name} • Vùng: ${result.province_name}`;
+    result.traceability_full = `${result.factory_name} • ĐG: ${result.packaging_date} • Nhập NL: ${result.inbound_date} • NCC: ${result.supplier_name} • Vùng: ${result.province_name}`;
   }
 
   return result;

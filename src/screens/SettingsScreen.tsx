@@ -1,13 +1,18 @@
 import React, { useState, useEffect } from 'react';
 import {
   View, Text, StyleSheet, TextInput, TouchableOpacity,
-  Alert, ActivityIndicator, ScrollView
+  Alert, ActivityIndicator, ScrollView, Switch
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
-import { testConnection, syncStampDictionariesFromSupabase, DEFAULT_SUPABASE_URL, DEFAULT_ANON_KEY } from '../services/supabase';
+import {
+  testConnection, syncStampDictionariesFromSupabase,
+  syncCloudPalletsOffline, getLastOfflineSyncInfo,
+  DEFAULT_SUPABASE_URL, DEFAULT_ANON_KEY
+} from '../services/supabase';
 import { getStampDictionariesCount } from '../services/database';
 import { useAuth } from '../contexts/AuthContext';
+import { isAutoSyncEnabled, setAutoSyncEnabled } from '../services/autoSync';
 
 export default function SettingsScreen({ onBack }: { onBack: () => void }) {
   const { user, logout } = useAuth();
@@ -21,6 +26,12 @@ export default function SettingsScreen({ onBack }: { onBack: () => void }) {
   const [stampRulesCount, setStampRulesCount] = useState(0);
   const [lastStampSync, setLastStampSync] = useState<string | null>(null);
   const [syncingStamp, setSyncingStamp] = useState(false);
+
+  // Offline LOT Data Sync
+  const [offlinePalletsCount, setOfflinePalletsCount] = useState(0);
+  const [lastOfflineSync, setLastOfflineSync] = useState<string | null>(null);
+  const [syncingOfflinePallets, setSyncingOfflinePallets] = useState(false);
+  const [autoSyncEnabled, setAutoSyncEnabledState] = useState(true);
 
   useEffect(() => {
     loadSettings();
@@ -39,6 +50,13 @@ export default function SettingsScreen({ onBack }: { onBack: () => void }) {
       setStampRulesCount(count);
       const lastSync = await AsyncStorage.getItem('last_stamp_sync_time');
       if (lastSync) setLastStampSync(lastSync);
+
+      const offlineInfo = await getLastOfflineSyncInfo();
+      setOfflinePalletsCount(offlineInfo.count);
+      if (offlineInfo.lastSyncedAt) setLastOfflineSync(offlineInfo.lastSyncedAt);
+
+      const autoSync = await isAutoSyncEnabled();
+      setAutoSyncEnabledState(autoSync);
     } catch {}
   }
 
@@ -77,6 +95,24 @@ export default function SettingsScreen({ onBack }: { onBack: () => void }) {
       Alert.alert('Lỗi', err.message);
     } finally {
       setSyncingStamp(false);
+    }
+  }
+
+  async function handleSyncOfflinePallets() {
+    setSyncingOfflinePallets(true);
+    try {
+      const res = await syncCloudPalletsOffline();
+      if (res.success) {
+        setOfflinePalletsCount(res.count);
+        if (res.lastSyncedAt) setLastOfflineSync(res.lastSyncedAt);
+        Alert.alert('Thành công', res.message);
+      } else {
+        Alert.alert('Không thể tải', res.message);
+      }
+    } catch (err: any) {
+      Alert.alert('Lỗi', err.message);
+    } finally {
+      setSyncingOfflinePallets(false);
     }
   }
 
@@ -193,6 +229,70 @@ export default function SettingsScreen({ onBack }: { onBack: () => void }) {
         </TouchableOpacity>
       </View>
 
+      {/* ── TẢI DANH SÁCH LOT XEM NGOẠI TUYẾN ─────── */}
+      <View style={styles.card}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+          <Ionicons name="cloud-offline-outline" size={20} color="#0ea5e9" />
+          <Text style={[styles.sectionTitle, { color: '#0ea5e9', marginBottom: 0 }]}>
+            DỮ LIỆU LOT XEM NGOẠI TUYẾN (OFFLINE)
+          </Text>
+        </View>
+
+        <Text style={{ color: '#94a3b8', fontSize: 12, lineHeight: 18, marginBottom: 12 }}>
+          Lưu trữ toàn bộ danh sách LOT và danh mục sản phẩm vào bộ nhớ máy để tra cứu, tìm kiếm và lọc khi mất sóng hoặc ở sâu trong kho lạnh.
+        </Text>
+
+        <View style={{ backgroundColor: '#0f172a', padding: 12, borderRadius: 12, marginBottom: 14, borderWidth: 1, borderColor: '#334155' }}>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 }}>
+            <Text style={{ color: '#94a3b8', fontSize: 12 }}>Số LOT lưu trong máy:</Text>
+            <Text style={{ color: '#10b981', fontSize: 13, fontWeight: '700' }}>{offlinePalletsCount} LOT</Text>
+          </View>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+            <Text style={{ color: '#94a3b8', fontSize: 12 }}>Đồng bộ lần cuối:</Text>
+            <Text style={{ color: '#cbd5e1', fontSize: 11, fontStyle: 'italic' }}>
+              {lastOfflineSync ? new Date(lastOfflineSync).toLocaleString('vi-VN') : 'Chưa tải về'}
+            </Text>
+          </View>
+        </View>
+
+        {/* Nút gạt bật/tắt tự động tải ngầm */}
+        <View style={styles.autoSyncRow}>
+          <View style={{ flex: 1, paddingRight: 10 }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <Ionicons name="sync-circle" size={17} color="#38bdf8" />
+              <Text style={styles.autoSyncLabel}>Tự động tải ngầm khi có mạng</Text>
+            </View>
+            <Text style={styles.autoSyncSub}>
+              Tự động cập nhật dữ liệu LOT & Quy tắc khi mở app hoặc khi vừa có Wi-Fi trở lại
+            </Text>
+          </View>
+          <Switch
+            value={autoSyncEnabled}
+            onValueChange={async (val) => {
+              setAutoSyncEnabledState(val);
+              await setAutoSyncEnabled(val);
+            }}
+            trackColor={{ false: '#334155', true: '#0284c7' }}
+            thumbColor={autoSyncEnabled ? '#38bdf8' : '#94a3b8'}
+          />
+        </View>
+
+        <TouchableOpacity 
+          style={{ backgroundColor: '#0284c7', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 12, borderRadius: 12 }}
+          onPress={handleSyncOfflinePallets}
+          disabled={syncingOfflinePallets}
+        >
+          {syncingOfflinePallets ? (
+            <ActivityIndicator color="#fff" size="small" />
+          ) : (
+            <Ionicons name="download-outline" size={18} color="#fff" />
+          )}
+          <Text style={{ color: '#fff', fontWeight: '700', fontSize: 13 }}>
+            {syncingOfflinePallets ? 'Đang tải dữ liệu LOT...' : 'Tải / Cập nhật dữ liệu LOT về máy'}
+          </Text>
+        </TouchableOpacity>
+      </View>
+
       {/* ── CẤU HÌNH MÁY CHỦ ─────────────────── */}
       <View style={styles.card}>
         <Text style={styles.sectionTitle}>CẤU HÌNH KẾT NỐI MÁY CHỦ</Text>
@@ -251,7 +351,7 @@ export default function SettingsScreen({ onBack }: { onBack: () => void }) {
         )}
 
         <View style={styles.versionContainer}>
-          <Text style={styles.versionText}>Phiên bản v1.0.1 (Build 2)</Text>
+          <Text style={styles.versionText}>Phiên bản v1.0.24 (Build 25)</Text>
           <Text style={styles.versionSubText}>Hệ thống Quản lý Tem & Pallet • Chánh Thu</Text>
         </View>
       </View>
@@ -375,6 +475,28 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#334155',
     fontSize: 13
+  },
+  autoSyncRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#0f172a',
+    padding: 12,
+    borderRadius: 12,
+    marginBottom: 14,
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  autoSyncLabel: {
+    color: '#f8fafc',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  autoSyncSub: {
+    color: '#94a3b8',
+    fontSize: 11,
+    marginTop: 2,
+    lineHeight: 15,
   },
   btnRow: { flexDirection: 'row', gap: 10, marginTop: 20 },
   testBtn: {

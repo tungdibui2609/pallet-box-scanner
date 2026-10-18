@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { View, StyleSheet, StatusBar, TouchableOpacity, Text, Platform, ActivityIndicator } from 'react-native';
+import React, { useState, useEffect } from 'react';
+import { View, StyleSheet, StatusBar, TouchableOpacity, Text, Platform, ActivityIndicator, AppState, AppStateStatus } from 'react-native';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import ScannerScreen from './src/screens/ScannerScreen';
@@ -8,6 +8,7 @@ import PalletListScreen from './src/screens/PalletListScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
 import LoginScreen from './src/screens/LoginScreen';
 import { AuthProvider, useAuth } from './src/contexts/AuthContext';
+import { triggerBackgroundAutoSync } from './src/services/autoSync';
 
 type AppTab = 'scanner' | 'stamp_scanner' | 'pallets' | 'settings';
 
@@ -15,6 +16,24 @@ function AppContent() {
   const insets = useSafeAreaInsets();
   const { user, isLoading } = useAuth();
   const [currentTab, setCurrentTab] = useState<AppTab>('scanner');
+
+  useEffect(() => {
+    if (!user) return;
+
+    // Tự động tải ngầm khi mở app
+    triggerBackgroundAutoSync({ reason: 'Khởi động ứng dụng', minIntervalMinutes: 5 });
+
+    // Lắng nghe khi ứng dụng từ trạng thái nền quay lại màn hình chính
+    const subscription = AppState.addEventListener('change', (nextAppState: AppStateStatus) => {
+      if (nextAppState === 'active') {
+        triggerBackgroundAutoSync({ reason: 'Quay lại ứng dụng', minIntervalMinutes: 15 });
+      }
+    });
+
+    return () => {
+      subscription.remove();
+    };
+  }, [user]);
 
   if (isLoading) {
     return (

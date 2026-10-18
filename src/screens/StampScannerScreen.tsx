@@ -12,7 +12,8 @@ import {
   getActivePallet, createNewPallet, completePallet,
   getBoxesByPallet, addStampBoxToPallet, deleteBox,
   getPalletByCode, activateExistingPallet, getStampDictionariesMap,
-  getActiveStampFormat, cloneBoxToPallet, addStampBoxesBulkToPallet
+  getActiveStampFormat, cloneBoxToPallet, addStampBoxesBulkToPallet,
+  updatePalletTag, updatePalletTagAndNotes
 } from '../services/database';
 import { parseStampText, isStampContent, decodeStamp } from '../services/stampParser';
 
@@ -28,6 +29,8 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
   // Pallet Modal
   const [isNewPalletModal, setIsNewPalletModal] = useState(false);
   const [newPalletCode, setNewPalletCode] = useState('');
+  const [newPalletTag, setNewPalletTag] = useState('');
+  const [newPalletNotes, setNewPalletNotes] = useState('');
   const [newTargetQty, setNewTargetQty] = useState('30');
 
   // Stamp Scanned Confirmation Modal
@@ -261,10 +264,22 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
       let targetPallet: Pallet;
 
       if (existing) {
+        await updatePalletTagAndNotes(existing.id, newPalletTag.trim() || null, newPalletNotes.trim() || null);
         targetPallet = (await activateExistingPallet(existing.id)) || existing;
+        targetPallet = {
+          ...targetPallet,
+          tag: newPalletTag.trim() || existing.tag,
+          notes: newPalletNotes.trim() || existing.notes
+        };
       } else {
         const qty = parseInt(newTargetQty, 10) || 30;
-        targetPallet = await createNewPallet(cleanCode, qty);
+        targetPallet = await createNewPallet(
+          cleanCode,
+          qty,
+          'KHO_DONG_LANH',
+          newPalletTag.trim() || null,
+          newPalletNotes.trim() || null
+        );
       }
 
       setActivePallet(targetPallet);
@@ -272,6 +287,8 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
       setBoxes(boxList);
       setIsNewPalletModal(false);
       setNewPalletCode('');
+      setNewPalletTag('');
+      setNewPalletNotes('');
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     } catch (e: any) {
       Alert.alert('Lỗi', e.message);
@@ -309,7 +326,13 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
         <View style={styles.palletInfoRow}>
           <TouchableOpacity
             style={styles.palletBadge}
-            onPress={() => setIsNewPalletModal(true)}
+            onPress={() => {
+              setNewPalletCode(activePallet?.code || '');
+              setNewPalletTag(activePallet?.tag || '');
+              setNewPalletNotes(activePallet?.notes || '');
+              setNewTargetQty(String(activePallet?.target_qty || 30));
+              setIsNewPalletModal(true);
+            }}
             activeOpacity={0.8}
           >
             <Ionicons name="finger-print" size={16} color="#fbbf24" />
@@ -317,6 +340,16 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
             <Text style={styles.palletCodeText}>
               {activePallet ? `STT: ${activePallet.code}` : 'Chưa chọn Pallet'}
             </Text>
+            {activePallet?.tag ? (
+              <View style={{ backgroundColor: '#ea580c', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6, marginLeft: 4 }}>
+                <Text style={{ color: '#fff', fontSize: 10, fontWeight: '800' }}>🏷️ {activePallet.tag}</Text>
+              </View>
+            ) : null}
+            {activePallet?.notes ? (
+              <View style={{ backgroundColor: '#2563eb', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6, marginLeft: 4 }}>
+                <Text style={{ color: '#fff', fontSize: 10, fontWeight: '800' }}>📝 Ghi chú</Text>
+              </View>
+            ) : null}
             <Ionicons name="chevron-down" size={14} color="#94a3b8" style={{ marginLeft: 2 }} />
           </TouchableOpacity>
 
@@ -810,6 +843,25 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
               placeholder="30"
               placeholderTextColor="#64748b"
               keyboardType="number-pad"
+            />
+
+            <Text style={styles.inputLabel}>Mã phụ (Tag):</Text>
+            <TextInput
+              style={styles.textInput}
+              value={newPalletTag}
+              onChangeText={setNewPalletTag}
+              placeholder="Ví dụ: OEM-A, XK-HQ, HÀNG LOẠI 1..."
+              placeholderTextColor="#64748b"
+              autoCapitalize="characters"
+            />
+
+            <Text style={styles.inputLabel}>Ghi chú Pallet / LOT hàng:</Text>
+            <TextInput
+              style={[styles.textInput, { minHeight: 44 }]}
+              value={newPalletNotes}
+              onChangeText={setNewPalletNotes}
+              placeholder="Nhập ghi chú cho LOT hàng (nếu có)..."
+              placeholderTextColor="#64748b"
             />
 
             <View style={styles.modalActions}>
