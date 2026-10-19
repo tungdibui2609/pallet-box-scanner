@@ -62,12 +62,28 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
   const [onlyShowMatches, setOnlyShowMatches] = useState(false);
 
   // Search state
+  const [searchInput, setSearchInput] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [activeView, setActiveView] = useState<'map' | 'search_list'>('map');
   const [searchFilterWhId, setSearchFilterWhId] = useState<string>('all');
   const [searchFilterStatus, setSearchFilterStatus] = useState<'all' | 'occupied' | 'empty'>('all');
   const [searchPageLimit, setSearchPageLimit] = useState<number>(50);
   const [highlightedPosId, setHighlightedPosId] = useState<string | null>(null);
+
+  // Debounce search query update (180ms) for 60fps instant typing on mobile
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      const trimmed = searchInput.trim();
+      setSearchQuery(trimmed);
+      if (trimmed) {
+        setActiveView('search_list');
+        setSearchPageLimit(50);
+      } else {
+        setActiveView('map');
+      }
+    }, 180);
+    return () => clearTimeout(timer);
+  }, [searchInput]);
 
   // Modal detail
   const [selectedPosDetail, setSelectedPosDetail] = useState<PositionItem | null>(null);
@@ -79,10 +95,9 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
 
   // ── Fetch Master Data (Zones, Positions, Lots) ─────────────────
   const loadMapData = useCallback(async (isSilent = false) => {
-    if (!isSilent) setLoading(true);
-    else setRefreshing(true);
+    let hasCache = false;
 
-    // 1. Initial cached fallback if not loaded yet
+    // 1. Initial cached fallback - display immediately so mobile map opens in 0s!
     try {
       const offline = await getWarehouseMapOfflineData();
       if (offline && offline.zones && offline.zones.length > 0) {
@@ -92,12 +107,20 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
         if (!selectedWarehouseId) {
           setSelectedWarehouseId('all');
         }
+        hasCache = true;
+        setLoading(false);
+        setRefreshing(true);
       }
     } catch {
       // ignore
     }
 
-    // 2. Fetch fresh online & auto-cache
+    if (!hasCache) {
+      if (!isSilent) setLoading(true);
+      else setRefreshing(true);
+    }
+
+    // 2. Fetch fresh online & auto-cache in background
     try {
       const res = await syncWarehouseMapOffline();
       if (res.success) {
@@ -186,75 +209,135 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
 
   const isSearchActive = searchQuery.trim().length > 0;
 
-  // Full path helper: Kho > Dãy > Ô > Tầng
+  // ── Pre-compute Zone Descendants Map & Full Paths ONCE (O(1) lookups) ──
+  const { zoneDescendantsMap, zonePathMap } = useMemo(() => {
+    const rzMap = new Map(zones.map(z => [z.id, z]));
+
+    // 1. Precompute full path string for every real zone: Kho > Dãy > Ô > Tầng
+    const pathMap = new Map<string, string>();
+    zones.forEach(z => {
+      const names: string[] = [];
+      let curr: ZoneItem | undefined = z;
+      while (curr) {
+        names.unshift(curr.name);
+        curr = curr.parent_id ? rzMap.get(curr.parent_id) : undefined;
+      }
+      pathMap.set(z.id, names.join(' > '));
+    });
+
+    // 2. Precompute children map for tree traversal
+    const childrenMap = new Map<string, string[]>();
+    zones.forEach(z => {
+      if (z.parent_id) {
+        const list = childrenMap.get(z.parent_id) || [];
+        list.push(z.id);
+        childrenMap.set(z.parent_id, list);
+      }
+    });
+
+    const getRealChildren = (parentId: string): string[] => {
+      const result: string[] = [];
+      const stack = [parentId];
+      while (stack.length > 0) {
+        const curr = stack.pop()!;
+        const kids = childrenMap.get(curr);
+        if (kids) {
+          for (let i = 0; i < kids.length; i++) {
+            result.push(kids[i]);
+            stack.push(kids[i]);
+          }
+        }
+      }
+      return result;
+    };
+
+    // 3. Precompute descendant set for all active zones (including virtual/grouped ones)
+    const descMap = new Map<string, Set<string>>();
+    activeZones.forEach(z => {
+      const realIds = virtualToRealMap.get(z.id) || [z.id];
+      const allDesc = new Set<string>(realIds);
+      realIds.forEach(rid => {
+        const children = getRealChildren(rid);
+        for (let i = 0; i < children.length; i++) {
+          allDesc.add(children[i]);
+        }
+      });
+      descMap.set(z.id, allDesc);
+    });
+
+    return { zoneDescendantsMap: descMap, zonePathMap: pathMap };
+  }, [zones, activeZones, virtualToRealMap]);
+
+  // Helper to get ALL real zone descendants (O(1) lookup)
+  const getDescendantZoneIds = useCallback(
+    (targetZoneId: string): Set<string> => {
+      return zoneDescendantsMap.get(targetZoneId) || new Set<string>([targetZoneId]);
+    },
+    [zoneDescendantsMap]
+  );
+
+  // Full path helper: Kho > Dãy > Ô > Tầng (O(1) lookup)
   const getPositionPath = useCallback(
     (pos: PositionItem) => {
       const leafZoneId = pos.zone_ids[0];
       if (!leafZoneId) return pos.code;
-      const realZoneMap = new Map(zones.map(z => [z.id, z]));
-      let curr = realZoneMap.get(leafZoneId);
-      const names: string[] = [];
-      while (curr) {
-        names.unshift(curr.name);
-        curr = curr.parent_id ? realZoneMap.get(curr.parent_id) : undefined;
-      }
-      return names.join(' > ') || pos.code;
+      return zonePathMap.get(leafZoneId) || pos.code;
     },
-    [zones]
+    [zonePathMap]
   );
 
+  // ── Search & Filter Logic (High Performance with Pre-Scoring) ──
   const matchingPositions = useMemo(() => {
     const q = searchQuery.trim();
-    if (!q) return [];
-    return positions.filter(p => matchPalletSearch(p, q));
+    if (!q || q.length < 1) return [];
+
+    const matched: { pos: PositionItem; score: number }[] = [];
+    for (let i = 0; i < positions.length; i++) {
+      const p = positions[i];
+      if (matchPalletSearch(p, q)) {
+        const score = calculateSearchScore(p, q, {
+          name: p.product_name,
+          code: p.code,
+          lot_code: p.lot_code,
+          aliases: p.aliases
+        });
+        matched.push({ pos: p, score });
+      }
+    }
+
+    matched.sort((a, b) => b.score - a.score);
+    return matched.map(m => m.pos);
   }, [searchQuery, positions]);
 
   const matchingPosIds = useMemo(() => {
     return new Set(matchingPositions.map(p => p.id));
   }, [matchingPositions]);
 
-  const getDescendantZoneIds = useCallback(
-    (targetZoneId: string): string[] => {
-      const directMembers = virtualToRealMap.get(targetZoneId) || [targetZoneId];
-      const allRealIds = new Set<string>(directMembers);
-      let added = true;
-      while (added) {
-        added = false;
-        for (const z of zones) {
-          if (z.parent_id && allRealIds.has(z.parent_id) && !allRealIds.has(z.id)) {
-            allRealIds.add(z.id);
-            added = true;
-          }
-        }
-      }
-      return Array.from(allRealIds);
-    },
-    [zones, virtualToRealMap]
-  );
-
-  // Match count per zone
+  // Fast match count per zone (only loops over matching positions, NOT all positions)
   const zoneMatchCountMap = useMemo(() => {
     const map = new Map<string, number>();
-    if (!isSearchActive || matchingPositions.length === 0) return map;
+    if (!isSearchActive || activeZones.length === 0 || matchingPositions.length === 0) return map;
 
     activeZones.forEach(z => {
-      const descIds = new Set(getDescendantZoneIds(z.id));
+      const descSet = zoneDescendantsMap.get(z.id);
+      if (!descSet) return;
       let count = 0;
-      matchingPositions.forEach(p => {
-        if (p.zone_ids.some(zid => descIds.has(zid))) {
+      for (let i = 0; i < matchingPositions.length; i++) {
+        const p = matchingPositions[i];
+        if (p.zone_ids.some(zid => descSet.has(zid))) {
           count++;
         }
-      });
-      map.set(z.id, count);
+      }
+      if (count > 0) map.set(z.id, count);
     });
 
     return map;
-  }, [isSearchActive, matchingPositions, activeZones, getDescendantZoneIds]);
+  }, [isSearchActive, matchingPositions, activeZones, zoneDescendantsMap]);
 
   const filteredSearchResults = useMemo(() => {
     let list = matchingPositions;
     if (searchFilterWhId !== 'all') {
-      const descIds = new Set(getDescendantZoneIds(searchFilterWhId));
+      const descIds = getDescendantZoneIds(searchFilterWhId);
       list = list.filter(p => p.zone_ids.some(zid => descIds.has(zid)));
     }
     if (searchFilterStatus === 'occupied') {
@@ -320,22 +403,25 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
     );
   }, [activeZones, selectedSlotId]);
 
-  // ── Stats Calculator per Zone ──────────────────────────────────
+  // ── Stats Calculator per Zone (O(1) Set Lookups) ───────────────
   const zoneStatsMap = useMemo(() => {
     const map = new Map<string, { total: number; occupied: number; empty: number }>();
     if (activeZones.length === 0 || positions.length === 0) return map;
 
     activeZones.forEach(z => {
-      const descIds = new Set(getDescendantZoneIds(z.id));
+      const descSet = zoneDescendantsMap.get(z.id);
       let total = 0;
       let occupied = 0;
 
-      positions.forEach(p => {
-        if (p.zone_ids.some(zid => descIds.has(zid))) {
-          total++;
-          if (p.lot_id) occupied++;
+      if (descSet) {
+        for (let i = 0; i < positions.length; i++) {
+          const p = positions[i];
+          if (p.zone_ids.some(zid => descSet.has(zid))) {
+            total++;
+            if (p.lot_id) occupied++;
+          }
         }
-      });
+      }
 
       map.set(z.id, {
         total,
@@ -345,15 +431,14 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
     });
 
     return map;
-  }, [activeZones, positions, getDescendantZoneIds]);
+  }, [activeZones, positions, zoneDescendantsMap]);
 
   // Current positions in Slot / Tier view (fix: selectedTierId uses getDescendantZoneIds)
   const currentPositions = useMemo(() => {
     if (!selectedSlotId) return [];
 
-    const targetZoneIds = new Set(
-      getDescendantZoneIds(selectedTierId || selectedSlotId)
-    );
+    const targetZoneId = selectedTierId || selectedSlotId;
+    const targetZoneIds = getDescendantZoneIds(targetZoneId);
 
     let filtered = positions.filter(p =>
       p.zone_ids.some(zid => targetZoneIds.has(zid))
@@ -373,7 +458,7 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
     if (!selectedSlotId || selectedTierId) return null;
     const map = new Map<string, typeof positions>();
     tiers.forEach(tier => {
-      const tierZoneIds = new Set(getDescendantZoneIds(tier.id));
+      const tierZoneIds = getDescendantZoneIds(tier.id);
       let posInTier = positions
         .filter(p => p.zone_ids.some(zid => tierZoneIds.has(zid)));
       if (onlyShowMatches && isSearchActive) {
@@ -539,23 +624,25 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
           <Ionicons name="search" size={16} color="#94a3b8" style={styles.searchIcon} />
           <TextInput
             style={styles.searchInput}
-            value={searchQuery}
-            onChangeText={txt => {
-              setSearchQuery(txt);
-              if (txt.trim().length > 0) {
+            value={searchInput}
+            onChangeText={txt => setSearchInput(txt)}
+            onSubmitEditing={() => {
+              const val = searchInput.trim();
+              setSearchQuery(val);
+              if (val.length > 0) {
                 setActiveView('search_list');
                 setSearchPageLimit(50);
-              } else {
-                setActiveView('map');
               }
             }}
+            returnKeyType="search"
             placeholder="Tìm theo STT (G22...), Mã Vị Trí, LOT, SP..."
             placeholderTextColor="#64748b"
             autoCapitalize="characters"
           />
-          {searchQuery.length > 0 && (
+          {searchInput.length > 0 && (
             <TouchableOpacity
               onPress={() => {
+                setSearchInput('');
                 setSearchQuery('');
                 setActiveView('map');
                 setHighlightedPosId(null);
@@ -595,6 +682,7 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
           <TouchableOpacity
             style={styles.clearSearchTextBtn}
             onPress={() => {
+              setSearchInput('');
               setSearchQuery('');
               setActiveView('map');
               setHighlightedPosId(null);
