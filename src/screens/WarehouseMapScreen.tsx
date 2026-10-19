@@ -189,10 +189,13 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
     return sortZones(activeZones.filter(z => z.parent_id === selectedAisleId));
   }, [activeZones, selectedAisleId]);
 
-  // Tiers -> Tầng của Ô gộp
+  // Tiers -> Tầng của Ô gộp (Sắp xếp từ tầng cao nhất xuống tầng thấp nhất như kệ thực tế: Tầng 5 -> 4 -> 3 -> 2 -> 1)
   const tiers = useMemo(() => {
     if (!selectedSlotId) return [];
-    return sortZones(activeZones.filter(z => z.parent_id === selectedSlotId));
+    const list = activeZones.filter(z => z.parent_id === selectedSlotId);
+    return list.sort((a, b) =>
+      (b.name || '').localeCompare(a.name || '', undefined, { numeric: true })
+    );
   }, [activeZones, selectedSlotId]);
 
   const getDescendantZoneIds = useCallback(
@@ -241,16 +244,13 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
     return map;
   }, [activeZones, positions, getDescendantZoneIds]);
 
-  // Current positions in Slot / Tier view
+  // Current positions in Slot / Tier view (fix: selectedTierId uses getDescendantZoneIds)
   const currentPositions = useMemo(() => {
     if (!selectedSlotId) return [];
 
-    let targetZoneIds: Set<string>;
-    if (selectedTierId) {
-      targetZoneIds = new Set([selectedTierId]);
-    } else {
-      targetZoneIds = new Set(getDescendantZoneIds(selectedSlotId));
-    }
+    const targetZoneIds = new Set(
+      getDescendantZoneIds(selectedTierId || selectedSlotId)
+    );
 
     const filtered = positions.filter(p =>
       p.zone_ids.some(zid => targetZoneIds.has(zid))
@@ -260,6 +260,20 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
       a.code.localeCompare(b.code, undefined, { numeric: true })
     );
   }, [selectedSlotId, selectedTierId, positions, getDescendantZoneIds]);
+
+  // Group positions by tier when viewing all tiers in a Slot
+  const tierPositionsMap = useMemo(() => {
+    if (!selectedSlotId || selectedTierId) return null;
+    const map = new Map<string, typeof positions>();
+    tiers.forEach(tier => {
+      const tierZoneIds = new Set(getDescendantZoneIds(tier.id));
+      const posInTier = positions
+        .filter(p => p.zone_ids.some(zid => tierZoneIds.has(zid)))
+        .sort((a, b) => a.code.localeCompare(b.code, undefined, { numeric: true }));
+      map.set(tier.id, posInTier);
+    });
+    return map;
+  }, [selectedSlotId, selectedTierId, tiers, positions, getDescendantZoneIds]);
 
   // ── Search & Jump to Position ──────────────────────────────────
   const searchResults = useMemo(() => {
@@ -711,9 +725,101 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
             </ScrollView>
           </View>
 
-          {/* Positions Grid */}
+          {/* Positions Grid & Shelves */}
           <ScrollView contentContainerStyle={styles.positionsGridPadding}>
-            {currentPositions.length === 0 ? (
+            {!selectedTierId ? (
+              /* Khi xem tất cả tầng: Hiển thị dạng KỆ KHO từng TẦNG (từ trên xuống: Tầng 5 -> Tầng 1) */
+              <View style={styles.tierShelvesContainer}>
+                {tiers.map(tier => {
+                  const tierPositions = tierPositionsMap?.get(tier.id) || [];
+                  const stats = zoneStatsMap.get(tier.id) || { total: 0, occupied: 0, empty: 0 };
+                  const pct = stats.total > 0 ? Math.round((stats.occupied / stats.total) * 100) : 0;
+
+                  return (
+                    <View key={tier.id} style={styles.tierShelfCard}>
+                      <TouchableOpacity
+                        style={styles.tierShelfHeader}
+                        onPress={() => setSelectedTierId(tier.id)}
+                      >
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                          <View style={styles.tierBadge}>
+                            <Text style={styles.tierBadgeText}>{tier.name}</Text>
+                          </View>
+                          <Text style={styles.tierOccupancyText}>
+                            {stats.occupied}/{stats.total} vị trí ({pct}%)
+                          </Text>
+                        </View>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 3 }}>
+                          <Text style={styles.tierFocusLink}>Xem riêng</Text>
+                          <Ionicons name="chevron-forward" size={13} color="#38bdf8" />
+                        </View>
+                      </TouchableOpacity>
+
+                      {tierPositions.length === 0 ? (
+                        <Text style={styles.emptyTierText}>Chưa có vị trí nào trong tầng này</Text>
+                      ) : (
+                        <View style={styles.positionsGrid}>
+                          {tierPositions.map(pos => {
+                            const isOccupied = !!pos.lot_id;
+                            const isHigh = pos.id === highlightedPosId;
+
+                            return (
+                              <TouchableOpacity
+                                key={pos.id}
+                                style={[
+                                  styles.posCard,
+                                  isOccupied ? styles.posCardOccupied : styles.posCardEmpty,
+                                  isHigh && styles.posCardHighlighted
+                                ]}
+                                onPress={() => {
+                                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                                  setSelectedPosDetail(pos);
+                                }}
+                              >
+                                <View style={styles.posCardHeader}>
+                                  <Text style={styles.posCodeText} numberOfLines={1}>{pos.code}</Text>
+                                  {isOccupied ? (
+                                    <View style={styles.posSttBadge}>
+                                      <Text style={styles.posSttBadgeText} numberOfLines={1}>
+                                        {pos.stt ? `#${pos.stt}` : 'LOT'}
+                                      </Text>
+                                    </View>
+                                  ) : (
+                                    <View style={styles.posEmptyBadge}>
+                                      <Text style={styles.posEmptyBadgeText}>TRỐNG</Text>
+                                    </View>
+                                  )}
+                                </View>
+
+                                {isOccupied ? (
+                                  <View style={{ gap: 2 }}>
+                                    <Text style={styles.posProdTitle} numberOfLines={1}>
+                                      {pos.product_name || 'Hàng đông lạnh'}
+                                    </Text>
+                                    <View style={styles.posBottomMeta}>
+                                      <Text style={styles.posLotText} numberOfLines={1}>
+                                        {pos.lot_code || '---'}
+                                      </Text>
+                                      {pos.quantity ? (
+                                        <Text style={styles.posQtyText}>{pos.quantity} Thùng</Text>
+                                      ) : null}
+                                    </View>
+                                  </View>
+                                ) : (
+                                  <View style={styles.emptySlotHint}>
+                                    <Text style={styles.emptySlotHintText}>+ Trống</Text>
+                                  </View>
+                                )}
+                              </TouchableOpacity>
+                            );
+                          })}
+                        </View>
+                      )}
+                    </View>
+                  );
+                })}
+              </View>
+            ) : currentPositions.length === 0 ? (
               <View style={{ paddingVertical: 40, alignItems: 'center' }}>
                 <Text style={{ color: '#64748b', fontSize: 13 }}>Chưa có vị trí nào trong khu vực này</Text>
               </View>
@@ -737,11 +843,11 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
                       }}
                     >
                       <View style={styles.posCardHeader}>
-                        <Text style={styles.posCodeText}>{pos.code}</Text>
+                        <Text style={styles.posCodeText} numberOfLines={1}>{pos.code}</Text>
                         {isOccupied ? (
                           <View style={styles.posSttBadge}>
-                            <Text style={styles.posSttBadgeText}>
-                              STT: {pos.stt || 'LOT'}
+                            <Text style={styles.posSttBadgeText} numberOfLines={1}>
+                              {pos.stt ? `#${pos.stt}` : 'LOT'}
                             </Text>
                           </View>
                         ) : (
@@ -753,7 +859,7 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
 
                       {isOccupied ? (
                         <View style={{ gap: 2 }}>
-                          <Text style={styles.posProdTitle} numberOfLines={2}>
+                          <Text style={styles.posProdTitle} numberOfLines={1}>
                             {pos.product_name || 'Hàng đông lạnh'}
                           </Text>
                           <View style={styles.posBottomMeta}>
@@ -1241,20 +1347,68 @@ const styles = StyleSheet.create({
   tierTabTextActive: {
     color: '#0f172a'
   },
+  tierShelvesContainer: {
+    gap: 12
+  },
+  tierShelfCard: {
+    backgroundColor: '#0f172a',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#1e293b',
+    padding: 10,
+    gap: 8
+  },
+  tierShelfHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingBottom: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: '#1e293b'
+  },
+  tierBadge: {
+    backgroundColor: '#0284c722',
+    borderColor: '#0284c788',
+    borderWidth: 1,
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 6
+  },
+  tierBadgeText: {
+    color: '#38bdf8',
+    fontSize: 11,
+    fontWeight: '800'
+  },
+  tierOccupancyText: {
+    color: '#94a3b8',
+    fontSize: 11,
+    fontWeight: '600'
+  },
+  tierFocusLink: {
+    color: '#38bdf8',
+    fontSize: 11,
+    fontWeight: '700'
+  },
+  emptyTierText: {
+    color: '#64748b',
+    fontSize: 11,
+    textAlign: 'center',
+    paddingVertical: 8
+  },
   positionsGridPadding: {
     padding: 12
   },
   positionsGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 10
+    gap: 8
   },
   posCard: {
-    width: '48%',
-    padding: 10,
-    borderRadius: 14,
+    width: '48.5%',
+    padding: 8,
+    borderRadius: 12,
     borderWidth: 1,
-    gap: 6
+    gap: 4
   },
   posCardEmpty: {
     backgroundColor: '#0f172a99',
@@ -1273,38 +1427,42 @@ const styles = StyleSheet.create({
   posCardHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between'
+    justifyContent: 'space-between',
+    gap: 4
   },
   posCodeText: {
     color: '#ffffff',
-    fontSize: 11,
-    fontWeight: '900',
+    fontSize: 10.5,
+    fontWeight: '800',
+    flex: 1,
     fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace'
   },
   posSttBadge: {
     backgroundColor: '#f59e0b22',
     borderWidth: 1,
-    borderColor: '#f59e0b66',
-    paddingHorizontal: 5,
+    borderColor: '#f59e0b88',
+    paddingHorizontal: 4,
     paddingVertical: 1,
-    borderRadius: 4
+    borderRadius: 4,
+    flexShrink: 0
   },
   posSttBadgeText: {
     color: '#fbbf24',
-    fontSize: 9,
+    fontSize: 8.5,
     fontWeight: '900'
   },
   posEmptyBadge: {
-    backgroundColor: '#10b98122',
+    backgroundColor: '#10b98118',
     borderWidth: 1,
-    borderColor: '#10b98166',
-    paddingHorizontal: 5,
+    borderColor: '#10b98155',
+    paddingHorizontal: 4,
     paddingVertical: 1,
-    borderRadius: 4
+    borderRadius: 4,
+    flexShrink: 0
   },
   posEmptyBadgeText: {
     color: '#34d399',
-    fontSize: 9,
+    fontSize: 8.5,
     fontWeight: '700'
   },
   posProdTitle: {
@@ -1331,12 +1489,12 @@ const styles = StyleSheet.create({
     fontWeight: '700'
   },
   emptySlotHint: {
-    paddingVertical: 8,
+    paddingVertical: 4,
     alignItems: 'center'
   },
   emptySlotHintText: {
     color: '#34d39999',
-    fontSize: 10,
+    fontSize: 9.5,
     fontWeight: '600'
   },
   modalOverlay: {
