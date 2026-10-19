@@ -63,7 +63,10 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
 
   // Search state
   const [searchQuery, setSearchQuery] = useState('');
-  const [isSearching, setIsSearching] = useState(false);
+  const [activeView, setActiveView] = useState<'map' | 'search_list'>('map');
+  const [searchFilterWhId, setSearchFilterWhId] = useState<string>('all');
+  const [searchFilterStatus, setSearchFilterStatus] = useState<'all' | 'occupied' | 'empty'>('all');
+  const [searchPageLimit, setSearchPageLimit] = useState<number>(50);
   const [highlightedPosId, setHighlightedPosId] = useState<string | null>(null);
 
   // Modal detail
@@ -248,6 +251,30 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
     return map;
   }, [isSearchActive, matchingPositions, activeZones, getDescendantZoneIds]);
 
+  const filteredSearchResults = useMemo(() => {
+    let list = matchingPositions;
+    if (searchFilterWhId !== 'all') {
+      const descIds = new Set(getDescendantZoneIds(searchFilterWhId));
+      list = list.filter(p => p.zone_ids.some(zid => descIds.has(zid)));
+    }
+    if (searchFilterStatus === 'occupied') {
+      list = list.filter(p => !!p.lot_id);
+    } else if (searchFilterStatus === 'empty') {
+      list = list.filter(p => !p.lot_id);
+    }
+    return list;
+  }, [matchingPositions, searchFilterWhId, searchFilterStatus, getDescendantZoneIds]);
+
+  const searchStats = useMemo(() => {
+    let occupied = 0;
+    let empty = 0;
+    matchingPositions.forEach(p => {
+      if (p.lot_id) occupied++;
+      else empty++;
+    });
+    return { total: matchingPositions.length, occupied, empty };
+  }, [matchingPositions]);
+
   const aisles = useMemo(() => {
     let list: ZoneItem[] = [];
     if (!selectedWarehouseId || selectedWarehouseId === 'all') {
@@ -413,9 +440,13 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
     }
 
     setHighlightedPosId(pos.id);
-    setIsSearching(false);
     setSelectedPosDetail(pos);
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+  };
+
+  const handleJumpToMap = (pos: PositionItem) => {
+    handleSelectSearchResult(pos);
+    setActiveView('map');
   };
 
   const getZoneName = (id: string | null) => {
@@ -502,7 +533,7 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
         </View>
       )}
 
-      {/* ── SEARCH BAR WITH AUTOCOMPLETE ───────────────────────── */}
+      {/* ── SEARCH BAR ────────────────────────────────────────── */}
       <View style={styles.searchSection}>
         <View style={styles.searchInputWrap}>
           <Ionicons name="search" size={16} color="#94a3b8" style={styles.searchIcon} />
@@ -511,7 +542,12 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
             value={searchQuery}
             onChangeText={txt => {
               setSearchQuery(txt);
-              setIsSearching(true);
+              if (txt.trim().length > 0) {
+                setActiveView('search_list');
+                setSearchPageLimit(50);
+              } else {
+                setActiveView('map');
+              }
             }}
             placeholder="Tìm theo STT (G22...), Mã Vị Trí, LOT, SP..."
             placeholderTextColor="#64748b"
@@ -521,7 +557,8 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
             <TouchableOpacity
               onPress={() => {
                 setSearchQuery('');
-                setIsSearching(false);
+                setActiveView('map');
+                setHighlightedPosId(null);
               }}
               style={styles.clearSearchBtn}
             >
@@ -529,160 +566,108 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
             </TouchableOpacity>
           )}
         </View>
-
-        {/* Dropdown Results */}
-        {isSearching && searchQuery.trim().length > 0 && (
-          <View style={styles.searchResultsDropdown}>
-            <View style={styles.dropdownHeader}>
-              <Text style={styles.dropdownHeaderText}>
-                Kết quả ({searchResults.length}) - Bấm để nhảy tới vị trí
-              </Text>
-            </View>
-            {searchResults.length === 0 ? (
-              <View style={{ padding: 16, alignItems: 'center' }}>
-                <Text style={{ color: '#64748b', fontSize: 12 }}>
-                  Không tìm thấy vị trí hoặc Pallet nào
-                </Text>
-              </View>
-            ) : (
-              <ScrollView style={{ maxHeight: 220 }} keyboardShouldPersistTaps="handled">
-                {searchResults.map(p => (
-                  <TouchableOpacity
-                    key={p.id}
-                    style={styles.dropdownItem}
-                    onPress={() => handleSelectSearchResult(p)}
-                  >
-                    <View style={{ flex: 1 }}>
-                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                        <Text style={styles.dropdownItemCode}>📍 {p.code}</Text>
-                        {p.stt ? (
-                          <View style={styles.itemSttBadge}>
-                            <Text style={styles.itemSttText}>STT: {p.stt}</Text>
-                          </View>
-                        ) : (
-                          <View style={styles.itemEmptyBadge}>
-                            <Text style={styles.itemEmptyText}>TRỐNG</Text>
-                          </View>
-                        )}
-                      </View>
-                      <Text style={styles.dropdownItemPath} numberOfLines={1}>
-                        {getPositionPath(p)}
-                      </Text>
-                      {p.lot_code && (
-                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 2, flexWrap: 'wrap' }}>
-                          <Text style={[styles.dropdownItemLot, { flexShrink: 1 }]} numberOfLines={1}>
-                            {p.product_name || p.lot_code}
-                          </Text>
-                          {p.aliases ? (
-                            <View style={{ backgroundColor: '#064e3b', paddingHorizontal: 4, paddingVertical: 1, borderRadius: 4, borderWidth: 1, borderColor: '#10b98144' }}>
-                              <Text style={{ color: '#6ee7b7', fontSize: 9, fontWeight: '700' }}>⚡ {p.aliases}</Text>
-                            </View>
-                          ) : null}
-                        </View>
-                      )}
-                    </View>
-                    <Ionicons name="chevron-forward" size={16} color="#64748b" />
-                  </TouchableOpacity>
-                ))}
-              </ScrollView>
-            )}
-          </View>
-        )}
       </View>
 
-      {/* ── SEARCH MATCH BANNER ─────────────────────────────────── */}
+      {/* ── SEARCH VIEW TABS: DANH SÁCH vs SƠ ĐỒ ────────────────── */}
       {isSearchActive && (
-        <View style={styles.searchBanner}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 }}>
-            <Ionicons name="filter" size={14} color="#f59e0b" />
-            <Text style={styles.searchBannerText} numberOfLines={1}>
-              Tìm thấy <Text style={styles.searchBannerCount}>{matchingPositions.length}</Text> vị trí khớp với "{searchQuery}"
-            </Text>
-          </View>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-            {matchingPositions.length > 0 && (
-              <TouchableOpacity
-                style={styles.searchBannerActionBtn}
-                onPress={() => {
-                  handleSelectSearchResult(matchingPositions[0]);
-                }}
-              >
-                <Text style={styles.searchBannerActionText}>Xem</Text>
-              </TouchableOpacity>
-            )}
+        <View style={styles.searchTabsBar}>
+          <View style={styles.searchTabsGroup}>
             <TouchableOpacity
-              style={styles.searchBannerCloseBtn}
-              onPress={() => {
-                setSearchQuery('');
-                setIsSearching(false);
-              }}
+              style={[styles.searchTabBtn, activeView === 'search_list' && styles.searchTabBtnActive]}
+              onPress={() => setActiveView('search_list')}
             >
-              <Ionicons name="close" size={14} color="#94a3b8" />
+              <Ionicons name="list" size={13} color={activeView === 'search_list' ? '#0f172a' : '#94a3b8'} />
+              <Text style={[styles.searchTabBtnText, activeView === 'search_list' && styles.searchTabBtnTextActive]}>
+                Danh sách ({matchingPositions.length})
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.searchTabBtn, activeView === 'map' && styles.searchTabBtnActive]}
+              onPress={() => setActiveView('map')}
+            >
+              <Ionicons name="map" size={13} color={activeView === 'map' ? '#0f172a' : '#94a3b8'} />
+              <Text style={[styles.searchTabBtnText, activeView === 'map' && styles.searchTabBtnTextActive]}>
+                Sơ đồ kho
+              </Text>
             </TouchableOpacity>
           </View>
+
+          <TouchableOpacity
+            style={styles.clearSearchTextBtn}
+            onPress={() => {
+              setSearchQuery('');
+              setActiveView('map');
+              setHighlightedPosId(null);
+            }}
+          >
+            <Ionicons name="close" size={13} color="#94a3b8" />
+            <Text style={styles.clearSearchLabel}>Xóa</Text>
+          </TouchableOpacity>
         </View>
       )}
 
-      {/* ── BREADCRUMB NAVIGATION (Kho > Dãy > Ô > Tầng) ───────── */}
-      <View style={styles.breadcrumbBar}>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.breadcrumbScroll}>
-          <TouchableOpacity
-            style={[styles.crumbBtn, !selectedAisleId && styles.crumbBtnActive]}
-            onPress={() => {
-              setSelectedAisleId(null);
-              setSelectedSlotId(null);
-              setSelectedTierId(null);
-            }}
-          >
-            <Ionicons name="business" size={12} color={!selectedAisleId ? '#0f172a' : '#cbd5e1'} />
-            <Text style={[styles.crumbText, !selectedAisleId && styles.crumbTextActive]}>
-              {getZoneName(selectedWarehouseId) || 'Tất cả Kho'}
-            </Text>
-          </TouchableOpacity>
+      {/* ── BREADCRUMB NAVIGATION (Only on Map view) ───────────── */}
+      {activeView === 'map' && (
+        <View style={styles.breadcrumbBar}>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.breadcrumbScroll}>
+            <TouchableOpacity
+              style={[styles.crumbBtn, !selectedAisleId && styles.crumbBtnActive]}
+              onPress={() => {
+                setSelectedAisleId(null);
+                setSelectedSlotId(null);
+                setSelectedTierId(null);
+              }}
+            >
+              <Ionicons name="business" size={12} color={!selectedAisleId ? '#0f172a' : '#cbd5e1'} />
+              <Text style={[styles.crumbText, !selectedAisleId && styles.crumbTextActive]}>
+                {getZoneName(selectedWarehouseId) || 'Tất cả Kho'}
+              </Text>
+            </TouchableOpacity>
 
-          {selectedAisleId && (
-            <>
-              <Ionicons name="chevron-forward" size={12} color="#64748b" />
-              <TouchableOpacity
-                style={[styles.crumbBtn, !selectedSlotId && styles.crumbBtnActive]}
-                onPress={() => {
-                  setSelectedSlotId(null);
-                  setSelectedTierId(null);
-                }}
-              >
-                <Text style={[styles.crumbText, !selectedSlotId && styles.crumbTextActive]}>
-                  {getZoneName(selectedAisleId)}
-                </Text>
-              </TouchableOpacity>
-            </>
-          )}
+            {selectedAisleId && (
+              <>
+                <Ionicons name="chevron-forward" size={12} color="#64748b" />
+                <TouchableOpacity
+                  style={[styles.crumbBtn, !selectedSlotId && styles.crumbBtnActive]}
+                  onPress={() => {
+                    setSelectedSlotId(null);
+                    setSelectedTierId(null);
+                  }}
+                >
+                  <Text style={[styles.crumbText, !selectedSlotId && styles.crumbTextActive]}>
+                    {getZoneName(selectedAisleId)}
+                  </Text>
+                </TouchableOpacity>
+              </>
+            )}
 
-          {selectedSlotId && (
-            <>
-              <Ionicons name="chevron-forward" size={12} color="#64748b" />
-              <TouchableOpacity
-                style={[styles.crumbBtn, !selectedTierId && styles.crumbBtnActive]}
-                onPress={() => setSelectedTierId(null)}
-              >
-                <Text style={[styles.crumbText, !selectedTierId && styles.crumbTextActive]}>
-                  {getZoneName(selectedSlotId)}
-                </Text>
-              </TouchableOpacity>
-            </>
-          )}
+            {selectedSlotId && (
+              <>
+                <Ionicons name="chevron-forward" size={12} color="#64748b" />
+                <TouchableOpacity
+                  style={[styles.crumbBtn, !selectedTierId && styles.crumbBtnActive]}
+                  onPress={() => setSelectedTierId(null)}
+                >
+                  <Text style={[styles.crumbText, !selectedTierId && styles.crumbTextActive]}>
+                    {getZoneName(selectedSlotId)}
+                  </Text>
+                </TouchableOpacity>
+              </>
+            )}
 
-          {selectedTierId && (
-            <>
-              <Ionicons name="chevron-forward" size={12} color="#64748b" />
-              <View style={[styles.crumbBtn, styles.crumbBtnActive]}>
-                <Text style={[styles.crumbText, styles.crumbTextActive]}>
-                  {getZoneName(selectedTierId)}
-                </Text>
-              </View>
-            </>
-          )}
-        </ScrollView>
-      </View>
+            {selectedTierId && (
+              <>
+                <Ionicons name="chevron-forward" size={12} color="#64748b" />
+                <View style={[styles.crumbBtn, styles.crumbBtnActive]}>
+                  <Text style={[styles.crumbText, styles.crumbTextActive]}>
+                    {getZoneName(selectedTierId)}
+                  </Text>
+                </View>
+              </>
+            )}
+          </ScrollView>
+        </View>
+      )}
 
       {/* ── MAIN CONTENT ──────────────────────────────────────── */}
       {loading ? (
@@ -690,15 +675,236 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
           <ActivityIndicator size="large" color="#38bdf8" />
           <Text style={styles.loadingText}>Đang tải sơ đồ kho...</Text>
         </View>
-      ) : !selectedAisleId ? (
-        /* ── LEVEL 1: DANH SÁCH DÃY / SẢNH ─────────────────────── */
+      ) : isSearchActive && activeView === 'search_list' ? (
+        /* ── GIAO DIỆN HIỂN THỊ KẾT QUẢ TÌM KIẾM DÀNH RIÊNG (MOBILE) ── */
         <ScrollView style={styles.contentScroll} contentContainerStyle={styles.scrollPadding}>
-          <View style={styles.sectionTitleRow}>
-            <Text style={styles.sectionTitle}>
-              CHỌN DÃY / SẢNH ({getZoneName(selectedWarehouseId)}):
-            </Text>
-            <Text style={styles.sectionCount}>{aisles.length} phân khu</Text>
+          {/* Header row */}
+          <View style={styles.searchHeaderRow}>
+            <View style={{ flex: 1 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <Ionicons name="search" size={14} color="#38bdf8" />
+                <Text style={styles.searchHeaderTitle} numberOfLines={1}>
+                  Kết quả cho "{searchQuery}"
+                </Text>
+              </View>
+              <Text style={styles.searchHeaderSub}>
+                Tìm thấy {filteredSearchResults.length} vị trí ({searchStats.occupied} có hàng, {searchStats.empty} trống)
+              </Text>
+            </View>
+            <TouchableOpacity
+              style={styles.searchSwitchMapBtn}
+              onPress={() => setActiveView('map')}
+            >
+              <Ionicons name="map-outline" size={13} color="#38bdf8" />
+              <Text style={styles.searchSwitchMapBtnText}>Xem sơ đồ</Text>
+            </TouchableOpacity>
           </View>
+
+          {/* Warehouse Filter Pills */}
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 10 }}>
+            <TouchableOpacity
+              style={[styles.whPill, searchFilterWhId === 'all' && styles.whPillActive]}
+              onPress={() => setSearchFilterWhId('all')}
+            >
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                <Text style={[styles.whPillText, searchFilterWhId === 'all' && styles.whPillTextActive]}>
+                  Tất cả kho
+                </Text>
+                <View style={styles.whMatchBadge}>
+                  <Text style={styles.whMatchBadgeText}>{matchingPositions.length}</Text>
+                </View>
+              </View>
+            </TouchableOpacity>
+
+            {warehouses.map(wh => {
+              const matchCount = zoneMatchCountMap.get(wh.id) || 0;
+              if (matchCount === 0) return null;
+              return (
+                <TouchableOpacity
+                  key={wh.id}
+                  style={[styles.whPill, searchFilterWhId === wh.id && styles.whPillActive]}
+                  onPress={() => setSearchFilterWhId(wh.id)}
+                >
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                    <Text style={[styles.whPillText, searchFilterWhId === wh.id && styles.whPillTextActive]}>
+                      {wh.name}
+                    </Text>
+                    <View style={styles.whMatchBadge}>
+                      <Text style={styles.whMatchBadgeText}>{matchCount}</Text>
+                    </View>
+                  </View>
+                </TouchableOpacity>
+              );
+            })}
+          </ScrollView>
+
+          {/* Status Filter Pills: Tất cả, Có hàng, Trống */}
+          <View style={{ flexDirection: 'row', gap: 6, marginBottom: 12 }}>
+            <TouchableOpacity
+              style={[styles.statusFilterBtn, searchFilterStatus === 'all' && styles.statusFilterBtnActive]}
+              onPress={() => setSearchFilterStatus('all')}
+            >
+              <Text style={[styles.statusFilterBtnText, searchFilterStatus === 'all' && styles.statusFilterBtnTextActive]}>
+                Tất cả ({matchingPositions.length})
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.statusFilterBtn, searchFilterStatus === 'occupied' && styles.statusFilterBtnActiveOccupied]}
+              onPress={() => setSearchFilterStatus('occupied')}
+            >
+              <Text style={[styles.statusFilterBtnText, searchFilterStatus === 'occupied' && styles.statusFilterBtnTextActiveOccupied]}>
+                Có hàng ({searchStats.occupied})
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.statusFilterBtn, searchFilterStatus === 'empty' && styles.statusFilterBtnActiveEmpty]}
+              onPress={() => setSearchFilterStatus('empty')}
+            >
+              <Text style={[styles.statusFilterBtnText, searchFilterStatus === 'empty' && styles.statusFilterBtnTextActiveEmpty]}>
+                Trống ({searchStats.empty})
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* Results List */}
+          {filteredSearchResults.length === 0 ? (
+            <View style={{ paddingVertical: 40, alignItems: 'center' }}>
+              <Text style={{ color: '#64748b', fontSize: 13 }}>Không có vị trí nào thỏa mãn bộ lọc hiện tại.</Text>
+            </View>
+          ) : (
+            <View style={{ gap: 10 }}>
+              {filteredSearchResults.slice(0, searchPageLimit).map(p => {
+                const isOccupied = !!p.lot_id;
+                return (
+                  <View
+                    key={p.id}
+                    style={[
+                      styles.searchResultCard,
+                      isOccupied ? styles.searchResultCardOccupied : styles.searchResultCardEmpty
+                    ]}
+                  >
+                    {/* Header */}
+                    <View style={styles.searchResultCardHeader}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 }}>
+                        <Text style={styles.searchResultCode}>📍 {p.code}</Text>
+                        {p.stt ? (
+                          <View style={styles.posSttBadge}>
+                            <Text style={styles.posSttBadgeText}>STT: #{p.stt}</Text>
+                          </View>
+                        ) : isOccupied ? (
+                          <View style={[styles.posSttBadge, { backgroundColor: '#f59e0b22', borderColor: '#f59e0b66' }]}>
+                            <Text style={styles.posSttBadgeText}>CÓ HÀNG</Text>
+                          </View>
+                        ) : (
+                          <View style={styles.posEmptyBadge}>
+                            <Text style={styles.posEmptyBadgeText}>TRỐNG</Text>
+                          </View>
+                        )}
+                      </View>
+                      <Text style={styles.searchResultWhText}>
+                        {getPositionPath(p).split(' > ')[0] || ''}
+                      </Text>
+                    </View>
+
+                    {/* Path */}
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                      <Ionicons name="location-outline" size={12} color="#38bdf8" />
+                      <Text style={styles.searchResultPath} numberOfLines={1}>
+                        {getPositionPath(p)}
+                      </Text>
+                    </View>
+
+                    {/* Lot / Product info */}
+                    {isOccupied && (
+                      <View style={styles.searchResultProductBox}>
+                        <View style={{ flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: 4 }}>
+                          <Text style={styles.searchResultProductName} numberOfLines={2}>
+                            {p.product_name || 'Hàng đông lạnh'}
+                          </Text>
+                          {p.aliases ? (
+                            <View style={styles.aliasBadge}>
+                              <Text style={styles.aliasBadgeText}>⚡ {p.aliases}</Text>
+                            </View>
+                          ) : null}
+                        </View>
+
+                        <View style={styles.searchResultMetaRow}>
+                          <Text style={styles.searchResultMetaText}>LOT: <Text style={{ color: '#fbbf24', fontWeight: '800' }}>{p.lot_code || '---'}</Text></Text>
+                          {p.quantity ? (
+                            <Text style={styles.searchResultMetaText}>Số lượng: <Text style={{ color: '#fff', fontWeight: '800' }}>{p.quantity} Thùng</Text></Text>
+                          ) : null}
+                        </View>
+                      </View>
+                    )}
+
+                    {/* Actions */}
+                    <View style={styles.searchResultActionsRow}>
+                      <TouchableOpacity
+                        style={styles.searchJumpMapBtn}
+                        onPress={() => {
+                          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                          handleJumpToMap(p);
+                        }}
+                      >
+                        <Ionicons name="map" size={13} color="#0f172a" />
+                        <Text style={styles.searchJumpMapBtnText}>Xem vị trí trên sơ đồ</Text>
+                      </TouchableOpacity>
+
+                      <TouchableOpacity
+                        style={styles.searchPosDetailBtn}
+                        onPress={() => setSelectedPosDetail(p)}
+                      >
+                        <Ionicons name="information-circle-outline" size={14} color="#cbd5e1" />
+                        <Text style={styles.searchPosDetailBtnText}>Chi tiết</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                );
+              })}
+
+              {filteredSearchResults.length > searchPageLimit && (
+                <TouchableOpacity
+                  style={styles.loadMoreBtn}
+                  onPress={() => setSearchPageLimit(prev => prev + 50)}
+                >
+                  <Text style={styles.loadMoreBtnText}>
+                    Xem thêm 50 vị trí tiếp theo (còn {filteredSearchResults.length - searchPageLimit})
+                  </Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          )}
+        </ScrollView>
+      ) : (
+        /* ── XEM TRÊN SƠ ĐỒ KHO ── */
+        <View style={{ flex: 1 }}>
+          {isSearchActive && (
+            <View style={styles.mapSearchReturnBanner}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 }}>
+                <Ionicons name="filter" size={14} color="#f59e0b" />
+                <Text style={styles.mapSearchReturnText} numberOfLines={1}>
+                  Đang xem sơ đồ: "{searchQuery}" ({matchingPositions.length} vị trí)
+                </Text>
+              </View>
+              <TouchableOpacity
+                style={styles.mapSearchReturnBtn}
+                onPress={() => setActiveView('search_list')}
+              >
+                <Ionicons name="list" size={12} color="#0f172a" />
+                <Text style={styles.mapSearchReturnBtnText}>Danh sách ({matchingPositions.length})</Text>
+              </TouchableOpacity>
+            </View>
+          )}
+
+          {!selectedAisleId ? (
+            /* ── LEVEL 1: DANH SÁCH DÃY / SẢNH ─────────────────────── */
+            <ScrollView style={styles.contentScroll} contentContainerStyle={styles.scrollPadding}>
+              <View style={styles.sectionTitleRow}>
+                <Text style={styles.sectionTitle}>
+                  CHỌN DÃY / SẢNH ({getZoneName(selectedWarehouseId)}):
+                </Text>
+                <Text style={styles.sectionCount}>{aisles.length} phân khu</Text>
+              </View>
 
           {/* Switch Warehouse Pills */}
           {warehouses.length > 0 && (
@@ -1106,6 +1312,8 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
               </View>
             )}
           </ScrollView>
+        </View>
+      )}
         </View>
       )}
 
@@ -2037,5 +2245,290 @@ const styles = StyleSheet.create({
     color: '#fbbf24',
     fontSize: 8,
     fontWeight: '900'
+  },
+
+  /* ── DEDICATED SEARCH VIEW STYLES ── */
+  searchTabsBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    backgroundColor: '#0c1322',
+    borderBottomWidth: 1,
+    borderBottomColor: '#1e293b'
+  },
+  searchTabsGroup: {
+    flexDirection: 'row',
+    gap: 6
+  },
+  searchTabBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: '#1e293b',
+    borderWidth: 1,
+    borderColor: '#334155'
+  },
+  searchTabBtnActive: {
+    backgroundColor: '#0369a1',
+    borderColor: '#38bdf8'
+  },
+  searchTabBtnText: {
+    color: '#94a3b8',
+    fontSize: 12,
+    fontWeight: '600'
+  },
+  searchTabBtnTextActive: {
+    color: '#ffffff',
+    fontWeight: '800'
+  },
+  clearSearchTextBtn: {
+    paddingHorizontal: 8,
+    paddingVertical: 5
+  },
+  clearSearchLabel: {
+    color: '#ef4444',
+    fontSize: 11,
+    fontWeight: '700'
+  },
+
+  searchHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 10
+  },
+  searchHeaderTitle: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '800'
+  },
+  searchHeaderSub: {
+    color: '#94a3b8',
+    fontSize: 11,
+    marginTop: 2
+  },
+  searchSwitchMapBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    backgroundColor: '#082f49',
+    borderColor: '#0284c7',
+    borderWidth: 1,
+    borderRadius: 8
+  },
+  searchSwitchMapBtnText: {
+    color: '#38bdf8',
+    fontSize: 11,
+    fontWeight: '700'
+  },
+
+  statusFilterBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 8,
+    backgroundColor: '#1e293b',
+    borderWidth: 1,
+    borderColor: '#334155'
+  },
+  statusFilterBtnActive: {
+    backgroundColor: '#334155',
+    borderColor: '#64748b'
+  },
+  statusFilterBtnActiveOccupied: {
+    backgroundColor: '#451a03',
+    borderColor: '#f59e0b'
+  },
+  statusFilterBtnActiveEmpty: {
+    backgroundColor: '#064e3b',
+    borderColor: '#10b981'
+  },
+  statusFilterBtnText: {
+    color: '#94a3b8',
+    fontSize: 11,
+    fontWeight: '600'
+  },
+  statusFilterBtnTextActive: {
+    color: '#ffffff',
+    fontWeight: '700'
+  },
+  statusFilterBtnTextActiveOccupied: {
+    color: '#fbbf24',
+    fontWeight: '800'
+  },
+  statusFilterBtnTextActiveEmpty: {
+    color: '#34d399',
+    fontWeight: '800'
+  },
+
+  searchResultCard: {
+    backgroundColor: '#131d2e',
+    borderRadius: 10,
+    padding: 10,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: '#1e293b'
+  },
+  searchResultCardOccupied: {
+    borderColor: '#334155',
+    borderLeftWidth: 3,
+    borderLeftColor: '#f59e0b'
+  },
+  searchResultCardEmpty: {
+    borderColor: '#1e293b',
+    borderLeftWidth: 3,
+    borderLeftColor: '#10b981',
+    opacity: 0.9
+  },
+  searchResultCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 4
+  },
+  searchResultCode: {
+    fontSize: 14,
+    fontWeight: '800'
+  },
+  searchResultWhText: {
+    color: '#94a3b8',
+    fontSize: 11,
+    fontWeight: '700'
+  },
+  searchResultPath: {
+    color: '#64748b',
+    fontSize: 11,
+    marginBottom: 6
+  },
+  searchResultProductBox: {
+    backgroundColor: '#1e293b',
+    borderRadius: 6,
+    padding: 8,
+    marginBottom: 8
+  },
+  searchResultProductName: {
+    color: '#f8fafc',
+    fontSize: 13,
+    fontWeight: '700',
+    marginBottom: 4
+  },
+  aliasBadge: {
+    backgroundColor: '#064e3b',
+    borderColor: '#059669',
+    borderWidth: 1,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    alignSelf: 'flex-start',
+    marginBottom: 4
+  },
+  aliasBadgeText: {
+    color: '#6ee7b7',
+    fontSize: 10,
+    fontWeight: '700'
+  },
+  searchResultMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingTop: 4,
+    borderTopWidth: 1,
+    borderTopColor: '#334155'
+  },
+  searchResultMetaText: {
+    color: '#94a3b8',
+    fontSize: 11
+  },
+
+  searchResultActionsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 8,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: '#1e293b'
+  },
+  searchJumpMapBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: '#0284c7',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 6
+  },
+  searchJumpMapBtnText: {
+    color: '#ffffff',
+    fontSize: 11,
+    fontWeight: '700'
+  },
+  searchPosDetailBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#1e293b',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#334155'
+  },
+  searchPosDetailBtnText: {
+    color: '#94a3b8',
+    fontSize: 11,
+    fontWeight: '600'
+  },
+
+  loadMoreBtn: {
+    paddingVertical: 12,
+    backgroundColor: '#1e293b',
+    borderRadius: 8,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#334155',
+    marginTop: 6,
+    marginBottom: 20
+  },
+  loadMoreBtnText: {
+    color: '#38bdf8',
+    fontSize: 12,
+    fontWeight: '700'
+  },
+
+  mapSearchReturnBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    backgroundColor: '#1e2433',
+    borderBottomWidth: 1,
+    borderBottomColor: '#f59e0b44'
+  },
+  mapSearchReturnText: {
+    color: '#fbbf24',
+    fontSize: 11,
+    fontWeight: '700'
+  },
+  mapSearchReturnBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    backgroundColor: '#f59e0b',
+    borderRadius: 6
+  },
+  mapSearchReturnBtnText: {
+    color: '#0f172a',
+    fontSize: 11,
+    fontWeight: '800'
   }
 });
