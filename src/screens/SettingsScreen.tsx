@@ -486,7 +486,7 @@ export default function SettingsScreen({ onBack }: { onBack: () => void }) {
         onPress={handleVersionTap}
         activeOpacity={0.8}
       >
-        <Text style={styles.versionText}>Phiên bản v1.0.37 (Build 38)</Text>
+        <Text style={styles.versionText}>Phiên bản v1.0.38 (Build 39)</Text>
         <Text style={styles.versionSubText}>Hệ thống Quản lý Tem & Pallet • Chánh Thu</Text>
         {showAdvancedConfig && (
           <Text style={{ color: '#f59e0b', fontSize: 10, fontWeight: '700', marginTop: 4 }}>

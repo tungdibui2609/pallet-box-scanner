@@ -22,7 +22,25 @@ import {
 } from '../services/supabase';
 import { decodeSTT } from '../utils/numberUtils';
 import { groupWarehouseData } from '../utils/warehouseUtils';
-import { matchPalletSearch, calculateSearchScore, matchSearch } from '../utils/searchUtils';
+import { matchPalletSearch, calculateSearchScore, matchSearch, normalizeSearchString } from '../utils/searchUtils';
+
+export interface UniqueProductItem {
+  name: string;
+  sku: string | null;
+  aliases: string | null;
+  unit: string;
+  positionCount: number;
+  totalQuantity: number;
+  normName: string;
+  unaccName: string;
+  normSku: string;
+  unaccSku: string;
+  aliasList: Array<{
+    raw: string;
+    norm: string;
+    unacc: string;
+  }>;
+}
 
 interface ZoneItem {
   id: string;
@@ -48,6 +66,233 @@ interface PositionItem {
   quantity?: number | null;
 }
 
+// ── ISOLATED MEMOIZED SEARCH BAR (0ms Latency: typing updates only this component) ──
+const MobileWarehouseSearchBar = React.memo(function MobileWarehouseSearchBar({
+  uniqueProducts,
+  searchQuery,
+  onExecuteSearch,
+  onClearSearch
+}: {
+  uniqueProducts: UniqueProductItem[];
+  searchQuery: string;
+  onExecuteSearch: (query: string) => void;
+  onClearSearch: () => void;
+}) {
+  const [inputValue, setInputValue] = useState(searchQuery);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+
+  useEffect(() => {
+    setInputValue(searchQuery);
+  }, [searchQuery]);
+
+  const suggestions = useMemo(() => {
+    const q = inputValue.trim();
+    if (!q || q.length < 1) return [];
+
+    const normQ = normalizeSearchString(q);
+    const unaccQ = normalizeSearchString(q, true);
+    if (!normQ && !unaccQ) return [];
+
+    const list: Array<{
+      product: UniqueProductItem;
+      score: number;
+      matchedAlias?: string;
+    }> = [];
+
+    for (let i = 0; i < uniqueProducts.length; i++) {
+      const prod = uniqueProducts[i];
+      let matched = false;
+      let score = 0;
+      let matchedAlias: string | undefined;
+
+      // 1. Alias check (tên viết tắt / gõ tắt: VD "đô c" -> "đô c có hạt")
+      for (let j = 0; j < prod.aliasList.length; j++) {
+        const al = prod.aliasList[j];
+        if (al.norm === normQ || al.unacc === unaccQ) {
+          matched = true;
+          score = 3000;
+          matchedAlias = al.raw;
+          break;
+        } else if (al.norm.startsWith(normQ) || al.unacc.startsWith(unaccQ)) {
+          matched = true;
+          score = 2200;
+          matchedAlias = al.raw;
+          break;
+        } else if (al.norm.includes(normQ) || al.unacc.includes(unaccQ)) {
+          matched = true;
+          score = 1500;
+          matchedAlias = al.raw;
+          break;
+        }
+      }
+
+      // 2. Name check
+      if (!matched) {
+        if (prod.normName === normQ || prod.unaccName === unaccQ) {
+          matched = true;
+          score = 2000;
+        } else if (prod.normName.startsWith(normQ) || prod.unaccName.startsWith(unaccQ)) {
+          matched = true;
+          score = 1200;
+        } else if (prod.normName.includes(normQ) || prod.unaccName.includes(unaccQ)) {
+          matched = true;
+          score = 800;
+        }
+      }
+
+      // 3. SKU check
+      if (!matched && (prod.normSku || prod.unaccSku)) {
+        if (prod.normSku === normQ || prod.unaccSku === unaccQ) {
+          matched = true;
+          score = 1000;
+        } else if (prod.normSku.includes(normQ) || prod.unaccSku.includes(unaccQ)) {
+          matched = true;
+          score = 500;
+        }
+      }
+
+      if (matched) {
+        list.push({ product: prod, score, matchedAlias });
+      }
+    }
+
+    return list.sort((a, b) => b.score - a.score).slice(0, 8);
+  }, [inputValue, uniqueProducts]);
+
+  const handleSelect = (name: string) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setInputValue(name);
+    setShowSuggestions(false);
+    onExecuteSearch(name);
+  };
+
+  const handleSubmit = (customTerm?: string) => {
+    const term = (customTerm !== undefined ? customTerm : inputValue).trim();
+    if (!term) return;
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setShowSuggestions(false);
+    onExecuteSearch(term);
+  };
+
+  return (
+    <View style={styles.searchSection}>
+      <View style={styles.searchInputRow}>
+        <View style={styles.searchInputWrap}>
+          <Ionicons name="search" size={16} color="#94a3b8" style={styles.searchIcon} />
+          <TextInput
+            style={styles.searchInput}
+            value={inputValue}
+            onChangeText={txt => {
+              setInputValue(txt);
+              setShowSuggestions(true);
+            }}
+            onFocus={() => {
+              if (inputValue.trim().length > 0) setShowSuggestions(true);
+            }}
+            onSubmitEditing={() => handleSubmit()}
+            returnKeyType="search"
+            placeholder="Nhập tên sản phẩm (đô, ri6...), LOT, vị trí..."
+            placeholderTextColor="#64748b"
+          />
+          {inputValue.length > 0 && (
+            <TouchableOpacity
+              onPress={() => {
+                setInputValue('');
+                setShowSuggestions(false);
+                onClearSearch();
+              }}
+              style={styles.clearSearchBtn}
+            >
+              <Ionicons name="close-circle" size={18} color="#94a3b8" />
+            </TouchableOpacity>
+          )}
+        </View>
+
+        <TouchableOpacity
+          style={styles.searchSubmitBtn}
+          onPress={() => handleSubmit()}
+        >
+          <Ionicons name="search" size={14} color="#fff" />
+          <Text style={styles.searchSubmitBtnText}>Tìm</Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* ── DROPDOWN GỢI Ý SẢN PHẨM ── */}
+      {showSuggestions && inputValue.trim().length > 0 && (
+        <View style={styles.suggestionsCard}>
+          <View style={styles.suggestionsHeader}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+              <Ionicons name="sparkles" size={12} color="#fbbf24" />
+              <Text style={styles.suggestionsHeaderTitle}>
+                GỢI Ý SẢN PHẨM ({suggestions.length})
+              </Text>
+            </View>
+            <TouchableOpacity onPress={() => setShowSuggestions(false)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+              <Ionicons name="close" size={14} color="#94a3b8" />
+            </TouchableOpacity>
+          </View>
+
+          {suggestions.length > 0 ? (
+            <ScrollView style={{ maxHeight: 220 }} keyboardShouldPersistTaps="handled">
+              {suggestions.map((item, idx) => (
+                <TouchableOpacity
+                  key={idx}
+                  style={styles.suggestionItem}
+                  onPress={() => handleSelect(item.product.name)}
+                >
+                  <View style={{ flex: 1 }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}>
+                      <Text style={styles.suggestionTitle} numberOfLines={1}>
+                        {item.product.name}
+                      </Text>
+                      {item.matchedAlias ? (
+                        <View style={styles.suggestionAliasBadge}>
+                          <Text style={styles.suggestionAliasText}>⚡ {item.matchedAlias}</Text>
+                        </View>
+                      ) : item.product.aliases ? (
+                        <View style={styles.suggestionAliasBadge}>
+                          <Text style={styles.suggestionAliasText}>⚡ {item.product.aliases}</Text>
+                        </View>
+                      ) : null}
+                    </View>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 2 }}>
+                      <Text style={styles.suggestionCountBadge}>
+                        📍 {item.product.positionCount} vị trí
+                      </Text>
+                      {item.product.sku ? (
+                        <Text style={styles.suggestionMeta}>SKU: {item.product.sku}</Text>
+                      ) : null}
+                    </View>
+                  </View>
+                  <Ionicons name="chevron-forward" size={14} color="#38bdf8" />
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          ) : (
+            <View style={{ padding: 12, alignItems: 'center' }}>
+              <Text style={{ color: '#94a3b8', fontSize: 11 }}>Không có sản phẩm nào khớp từ khóa</Text>
+            </View>
+          )}
+
+          {/* Direct search option */}
+          <TouchableOpacity
+            style={styles.suggestionDirectBtn}
+            onPress={() => handleSubmit()}
+          >
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 }}>
+              <Ionicons name="search" size={12} color="#38bdf8" />
+              <Text style={styles.suggestionDirectText} numberOfLines={1}>
+                Tìm tất cả vị trí cho "{inputValue.trim()}"
+              </Text>
+            </View>
+            <Text style={styles.suggestionDirectSub}>Tìm ngay →</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+    </View>
+  );
+});
+
 export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanner: () => void }) {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -61,10 +306,8 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
   const [selectedTierId, setSelectedTierId] = useState<string | null>(null);
   const [onlyShowMatches, setOnlyShowMatches] = useState(false);
 
-  // Search & Product Suggestions state
-  const [searchInput, setSearchInput] = useState('');
+  // Search state (searchQuery drives the map, while typing is fully isolated in MobileWarehouseSearchBar)
   const [searchQuery, setSearchQuery] = useState('');
-  const [showSuggestions, setShowSuggestions] = useState(false);
   const [activeView, setActiveView] = useState<'map' | 'search_list'>('map');
   const [searchFilterWhId, setSearchFilterWhId] = useState<string>('all');
   const [searchFilterStatus, setSearchFilterStatus] = useState<'all' | 'occupied' | 'empty'>('all');
@@ -272,16 +515,9 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
     [zonePathMap]
   );
 
-  // ── Danh sách sản phẩm duy nhất đang có trong kho ──────────────
+  // ── Danh sách sản phẩm duy nhất đang có trong kho (Pre-indexed cho gợi ý 0ms) ──────────────
   const uniqueProducts = useMemo(() => {
-    const prodMap = new Map<string, {
-      name: string;
-      sku: string | null;
-      aliases: string | null;
-      unit: string;
-      positionCount: number;
-      totalQuantity: number;
-    }>();
+    const prodMap = new Map<string, UniqueProductItem>();
 
     for (let i = 0; i < positions.length; i++) {
       const p = positions[i];
@@ -291,16 +527,37 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
         if (existing) {
           existing.positionCount++;
           existing.totalQuantity += (p.quantity || 0);
-          if (!existing.aliases && p.aliases) existing.aliases = p.aliases;
-          if (!existing.sku && p.sku) existing.sku = p.sku;
+          if (!existing.aliases && p.aliases) {
+            existing.aliases = p.aliases;
+            existing.aliasList = p.aliases.split(',').map(a => a.trim()).filter(Boolean).map(a => ({
+              raw: a,
+              norm: normalizeSearchString(a),
+              unacc: normalizeSearchString(a, true)
+            }));
+          }
+          if (!existing.sku && p.sku) {
+            existing.sku = p.sku;
+            existing.normSku = normalizeSearchString(p.sku);
+            existing.unaccSku = normalizeSearchString(p.sku, true);
+          }
         } else {
+          const aliasList = (p.aliases || '').split(',').map(a => a.trim()).filter(Boolean).map(a => ({
+            raw: a,
+            norm: normalizeSearchString(a),
+            unacc: normalizeSearchString(a, true)
+          }));
           prodMap.set(name, {
             name,
             sku: p.sku || null,
             aliases: p.aliases || null,
             unit: p.unit || 'Thùng',
             positionCount: 1,
-            totalQuantity: p.quantity || 0
+            totalQuantity: p.quantity || 0,
+            normName: normalizeSearchString(name),
+            unaccName: normalizeSearchString(name, true),
+            normSku: normalizeSearchString(p.sku || ''),
+            unaccSku: normalizeSearchString(p.sku || '', true),
+            aliasList
           });
         }
       }
@@ -309,74 +566,21 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
     return Array.from(prodMap.values());
   }, [positions]);
 
-  // Gợi ý sản phẩm thông minh khi người dùng gõ từ khóa (VD: gõ "đô" -> hiện gợi ý sản phẩm)
-  const productSuggestions = useMemo(() => {
-    const q = searchInput.trim();
-    if (!q || q.length < 1) return [];
-
-    const list: Array<{
-      product: typeof uniqueProducts[0];
-      score: number;
-      matchedAlias?: string;
-    }> = [];
-
-    for (let i = 0; i < uniqueProducts.length; i++) {
-      const prod = uniqueProducts[i];
-      let matched = false;
-      let score = 0;
-      let matchedAlias: string | undefined;
-
-      // 1. Khớp theo alias (tên viết tắt / gõ tắt: VD "đô c" -> "đô c có hạt")
-      if (prod.aliases) {
-        const aliasList = prod.aliases.split(',').map(a => a.trim()).filter(Boolean);
-        const found = aliasList.find(a => matchSearch(a, q));
-        if (found) {
-          matched = true;
-          score = 1500;
-          matchedAlias = found;
-        }
-      }
-
-      // 2. Khớp theo tên sản phẩm hoặc SKU
-      if (!matched) {
-        const s = calculateSearchScore(prod, q);
-        if (s > 0) {
-          matched = true;
-          score = s;
-        } else if (matchSearch(prod, q)) {
-          matched = true;
-          score = 500;
-        }
-      }
-
-      if (matched) {
-        list.push({ product: prod, score, matchedAlias });
-      }
-    }
-
-    return list.sort((a, b) => b.score - a.score).slice(0, 8);
-  }, [searchInput, uniqueProducts]);
-
-  // Chọn sản phẩm gợi ý -> thực hiện tìm kiếm liệt kê tất cả vị trí có sản phẩm đó
-  const handleSelectProductSuggestion = (productName: string) => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    setSearchInput(productName);
-    setSearchQuery(productName);
-    setShowSuggestions(false);
-    setActiveView('search_list');
-    setSearchPageLimit(50);
-  };
-
-  // Thực hiện tìm kiếm tự do khi ấn Enter hoặc nút Tìm
-  const handleExecuteSearch = (term?: string) => {
-    const q = (term !== undefined ? term : searchInput).trim();
+  // Thực hiện tìm kiếm (chỉ cập nhật map khi người dùng chọn gợi ý hoặc ấn Tìm)
+  const handleExecuteSearch = useCallback((term: string) => {
+    const q = term.trim();
     if (!q) return;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setSearchQuery(q);
-    setShowSuggestions(false);
     setActiveView('search_list');
     setSearchPageLimit(50);
-  };
+  }, []);
+
+  const handleClearSearch = useCallback(() => {
+    setSearchQuery('');
+    setActiveView('map');
+    setHighlightedPosId(null);
+  }, []);
 
   // ── Search & Filter Logic (High Performance with Pre-Scoring) ──
   const matchingPositions = useMemo(() => {
@@ -710,122 +914,13 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
         </View>
       )}
 
-      {/* ── SEARCH BAR WITH PRODUCT SUGGESTIONS (Gõ "đô" -> Gợi ý sản phẩm) ── */}
-      <View style={[styles.searchSection, { zIndex: 100 }]}>
-        <View style={styles.searchInputRow}>
-          <View style={styles.searchInputWrap}>
-            <Ionicons name="search" size={16} color="#94a3b8" style={styles.searchIcon} />
-            <TextInput
-              style={styles.searchInput}
-              value={searchInput}
-              onChangeText={txt => {
-                setSearchInput(txt);
-                setShowSuggestions(true);
-              }}
-              onFocus={() => {
-                if (searchInput.trim().length > 0) setShowSuggestions(true);
-              }}
-              onSubmitEditing={() => handleExecuteSearch()}
-              returnKeyType="search"
-              placeholder="Nhập tên sản phẩm (đô, ri6...), LOT, vị trí..."
-              placeholderTextColor="#64748b"
-            />
-            {searchInput.length > 0 && (
-              <TouchableOpacity
-                onPress={() => {
-                  setSearchInput('');
-                  setSearchQuery('');
-                  setShowSuggestions(false);
-                  setActiveView('map');
-                  setHighlightedPosId(null);
-                }}
-                style={styles.clearSearchBtn}
-              >
-                <Ionicons name="close-circle" size={18} color="#94a3b8" />
-              </TouchableOpacity>
-            )}
-          </View>
-
-          <TouchableOpacity
-            style={styles.searchSubmitBtn}
-            onPress={() => handleExecuteSearch()}
-          >
-            <Ionicons name="search" size={14} color="#fff" />
-            <Text style={styles.searchSubmitBtnText}>Tìm</Text>
-          </TouchableOpacity>
-        </View>
-
-        {/* ── DROPDOWN GỢI Ý SẢN PHẨM ── */}
-        {showSuggestions && searchInput.trim().length > 0 && (
-          <View style={styles.suggestionsCard}>
-            <View style={styles.suggestionsHeader}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
-                <Ionicons name="sparkles" size={12} color="#fbbf24" />
-                <Text style={styles.suggestionsHeaderTitle}>
-                  GỢI Ý SẢN PHẨM ({productSuggestions.length})
-                </Text>
-              </View>
-              <Text style={styles.suggestionsHeaderSub}>Chạm để chọn & tìm vị trí</Text>
-            </View>
-
-            {productSuggestions.length > 0 ? (
-              <ScrollView style={{ maxHeight: 220 }} keyboardShouldPersistTaps="handled">
-                {productSuggestions.map((item, idx) => (
-                  <TouchableOpacity
-                    key={idx}
-                    style={styles.suggestionItem}
-                    onPress={() => handleSelectProductSuggestion(item.product.name)}
-                  >
-                    <View style={{ flex: 1 }}>
-                      <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}>
-                        <Text style={styles.suggestionTitle} numberOfLines={1}>
-                          {item.product.name}
-                        </Text>
-                        {item.matchedAlias ? (
-                          <View style={styles.suggestionAliasBadge}>
-                            <Text style={styles.suggestionAliasText}>⚡ {item.matchedAlias}</Text>
-                          </View>
-                        ) : item.product.aliases ? (
-                          <View style={styles.suggestionAliasBadge}>
-                            <Text style={styles.suggestionAliasText}>⚡ {item.product.aliases}</Text>
-                          </View>
-                        ) : null}
-                      </View>
-                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 2 }}>
-                        <Text style={styles.suggestionCountBadge}>
-                          📍 {item.product.positionCount} vị trí
-                        </Text>
-                        {item.product.sku ? (
-                          <Text style={styles.suggestionMeta}>SKU: {item.product.sku}</Text>
-                        ) : null}
-                      </View>
-                    </View>
-                    <Ionicons name="chevron-forward" size={14} color="#38bdf8" />
-                  </TouchableOpacity>
-                ))}
-              </ScrollView>
-            ) : (
-              <View style={{ padding: 12, alignItems: 'center' }}>
-                <Text style={{ color: '#94a3b8', fontSize: 11 }}>Không có sản phẩm nào khớp từ khóa</Text>
-              </View>
-            )}
-
-            {/* Direct search option */}
-            <TouchableOpacity
-              style={styles.suggestionDirectBtn}
-              onPress={() => handleExecuteSearch()}
-            >
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 }}>
-                <Ionicons name="search" size={12} color="#38bdf8" />
-                <Text style={styles.suggestionDirectText} numberOfLines={1}>
-                  Tìm tất cả vị trí cho "{searchInput.trim()}"
-                </Text>
-              </View>
-              <Text style={styles.suggestionDirectSub}>Tìm ngay →</Text>
-            </TouchableOpacity>
-          </View>
-        )}
-      </View>
+      {/* ── ISOLATED SEARCH BAR (0ms Latency: typing updates only search bar) ── */}
+      <MobileWarehouseSearchBar
+        uniqueProducts={uniqueProducts}
+        searchQuery={searchQuery}
+        onExecuteSearch={handleExecuteSearch}
+        onClearSearch={handleClearSearch}
+      />
 
       {/* ── SEARCH VIEW TABS: DANH SÁCH vs SƠ ĐỒ ────────────────── */}
       {isSearchActive && (
@@ -853,12 +948,7 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
 
           <TouchableOpacity
             style={styles.clearSearchTextBtn}
-            onPress={() => {
-              setSearchInput('');
-              setSearchQuery('');
-              setActiveView('map');
-              setHighlightedPosId(null);
-            }}
+            onPress={handleClearSearch}
           >
             <Ionicons name="close" size={13} color="#94a3b8" />
             <Text style={styles.clearSearchLabel}>Xóa</Text>
