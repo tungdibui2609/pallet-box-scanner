@@ -8,6 +8,7 @@ import { Ionicons } from '@expo/vector-icons';
 import {
   testConnection, syncStampDictionariesFromSupabase,
   syncCloudPalletsOffline, getLastOfflineSyncInfo,
+  syncWarehouseMapOffline, getLastWarehouseMapOfflineSyncInfo,
   DEFAULT_SUPABASE_URL, DEFAULT_ANON_KEY
 } from '../services/supabase';
 import { getStampDictionariesCount } from '../services/database';
@@ -32,6 +33,12 @@ export default function SettingsScreen({ onBack }: { onBack: () => void }) {
   const [lastOfflineSync, setLastOfflineSync] = useState<string | null>(null);
   const [syncingOfflinePallets, setSyncingOfflinePallets] = useState(false);
   const [autoSyncEnabled, setAutoSyncEnabledState] = useState(true);
+
+  // Offline Warehouse Map Sync
+  const [warehouseMapCount, setWarehouseMapCount] = useState(0);
+  const [warehouseMapWarehouses, setWarehouseMapWarehouses] = useState(0);
+  const [lastWarehouseMapSync, setLastWarehouseMapSync] = useState<string | null>(null);
+  const [syncingWarehouseMap, setSyncingWarehouseMap] = useState(false);
 
   // Advanced Technician Server Config
   const [showAdvancedConfig, setShowAdvancedConfig] = useState(false);
@@ -82,6 +89,11 @@ export default function SettingsScreen({ onBack }: { onBack: () => void }) {
       const offlineInfo = await getLastOfflineSyncInfo();
       setOfflinePalletsCount(offlineInfo.count);
       if (offlineInfo.lastSyncedAt) setLastOfflineSync(offlineInfo.lastSyncedAt);
+
+      const whMapInfo = await getLastWarehouseMapOfflineSyncInfo();
+      setWarehouseMapCount(whMapInfo.count);
+      setWarehouseMapWarehouses(whMapInfo.warehousesCount);
+      if (whMapInfo.lastSyncedAt) setLastWarehouseMapSync(whMapInfo.lastSyncedAt);
 
       const autoSync = await isAutoSyncEnabled();
       setAutoSyncEnabledState(autoSync);
@@ -141,6 +153,25 @@ export default function SettingsScreen({ onBack }: { onBack: () => void }) {
       Alert.alert('Lỗi', err.message);
     } finally {
       setSyncingOfflinePallets(false);
+    }
+  }
+
+  async function handleSyncWarehouseMap() {
+    setSyncingWarehouseMap(true);
+    try {
+      const res = await syncWarehouseMapOffline();
+      if (res.success) {
+        setWarehouseMapCount(res.totalPositions);
+        setWarehouseMapWarehouses(res.totalWarehouses);
+        if (res.lastSyncedAt) setLastWarehouseMapSync(res.lastSyncedAt);
+        Alert.alert('Thành công', res.message);
+      } else {
+        Alert.alert('Không thể tải', res.message);
+      }
+    } catch (err: any) {
+      Alert.alert('Lỗi', err.message);
+    } finally {
+      setSyncingWarehouseMap(false);
     }
   }
 
@@ -321,6 +352,50 @@ export default function SettingsScreen({ onBack }: { onBack: () => void }) {
         </TouchableOpacity>
       </View>
 
+      {/* ── TẢI SƠ ĐỒ KHO XEM NGOẠI TUYẾN ─────────── */}
+      <View style={styles.card}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+          <Ionicons name="map-outline" size={20} color="#10b981" />
+          <Text style={[styles.sectionTitle, { color: '#10b981', marginBottom: 0 }]}>
+            SƠ ĐỒ KHO XEM NGOẠI TUYẾN (OFFLINE)
+          </Text>
+        </View>
+
+        <Text style={{ color: '#94a3b8', fontSize: 12, lineHeight: 18, marginBottom: 12 }}>
+          Lưu trữ toàn bộ sơ đồ phân cấp (Kho, Dãy, Ô, Tầng) và vị trí Pallet vào máy để nhân viên mang vào kho đông kiểm tra khi không có mạng.
+        </Text>
+
+        <View style={{ backgroundColor: '#0f172a', padding: 12, borderRadius: 12, marginBottom: 14, borderWidth: 1, borderColor: '#334155' }}>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 }}>
+            <Text style={{ color: '#94a3b8', fontSize: 12 }}>Số vị trí lưu trong máy:</Text>
+            <Text style={{ color: '#10b981', fontSize: 13, fontWeight: '700' }}>
+              {warehouseMapCount} vị trí {warehouseMapWarehouses > 0 ? `(${warehouseMapWarehouses} kho)` : ''}
+            </Text>
+          </View>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+            <Text style={{ color: '#94a3b8', fontSize: 12 }}>Đồng bộ lần cuối:</Text>
+            <Text style={{ color: '#cbd5e1', fontSize: 11, fontStyle: 'italic' }}>
+              {lastWarehouseMapSync ? new Date(lastWarehouseMapSync).toLocaleString('vi-VN') : 'Chưa tải về'}
+            </Text>
+          </View>
+        </View>
+
+        <TouchableOpacity 
+          style={{ backgroundColor: '#059669', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 12, borderRadius: 12 }}
+          onPress={handleSyncWarehouseMap}
+          disabled={syncingWarehouseMap}
+        >
+          {syncingWarehouseMap ? (
+            <ActivityIndicator color="#fff" size="small" />
+          ) : (
+            <Ionicons name="download-outline" size={18} color="#fff" />
+          )}
+          <Text style={{ color: '#fff', fontWeight: '700', fontSize: 13 }}>
+            {syncingWarehouseMap ? 'Đang tải sơ đồ kho...' : 'Tải / Cập nhật Sơ Đồ Kho về máy'}
+          </Text>
+        </TouchableOpacity>
+      </View>
+
       {/* ── CẤU HÌNH MÁY CHỦ (NÂNG CAO - ẨN MẶC ĐỊNH) ─────────────────── */}
       {showAdvancedConfig && (
         <View style={[styles.card, { borderColor: 'rgba(245, 158, 11, 0.4)', borderWidth: 1.5 }]}>
@@ -411,7 +486,7 @@ export default function SettingsScreen({ onBack }: { onBack: () => void }) {
         onPress={handleVersionTap}
         activeOpacity={0.8}
       >
-        <Text style={styles.versionText}>Phiên bản v1.0.28 (Build 29)</Text>
+        <Text style={styles.versionText}>Phiên bản v1.0.29 (Build 30)</Text>
         <Text style={styles.versionSubText}>Hệ thống Quản lý Tem & Pallet • Chánh Thu</Text>
         {showAdvancedConfig && (
           <Text style={{ color: '#f59e0b', fontSize: 10, fontWeight: '700', marginTop: 4 }}>

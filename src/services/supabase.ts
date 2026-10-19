@@ -999,3 +999,206 @@ export async function getLastOfflineSyncInfo(): Promise<{
     return { lastSyncedAt: null, count: 0 };
   }
 }
+
+export interface WarehouseMapOfflineData {
+  zones: any[];
+  positions: any[];
+  cachedAt: string;
+  totalPositions: number;
+  totalWarehouses: number;
+}
+
+/**
+ * Tải đồng bộ toàn bộ Sơ Đồ Kho (Zones, Positions, Lots gán vị trí) về máy để xem ngoại tuyến (Offline)
+ */
+export async function syncWarehouseMapOffline(): Promise<{
+  success: boolean;
+  totalPositions: number;
+  totalWarehouses: number;
+  lastSyncedAt?: string;
+  message: string;
+}> {
+  try {
+    const client = await getSupabaseClient();
+
+    // 1. Fetch Zones for Cold Storage
+    const { data: zonesData, error: zonesErr } = await client
+      .from('zones')
+      .select('id, name, parent_id, system_type')
+      .eq('system_type', 'KHO_DONG_LANH');
+
+    if (zonesErr) throw zonesErr;
+    const rawZones = zonesData || [];
+
+    // 2. Fetch all positions & zone associations
+    const [posRes, zpRes] = await Promise.all([
+      client
+        .from('positions')
+        .select('id, code, lot_id, system_type')
+        .eq('system_type', 'KHO_DONG_LANH'),
+      client.from('zone_positions').select('position_id, zone_id')
+    ]);
+
+    if (posRes.error) throw posRes.error;
+
+    const rawPositions = posRes.data || [];
+    const zpList = zpRes.data || [];
+
+    const zpMap = new Map<string, string[]>();
+    zpList.forEach((item: any) => {
+      const list = zpMap.get(item.position_id) || [];
+      list.push(item.zone_id);
+      zpMap.set(item.position_id, list);
+    });
+
+    // 3. Fetch Lots info for occupied positions
+    const occupiedLotIds = Array.from(new Set(rawPositions.map((p: any) => p.lot_id).filter(Boolean)));
+    const lotMap = new Map<string, any>();
+
+    if (occupiedLotIds.length > 0) {
+      const { data: lotsData } = await client
+        .from('lots')
+        .select(`
+          id,
+          code,
+          daily_seq,
+          packaging_date,
+          inbound_date,
+          quantity,
+          products ( name, sku ),
+          lot_items ( products ( name, sku ) )
+        `)
+        .in('id', occupiedLotIds);
+
+      lotsData?.forEach((l: any) => {
+        const prodName =
+          l.products?.name ||
+          l.lot_items?.[0]?.products?.name ||
+          'Hàng đông lạnh';
+        const sku =
+          l.products?.sku ||
+          l.lot_items?.[0]?.products?.sku ||
+          'SKU';
+
+        lotMap.set(l.id, {
+          code: l.code,
+          stt: l.daily_seq ? decodeSTT(l.daily_seq) : null,
+          product_name: prodName,
+          sku,
+          packaging_date: l.packaging_date,
+          inbound_date: l.inbound_date,
+          quantity: l.quantity
+        });
+      });
+    }
+
+    // 4. Fetch pending assignments
+    const { data: pendingData } = await client
+      .from('pending_assignments')
+      .select('position_id, lot_stt, production_date')
+      .eq('system_code', 'KHO_DONG_LANH')
+      .eq('status', 'pending');
+
+    const pendingMap = new Map<string, any>();
+    pendingData?.forEach((p: any) => {
+      if (p.position_id) {
+        pendingMap.set(p.position_id, {
+          stt: decodeSTT(p.lot_stt),
+          packaging_date: p.production_date
+        });
+      }
+    });
+
+    // 5. Combine into formatted positions
+    const formattedPositions = rawPositions.map((p: any) => {
+      const lotInfo = p.lot_id ? lotMap.get(p.lot_id) : null;
+      const pendInfo = pendingMap.get(p.id);
+
+      const stt = lotInfo?.stt || pendInfo?.stt || null;
+      const lotCode = lotInfo?.code || (pendInfo ? 'Chờ duyệt LOT' : null);
+      const productName = lotInfo?.product_name || (pendInfo ? 'Đang chờ gán LOT' : null);
+      const sku = lotInfo?.sku || null;
+      const pkgDate = lotInfo?.packaging_date || pendInfo?.packaging_date || null;
+
+      return {
+        id: p.id,
+        code: p.code,
+        lot_id: p.lot_id || (pendInfo ? 'pending' : null),
+        zone_ids: zpMap.get(p.id) || [],
+        stt,
+        lot_code: lotCode,
+        product_name: productName,
+        sku,
+        packaging_date: pkgDate,
+        inbound_date: lotInfo?.inbound_date || null,
+        quantity: lotInfo?.quantity || null
+      };
+    });
+
+    const now = new Date().toISOString();
+    const warehousesCount = rawZones.filter((z: any) => !z.parent_id).length;
+
+    const snapshot: WarehouseMapOfflineData = {
+      zones: rawZones,
+      positions: formattedPositions,
+      cachedAt: now,
+      totalPositions: formattedPositions.length,
+      totalWarehouses: warehousesCount
+    };
+
+    await AsyncStorage.setItem('warehouse_map_offline_cache', JSON.stringify(snapshot));
+    await AsyncStorage.setItem('warehouse_map_cached_at', now);
+    await AsyncStorage.setItem('warehouse_map_cached_count', String(formattedPositions.length));
+    await AsyncStorage.setItem('warehouse_map_cached_warehouses', String(warehousesCount));
+
+    return {
+      success: true,
+      totalPositions: formattedPositions.length,
+      totalWarehouses: warehousesCount,
+      lastSyncedAt: now,
+      message: `Đã lưu thành công ${formattedPositions.length} vị trí (${warehousesCount} kho) vào máy để xem ngoại tuyến!`
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      totalPositions: 0,
+      totalWarehouses: 0,
+      message: err.message || 'Lỗi khi tải dữ liệu sơ đồ kho ngoại tuyến'
+    };
+  }
+}
+
+/**
+ * Lấy dữ liệu Sơ Đồ Kho Offline đã lưu trong máy
+ */
+export async function getWarehouseMapOfflineData(): Promise<WarehouseMapOfflineData | null> {
+  try {
+    const raw = await AsyncStorage.getItem('warehouse_map_offline_cache');
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Lấy thông tin lần đồng bộ Sơ Đồ Kho Offline cuối
+ */
+export async function getLastWarehouseMapOfflineSyncInfo(): Promise<{
+  lastSyncedAt: string | null;
+  count: number;
+  warehousesCount: number;
+}> {
+  try {
+    const time = await AsyncStorage.getItem('warehouse_map_cached_at');
+    const countStr = await AsyncStorage.getItem('warehouse_map_cached_count');
+    const whCountStr = await AsyncStorage.getItem('warehouse_map_cached_warehouses');
+    return {
+      lastSyncedAt: time,
+      count: parseInt(countStr || '0', 10) || 0,
+      warehousesCount: parseInt(whCountStr || '0', 10) || 0
+    };
+  } catch {
+    return { lastSyncedAt: null, count: 0, warehousesCount: 0 };
+  }
+}

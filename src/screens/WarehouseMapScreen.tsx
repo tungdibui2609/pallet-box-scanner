@@ -9,11 +9,17 @@ import {
   ActivityIndicator,
   Modal,
   FlatList,
-  Platform
+  Platform,
+  Alert
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
-import { getSupabaseClient } from '../services/supabase';
+import {
+  getSupabaseClient,
+  syncWarehouseMapOffline,
+  getWarehouseMapOfflineData,
+  getLastWarehouseMapOfflineSyncInfo
+} from '../services/supabase';
 import { decodeSTT } from '../utils/numberUtils';
 
 interface ZoneItem {
@@ -57,140 +63,90 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
   // Modal detail
   const [selectedPosDetail, setSelectedPosDetail] = useState<PositionItem | null>(null);
 
+  // Offline state
+  const [isOffline, setIsOffline] = useState(false);
+  const [cachedAt, setCachedAt] = useState<string | null>(null);
+  const [downloadingOffline, setDownloadingOffline] = useState(false);
+
   // ── Fetch Master Data (Zones, Positions, Lots) ─────────────────
   const loadMapData = useCallback(async (isSilent = false) => {
     if (!isSilent) setLoading(true);
     else setRefreshing(true);
 
+    // 1. Initial cached fallback if not loaded yet
     try {
-      const client = await getSupabaseClient();
-
-      // 1. Fetch Zones
-      const { data: zonesData } = await client
-        .from('zones')
-        .select('id, name, parent_id, system_type')
-        .eq('system_type', 'KHO_DONG_LANH');
-
-      const rawZones: ZoneItem[] = zonesData || [];
-      setZones(rawZones);
-
-      // 2. Fetch positions & zone_positions
-      const [posRes, zpRes] = await Promise.all([
-        client
-          .from('positions')
-          .select('id, code, lot_id, system_type')
-          .eq('system_type', 'KHO_DONG_LANH'),
-        client.from('zone_positions').select('position_id, zone_id')
-      ]);
-
-      const rawPositions = posRes.data || [];
-      const zpList = zpRes.data || [];
-
-      const zpMap = new Map<string, string[]>();
-      zpList.forEach((item: any) => {
-        const list = zpMap.get(item.position_id) || [];
-        list.push(item.zone_id);
-        zpMap.set(item.position_id, list);
-      });
-
-      // 3. Fetch Lots info for occupied positions
-      const occupiedLotIds = Array.from(new Set(rawPositions.map((p: any) => p.lot_id).filter(Boolean)));
-      let lotMap = new Map<string, any>();
-
-      if (occupiedLotIds.length > 0) {
-        const { data: lotsData } = await client
-          .from('lots')
-          .select(`
-            id,
-            code,
-            daily_seq,
-            packaging_date,
-            inbound_date,
-            quantity,
-            products ( name, sku ),
-            lot_items ( products ( name, sku ) )
-          `)
-          .in('id', occupiedLotIds);
-
-        lotsData?.forEach((l: any) => {
-          const prodName =
-            l.products?.name ||
-            l.lot_items?.[0]?.products?.name ||
-            'Hàng đông lạnh';
-          const sku =
-            l.products?.sku ||
-            l.lot_items?.[0]?.products?.sku ||
-            'SKU';
-
-          lotMap.set(l.id, {
-            code: l.code,
-            stt: l.daily_seq ? decodeSTT(l.daily_seq) : null,
-            product_name: prodName,
-            sku,
-            packaging_date: l.packaging_date,
-            inbound_date: l.inbound_date,
-            quantity: l.quantity
-          });
-        });
-      }
-
-      // 4. Fetch pending assignments
-      const { data: pendingData } = await client
-        .from('pending_assignments')
-        .select('position_id, lot_stt, production_date')
-        .eq('system_code', 'KHO_DONG_LANH')
-        .eq('status', 'pending');
-
-      const pendingMap = new Map<string, any>();
-      pendingData?.forEach((p: any) => {
-        if (p.position_id) {
-          pendingMap.set(p.position_id, {
-            stt: decodeSTT(p.lot_stt),
-            packaging_date: p.production_date
-          });
+      const offline = await getWarehouseMapOfflineData();
+      if (offline && offline.zones && offline.zones.length > 0) {
+        setZones(offline.zones);
+        setPositions(offline.positions);
+        setCachedAt(offline.cachedAt);
+        if (!selectedWarehouseId) {
+          const firstWh = offline.zones.find((z: any) => !z.parent_id);
+          if (firstWh) setSelectedWarehouseId(firstWh.id);
         }
-      });
+      }
+    } catch {
+      // ignore
+    }
 
-      // Combine positions
-      const formattedPositions: PositionItem[] = rawPositions.map((p: any) => {
-        const lotInfo = p.lot_id ? lotMap.get(p.lot_id) : null;
-        const pendInfo = pendingMap.get(p.id);
-
-        const stt = lotInfo?.stt || pendInfo?.stt || null;
-        const lotCode = lotInfo?.code || (pendInfo ? 'Chờ duyệt LOT' : null);
-        const productName = lotInfo?.product_name || (pendInfo ? 'Đang chờ gán LOT' : null);
-        const sku = lotInfo?.sku || null;
-        const pkgDate = lotInfo?.packaging_date || pendInfo?.packaging_date || null;
-
-        return {
-          id: p.id,
-          code: p.code,
-          lot_id: p.lot_id || (pendInfo ? 'pending' : null),
-          zone_ids: zpMap.get(p.id) || [],
-          stt,
-          lot_code: lotCode,
-          product_name: productName,
-          sku,
-          packaging_date: pkgDate,
-          inbound_date: lotInfo?.inbound_date || null,
-          quantity: lotInfo?.quantity || null
-        };
-      });
-
-      setPositions(formattedPositions);
-
-      // Auto-select first warehouse
-      if (!selectedWarehouseId) {
-        const firstWh = rawZones.find(z => !z.parent_id);
-        if (firstWh) setSelectedWarehouseId(firstWh.id);
+    // 2. Fetch fresh online & auto-cache
+    try {
+      const res = await syncWarehouseMapOffline();
+      if (res.success) {
+        const fresh = await getWarehouseMapOfflineData();
+        if (fresh) {
+          setZones(fresh.zones);
+          setPositions(fresh.positions);
+          setCachedAt(fresh.cachedAt);
+          setIsOffline(false);
+          if (!selectedWarehouseId) {
+            const firstWh = fresh.zones.find((z: any) => !z.parent_id);
+            if (firstWh) setSelectedWarehouseId(firstWh.id);
+          }
+        }
+      } else {
+        const offline = await getWarehouseMapOfflineData();
+        if (offline && offline.positions.length > 0) {
+          setIsOffline(true);
+        }
       }
     } catch (err: any) {
-      console.warn('Lỗi tải dữ liệu sơ đồ kho trên mobile:', err);
+      console.warn('Lỗi tải dữ liệu sơ đồ kho trên mobile (dùng offline):', err);
+      setIsOffline(true);
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
   }, [selectedWarehouseId]);
+
+  const handleDownloadOffline = async () => {
+    setDownloadingOffline(true);
+    try {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      const res = await syncWarehouseMapOffline();
+      if (res.success) {
+        const fresh = await getWarehouseMapOfflineData();
+        if (fresh) {
+          setZones(fresh.zones);
+          setPositions(fresh.positions);
+          setCachedAt(fresh.cachedAt);
+          setIsOffline(false);
+        }
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        Alert.alert(
+          'Tải Ngoại Tuyến Thành Công!',
+          `Đã lưu toàn bộ ${res.totalPositions} vị trí (${res.totalWarehouses} kho) vào bộ nhớ máy.\n\nNhân viên có thể yên tâm mang điện thoại vào kho đông để kiểm tra vị trí ngay cả khi không có sóng Wi-Fi/4G.`
+        );
+      } else {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+        Alert.alert('Không thể tải', res.message || 'Vui lòng kiểm tra lại kết nối mạng');
+      }
+    } catch (err: any) {
+      Alert.alert('Lỗi', err.message || 'Không thể kết nối máy chủ');
+    } finally {
+      setDownloadingOffline(false);
+    }
+  };
 
   useEffect(() => {
     loadMapData();
@@ -357,21 +313,59 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
           </View>
         </View>
 
-        <TouchableOpacity
-          style={styles.refreshBtn}
-          onPress={() => {
-            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-            loadMapData(true);
-          }}
-          disabled={refreshing}
-        >
-          {refreshing ? (
-            <ActivityIndicator size="small" color="#38bdf8" />
-          ) : (
-            <Ionicons name="refresh" size={18} color="#cbd5e1" />
-          )}
-        </TouchableOpacity>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+          <TouchableOpacity
+            style={styles.downloadOfflineBtn}
+            onPress={handleDownloadOffline}
+            disabled={downloadingOffline}
+          >
+            {downloadingOffline ? (
+              <ActivityIndicator size="small" color="#fff" />
+            ) : (
+              <Ionicons name="cloud-download-outline" size={18} color="#34d399" />
+            )}
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.refreshBtn}
+            onPress={() => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              loadMapData(true);
+            }}
+            disabled={refreshing}
+          >
+            {refreshing ? (
+              <ActivityIndicator size="small" color="#38bdf8" />
+            ) : (
+              <Ionicons name="refresh" size={18} color="#cbd5e1" />
+            )}
+          </TouchableOpacity>
+        </View>
       </View>
+
+      {/* ── OFFLINE STATUS BANNER (When inside cold storage without network) ── */}
+      {isOffline && (
+        <View style={styles.offlineBanner}>
+          <Ionicons name="snow-outline" size={16} color="#fbbf24" />
+          <View style={{ flex: 1 }}>
+            <Text style={styles.offlineBannerTitle}>Đang xem Ngoại Tuyến (Offline)</Text>
+            <Text style={styles.offlineBannerSub}>
+              {cachedAt
+                ? `Bản tải lúc: ${new Date(cachedAt).toLocaleTimeString('vi-VN')} ${new Date(cachedAt).toLocaleDateString('vi-VN')}`
+                : 'Dữ liệu đã lưu trong bộ nhớ máy'}
+            </Text>
+          </View>
+          <TouchableOpacity
+            onPress={() => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              loadMapData(true);
+            }}
+            style={styles.retryBtn}
+          >
+            <Text style={styles.retryBtnText}>Thử lại</Text>
+          </TouchableOpacity>
+        </View>
+      )}
 
       {/* ── SEARCH BAR WITH AUTOCOMPLETE ───────────────────────── */}
       <View style={styles.searchSection}>
@@ -1410,5 +1404,48 @@ const styles = StyleSheet.create({
     color: '#ffffff',
     fontSize: 12,
     fontWeight: '800'
+  },
+  offlineBanner: {
+    backgroundColor: '#78350f',
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    gap: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f59e0b55'
+  },
+  offlineBannerTitle: {
+    color: '#fef3c7',
+    fontSize: 12,
+    fontWeight: '800'
+  },
+  offlineBannerSub: {
+    color: '#fde68a',
+    fontSize: 10,
+    marginTop: 1
+  },
+  retryBtn: {
+    backgroundColor: '#f59e0b33',
+    borderWidth: 1,
+    borderColor: '#f59e0b88',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 8
+  },
+  retryBtnText: {
+    color: '#fef3c7',
+    fontSize: 11,
+    fontWeight: '800'
+  },
+  downloadOfflineBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 12,
+    backgroundColor: '#064e3b',
+    borderWidth: 1,
+    borderColor: '#10b981',
+    alignItems: 'center',
+    justifyContent: 'center'
   }
 });
