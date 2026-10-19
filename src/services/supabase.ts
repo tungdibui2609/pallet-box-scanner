@@ -1070,8 +1070,8 @@ export async function syncWarehouseMapOffline(): Promise<{
               packaging_date,
               inbound_date,
               quantity,
-              products ( name, sku, unit ),
-              lot_items ( quantity, unit, products ( name, sku, unit ) ),
+              products ( name, sku, unit, aliases ),
+              lot_items ( quantity, unit, products ( name, sku, unit, aliases ) ),
               lot_tags ( tag )
             `)
             .in('id', chunk)
@@ -1095,6 +1095,11 @@ export async function syncWarehouseMapOffline(): Promise<{
               l.lot_items?.[0]?.products?.sku ||
               (tags.length > 0 ? tags[0] : '---');
 
+            const aliases =
+              l.products?.aliases ||
+              l.lot_items?.[0]?.products?.aliases ||
+              null;
+
             const unit =
               l.products?.unit ||
               l.lot_items?.[0]?.unit ||
@@ -1105,6 +1110,7 @@ export async function syncWarehouseMapOffline(): Promise<{
               stt: l.daily_seq ? decodeSTT(l.daily_seq) : null,
               product_name: prodName,
               sku,
+              aliases,
               unit,
               tags,
               packaging_date: l.packaging_date ? String(l.packaging_date).split('T')[0] : null,
@@ -1142,6 +1148,7 @@ export async function syncWarehouseMapOffline(): Promise<{
       const lotCode = lotInfo?.code || (pendInfo ? 'Chờ duyệt LOT' : null);
       const productName = lotInfo?.product_name || (pendInfo ? 'Đang chờ gán LOT' : null);
       const sku = lotInfo?.sku || null;
+      const aliases = lotInfo?.aliases || null;
       const unit = lotInfo?.unit || 'Thùng';
       const tags = lotInfo?.tags || [];
       const pkgDate = lotInfo?.packaging_date || pendInfo?.packaging_date || null;
@@ -1155,6 +1162,7 @@ export async function syncWarehouseMapOffline(): Promise<{
         lot_code: lotCode,
         product_name: productName,
         sku,
+        aliases,
         unit,
         tags,
         packaging_date: pkgDate,

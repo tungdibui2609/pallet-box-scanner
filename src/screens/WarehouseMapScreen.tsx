@@ -22,6 +22,7 @@ import {
 } from '../services/supabase';
 import { decodeSTT } from '../utils/numberUtils';
 import { groupWarehouseData } from '../utils/warehouseUtils';
+import { matchPalletSearch, calculateSearchScore } from '../utils/searchUtils';
 
 interface ZoneItem {
   id: string;
@@ -39,6 +40,7 @@ interface PositionItem {
   lot_code?: string | null;
   product_name?: string | null;
   sku?: string | null;
+  aliases?: string | null;
   unit?: string | null;
   tags?: string[];
   packaging_date?: string | null;
@@ -277,20 +279,19 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
     return map;
   }, [selectedSlotId, selectedTierId, tiers, positions, getDescendantZoneIds]);
 
-  // ── Search & Jump to Position ──────────────────────────────────
+  // ── Search & Jump to Position (Smart Vietnamese & Abbreviation search) ──
   const searchResults = useMemo(() => {
-    const q = searchQuery.trim().toUpperCase();
+    const q = searchQuery.trim();
     if (!q || q.length < 1) return [];
 
     return positions
-      .filter(p => {
-        const matchCode = p.code.toUpperCase().includes(q);
-        const matchStt = p.stt && p.stt.toUpperCase().includes(q);
-        const matchLot = p.lot_code && p.lot_code.toUpperCase().includes(q);
-        const matchProd = p.product_name && p.product_name.toUpperCase().includes(q);
-        return matchCode || matchStt || matchLot || matchProd;
+      .filter(p => matchPalletSearch(p, q))
+      .sort((a, b) => {
+        const scoreA = calculateSearchScore(a, q, { name: a.product_name, code: a.code, lot_code: a.lot_code, aliases: a.aliases });
+        const scoreB = calculateSearchScore(b, q, { name: b.product_name, code: b.code, lot_code: b.lot_code, aliases: b.aliases });
+        return scoreB - scoreA;
       })
-      .slice(0, 10);
+      .slice(0, 15);
   }, [searchQuery, positions]);
 
   const handleSelectSearchResult = (pos: PositionItem) => {
@@ -485,9 +486,16 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
                         )}
                       </View>
                       {p.lot_code && (
-                        <Text style={styles.dropdownItemLot} numberOfLines={1}>
-                          {p.product_name || p.lot_code}
-                        </Text>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 2, flexWrap: 'wrap' }}>
+                          <Text style={[styles.dropdownItemLot, { flexShrink: 1 }]} numberOfLines={1}>
+                            {p.product_name || p.lot_code}
+                          </Text>
+                          {p.aliases ? (
+                            <View style={{ backgroundColor: '#064e3b', paddingHorizontal: 4, paddingVertical: 1, borderRadius: 4, borderWidth: 1, borderColor: '#10b98144' }}>
+                              <Text style={{ color: '#6ee7b7', fontSize: 9, fontWeight: '700' }}>⚡ {p.aliases}</Text>
+                            </View>
+                          ) : null}
+                        </View>
                       )}
                     </View>
                     <Ionicons name="chevron-forward" size={16} color="#64748b" />
@@ -966,6 +974,15 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
                         {selectedPosDetail.inbound_date || '---'}
                       </Text>
                     </View>
+
+                    {selectedPosDetail.aliases && (
+                      <View style={[styles.modalGridCell, { width: '100%' }]}>
+                        <Text style={styles.modalDim}>TÊN VIẾT TẮT (GÕ TẮT):</Text>
+                        <Text style={[styles.modalVal, { color: '#6ee7b7' }]}>
+                          ⚡ {selectedPosDetail.aliases}
+                        </Text>
+                      </View>
+                    )}
 
                     {selectedPosDetail.tags && selectedPosDetail.tags.length > 0 && (
                       <View style={{ width: '100%', paddingTop: 6, borderTopWidth: 1, borderTopColor: '#1e293b' }}>

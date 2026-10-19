@@ -202,3 +202,128 @@ export function calculateSearchScore(data: any, term: string, extra?: Record<str
 
   return score;
 }
+
+/**
+ * Kiểm tra chuỗi sub có phải là chuỗi con thứ tự (subsequence) của target hay không.
+ * Ví dụ: 'srmc' là chuỗi con thứ tự của 't p c d s r m m c' -> true
+ */
+export function isSubsequence(sub: string, target: string): boolean {
+  if (!sub) return true;
+  if (!target) return false;
+  let i = 0, j = 0;
+  while (i < sub.length && j < target.length) {
+    if (sub[i] === target[j]) i++;
+    j++;
+  }
+  return i === sub.length;
+}
+
+export const COMMON_PALLET_ALIASES: Record<string, string> = {
+  mt: 'monthong',
+  sr: 'sau rieng',
+  cd: 'cap dong',
+  hd: 'ham dong',
+  r6: 'ri6 ri-6',
+  tc: 'tieu chuan',
+  cl: 'chat luong',
+  tp: 'thanh pham',
+  bt: 'ben tre',
+  tn: 'tay nguyen',
+  dl: 'dak lak daklak'
+};
+
+/**
+ * Thuật toán tìm kiếm Pallet thông minh:
+ * 1. Khớp mã STT (G23), mã LOT (LOT-2024...), ghi chú
+ * 2. Khớp chuỗi trực tiếp (có dấu & không dấu)
+ * 3. Khớp tên gõ tắt / viết tắt aliases (VD: 'đô c', 'dona c', 'srmc')
+ * 4. Khớp từ viết tắt/chữ cái đầu (Acronym / Initials subsequence): VD: 'srmc' -> 'Sầu Riêng Monthong C'
+ * 5. Khớp từng từ gõ tắt / tiền tố (Multi-keyword prefix): VD: 'Đô c' / 'do c' -> 'đông' và 'c'
+ * 6. Mở rộng từ viết tắt nông sản phổ biến: mt -> monthong, sr -> sầu riêng, cd -> cấp đông, r6 -> ri6...
+ */
+export function matchPalletSearch(pallet: any, query: string): boolean {
+  if (!query || !query.trim()) return true;
+  if (!pallet) return false;
+
+  const rawQ = query.trim();
+  const qNorm = rawQ.toLowerCase().normalize('NFC');
+  const qUnacc = normalizeSearchString(rawQ, true);
+
+  const stt = String(pallet.stt || '').trim();
+  const lotCode = String(pallet.lot_code || '').trim();
+  const prodName = String(pallet.product_name || '').trim();
+  const sku = String(pallet.sku || '').trim();
+  const aliases = String(pallet.product_aliases || pallet.aliases || '').trim();
+  const locationCode = String(pallet.location_code || pallet.code || '').trim();
+  const tag = Array.isArray(pallet.tags) ? pallet.tags.join(' ') : String(pallet.tag || '').trim();
+  const notes = String(pallet.notes || '').trim();
+
+  // 1. Khớp trực tiếp trên STT, LOT Code, Vị trí kho và Tag (nhanh nhất)
+  const sttUnacc = normalizeSearchString(stt, true);
+  const lotUnacc = normalizeSearchString(lotCode, true);
+  const locUnacc = normalizeSearchString(locationCode, true);
+  const tagUnacc = normalizeSearchString(tag, true);
+  if (sttUnacc.includes(qUnacc) || lotUnacc.includes(qUnacc) || locUnacc.includes(qUnacc) || tagUnacc.includes(qUnacc)) return true;
+
+  // 2. Khớp trực tiếp trên trường aliases (Tên viết tắt)
+  if (aliases) {
+    const normAlias = normalizeSearchString(aliases);
+    const unaccAlias = normalizeSearchString(aliases, true);
+    if (normAlias.includes(qNorm) || unaccAlias.includes(qUnacc)) return true;
+  }
+
+  // 3. Khớp chuỗi trên toàn bộ thông tin gộp
+  const fullText = [stt, lotCode, prodName, sku, aliases, locationCode, tag, notes].filter(Boolean).join(' ');
+  const fullNorm = fullText.toLowerCase().normalize('NFC');
+  const fullUnacc = normalizeSearchString(fullText, true);
+
+  if (fullNorm.includes(qNorm) || fullUnacc.includes(qUnacc)) return true;
+
+  // 4. Tách từ & chữ cái đầu (Initials)
+  const wordsNorm = fullNorm.split(/[^a-z0-9\u00C0-\u024F\u1EA0-\u1EF9]+/i).filter(Boolean);
+  const wordsUnacc = fullUnacc.split(/[^a-z0-9]+/i).filter(Boolean);
+  const initials = wordsUnacc.map(w => w[0]).join('');
+
+  // 5. Kiểm tra chuỗi viết tắt (Acronym / Initials) khi gõ liền (VD: 'srmc', 'srmmc', 'cd')
+  const qTokensUnacc = qUnacc.split(/\s+/).filter(Boolean);
+  const qTokensNorm = qNorm.split(/\s+/).filter(Boolean);
+
+  if (qTokensUnacc.length === 1) {
+    const single = qTokensUnacc[0];
+    if (single.length >= 2 && isSubsequence(single, initials)) return true;
+  }
+
+  // 6. Kiểm tra tiền tố của từng từ (Prefix matching): Mọi từ khóa người dùng gõ phải khớp tiền tố hoặc chứa trong ít nhất 1 từ
+  // Ví dụ người dùng gõ: "Đô c" -> từ "đô" khớp tiền tố "đông", từ "c" khớp từ "C"
+  const allTokensMatch = qTokensUnacc.every((kUnacc, idx) => {
+    const kNorm = qTokensNorm[idx] || kUnacc;
+
+    // Kiểm tra từ điển gõ tắt phổ biến
+    const expanded = COMMON_PALLET_ALIASES[kUnacc];
+    if (expanded) {
+      const expWords = expanded.split(/\s+/);
+      const matchesExp = expWords.some(ew => wordsUnacc.some(w => w.startsWith(ew) || (ew.length > 2 && w.includes(ew))));
+      if (matchesExp) return true;
+    }
+
+    // Khớp tiền tố hoặc chứa từ (không dấu)
+    const matchWordUnacc = wordsUnacc.some(w => {
+      if (w.startsWith(kUnacc)) return true;
+      if (kUnacc.length > 2 && w.includes(kUnacc)) return true;
+      return false;
+    });
+    if (matchWordUnacc) return true;
+
+    // Khớp tiền tố hoặc chứa từ (có dấu)
+    const matchWordNorm = wordsNorm.some(w => {
+      if (w.startsWith(kNorm)) return true;
+      if (kNorm.length > 2 && w.includes(kNorm)) return true;
+      return false;
+    });
+    if (matchWordNorm) return true;
+
+    return false;
+  });
+
+  return allTokensMatch;
+}
