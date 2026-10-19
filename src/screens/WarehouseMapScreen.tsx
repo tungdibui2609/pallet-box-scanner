@@ -22,7 +22,7 @@ import {
 } from '../services/supabase';
 import { decodeSTT } from '../utils/numberUtils';
 import { groupWarehouseData } from '../utils/warehouseUtils';
-import { matchPalletSearch, calculateSearchScore } from '../utils/searchUtils';
+import { matchPalletSearch, calculateSearchScore, matchSearch } from '../utils/searchUtils';
 
 interface ZoneItem {
   id: string;
@@ -61,29 +61,15 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
   const [selectedTierId, setSelectedTierId] = useState<string | null>(null);
   const [onlyShowMatches, setOnlyShowMatches] = useState(false);
 
-  // Search state
+  // Search & Product Suggestions state
   const [searchInput, setSearchInput] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
+  const [showSuggestions, setShowSuggestions] = useState(false);
   const [activeView, setActiveView] = useState<'map' | 'search_list'>('map');
   const [searchFilterWhId, setSearchFilterWhId] = useState<string>('all');
   const [searchFilterStatus, setSearchFilterStatus] = useState<'all' | 'occupied' | 'empty'>('all');
   const [searchPageLimit, setSearchPageLimit] = useState<number>(50);
   const [highlightedPosId, setHighlightedPosId] = useState<string | null>(null);
-
-  // Debounce search query update (180ms) for 60fps instant typing on mobile
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      const trimmed = searchInput.trim();
-      setSearchQuery(trimmed);
-      if (trimmed) {
-        setActiveView('search_list');
-        setSearchPageLimit(50);
-      } else {
-        setActiveView('map');
-      }
-    }, 180);
-    return () => clearTimeout(timer);
-  }, [searchInput]);
 
   // Modal detail
   const [selectedPosDetail, setSelectedPosDetail] = useState<PositionItem | null>(null);
@@ -285,6 +271,112 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
     },
     [zonePathMap]
   );
+
+  // ── Danh sách sản phẩm duy nhất đang có trong kho ──────────────
+  const uniqueProducts = useMemo(() => {
+    const prodMap = new Map<string, {
+      name: string;
+      sku: string | null;
+      aliases: string | null;
+      unit: string;
+      positionCount: number;
+      totalQuantity: number;
+    }>();
+
+    for (let i = 0; i < positions.length; i++) {
+      const p = positions[i];
+      if (p.product_name && p.lot_id) {
+        const name = p.product_name.trim();
+        const existing = prodMap.get(name);
+        if (existing) {
+          existing.positionCount++;
+          existing.totalQuantity += (p.quantity || 0);
+          if (!existing.aliases && p.aliases) existing.aliases = p.aliases;
+          if (!existing.sku && p.sku) existing.sku = p.sku;
+        } else {
+          prodMap.set(name, {
+            name,
+            sku: p.sku || null,
+            aliases: p.aliases || null,
+            unit: p.unit || 'Thùng',
+            positionCount: 1,
+            totalQuantity: p.quantity || 0
+          });
+        }
+      }
+    }
+
+    return Array.from(prodMap.values());
+  }, [positions]);
+
+  // Gợi ý sản phẩm thông minh khi người dùng gõ từ khóa (VD: gõ "đô" -> hiện gợi ý sản phẩm)
+  const productSuggestions = useMemo(() => {
+    const q = searchInput.trim();
+    if (!q || q.length < 1) return [];
+
+    const list: Array<{
+      product: typeof uniqueProducts[0];
+      score: number;
+      matchedAlias?: string;
+    }> = [];
+
+    for (let i = 0; i < uniqueProducts.length; i++) {
+      const prod = uniqueProducts[i];
+      let matched = false;
+      let score = 0;
+      let matchedAlias: string | undefined;
+
+      // 1. Khớp theo alias (tên viết tắt / gõ tắt: VD "đô c" -> "đô c có hạt")
+      if (prod.aliases) {
+        const aliasList = prod.aliases.split(',').map(a => a.trim()).filter(Boolean);
+        const found = aliasList.find(a => matchSearch(a, q));
+        if (found) {
+          matched = true;
+          score = 1500;
+          matchedAlias = found;
+        }
+      }
+
+      // 2. Khớp theo tên sản phẩm hoặc SKU
+      if (!matched) {
+        const s = calculateSearchScore(prod, q);
+        if (s > 0) {
+          matched = true;
+          score = s;
+        } else if (matchSearch(prod, q)) {
+          matched = true;
+          score = 500;
+        }
+      }
+
+      if (matched) {
+        list.push({ product: prod, score, matchedAlias });
+      }
+    }
+
+    return list.sort((a, b) => b.score - a.score).slice(0, 8);
+  }, [searchInput, uniqueProducts]);
+
+  // Chọn sản phẩm gợi ý -> thực hiện tìm kiếm liệt kê tất cả vị trí có sản phẩm đó
+  const handleSelectProductSuggestion = (productName: string) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setSearchInput(productName);
+    setSearchQuery(productName);
+    setShowSuggestions(false);
+    setActiveView('search_list');
+    setSearchPageLimit(50);
+  };
+
+  // Thực hiện tìm kiếm tự do khi ấn Enter hoặc nút Tìm
+  const handleExecuteSearch = (term?: string) => {
+    const q = (term !== undefined ? term : searchInput).trim();
+    if (!q) return;
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setSearchQuery(q);
+    setShowSuggestions(false);
+    setActiveView('search_list');
+    setSearchPageLimit(50);
+  };
 
   // ── Search & Filter Logic (High Performance with Pre-Scoring) ──
   const matchingPositions = useMemo(() => {
@@ -618,41 +710,121 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
         </View>
       )}
 
-      {/* ── SEARCH BAR ────────────────────────────────────────── */}
-      <View style={styles.searchSection}>
-        <View style={styles.searchInputWrap}>
-          <Ionicons name="search" size={16} color="#94a3b8" style={styles.searchIcon} />
-          <TextInput
-            style={styles.searchInput}
-            value={searchInput}
-            onChangeText={txt => setSearchInput(txt)}
-            onSubmitEditing={() => {
-              const val = searchInput.trim();
-              setSearchQuery(val);
-              if (val.length > 0) {
-                setActiveView('search_list');
-                setSearchPageLimit(50);
-              }
-            }}
-            returnKeyType="search"
-            placeholder="Tìm theo STT (G22...), Mã Vị Trí, LOT, SP..."
-            placeholderTextColor="#64748b"
-            autoCapitalize="characters"
-          />
-          {searchInput.length > 0 && (
-            <TouchableOpacity
-              onPress={() => {
-                setSearchInput('');
-                setSearchQuery('');
-                setActiveView('map');
-                setHighlightedPosId(null);
+      {/* ── SEARCH BAR WITH PRODUCT SUGGESTIONS (Gõ "đô" -> Gợi ý sản phẩm) ── */}
+      <View style={[styles.searchSection, { zIndex: 100 }]}>
+        <View style={styles.searchInputRow}>
+          <View style={styles.searchInputWrap}>
+            <Ionicons name="search" size={16} color="#94a3b8" style={styles.searchIcon} />
+            <TextInput
+              style={styles.searchInput}
+              value={searchInput}
+              onChangeText={txt => {
+                setSearchInput(txt);
+                setShowSuggestions(true);
               }}
-              style={styles.clearSearchBtn}
-            >
-              <Ionicons name="close-circle" size={18} color="#94a3b8" />
-            </TouchableOpacity>
-          )}
+              onFocus={() => {
+                if (searchInput.trim().length > 0) setShowSuggestions(true);
+              }}
+              onSubmitEditing={() => handleExecuteSearch()}
+              returnKeyType="search"
+              placeholder="Nhập tên sản phẩm (đô, ri6...), LOT, vị trí..."
+              placeholderTextColor="#64748b"
+            />
+            {searchInput.length > 0 && (
+              <TouchableOpacity
+                onPress={() => {
+                  setSearchInput('');
+                  setSearchQuery('');
+                  setShowSuggestions(false);
+                  setActiveView('map');
+                  setHighlightedPosId(null);
+                }}
+                style={styles.clearSearchBtn}
+              >
+                <Ionicons name="close-circle" size={18} color="#94a3b8" />
+              </TouchableOpacity>
+            )}
+          </View>
+
+          <TouchableOpacity
+            style={styles.searchSubmitBtn}
+            onPress={() => handleExecuteSearch()}
+          >
+            <Ionicons name="search" size={14} color="#fff" />
+            <Text style={styles.searchSubmitBtnText}>Tìm</Text>
+          </TouchableOpacity>
         </View>
+
+        {/* ── DROPDOWN GỢI Ý SẢN PHẨM ── */}
+        {showSuggestions && searchInput.trim().length > 0 && (
+          <View style={styles.suggestionsCard}>
+            <View style={styles.suggestionsHeader}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+                <Ionicons name="sparkles" size={12} color="#fbbf24" />
+                <Text style={styles.suggestionsHeaderTitle}>
+                  GỢI Ý SẢN PHẨM ({productSuggestions.length})
+                </Text>
+              </View>
+              <Text style={styles.suggestionsHeaderSub}>Chạm để chọn & tìm vị trí</Text>
+            </View>
+
+            {productSuggestions.length > 0 ? (
+              <ScrollView style={{ maxHeight: 220 }} keyboardShouldPersistTaps="handled">
+                {productSuggestions.map((item, idx) => (
+                  <TouchableOpacity
+                    key={idx}
+                    style={styles.suggestionItem}
+                    onPress={() => handleSelectProductSuggestion(item.product.name)}
+                  >
+                    <View style={{ flex: 1 }}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}>
+                        <Text style={styles.suggestionTitle} numberOfLines={1}>
+                          {item.product.name}
+                        </Text>
+                        {item.matchedAlias ? (
+                          <View style={styles.suggestionAliasBadge}>
+                            <Text style={styles.suggestionAliasText}>⚡ {item.matchedAlias}</Text>
+                          </View>
+                        ) : item.product.aliases ? (
+                          <View style={styles.suggestionAliasBadge}>
+                            <Text style={styles.suggestionAliasText}>⚡ {item.product.aliases}</Text>
+                          </View>
+                        ) : null}
+                      </View>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 2 }}>
+                        <Text style={styles.suggestionCountBadge}>
+                          📍 {item.product.positionCount} vị trí
+                        </Text>
+                        {item.product.sku ? (
+                          <Text style={styles.suggestionMeta}>SKU: {item.product.sku}</Text>
+                        ) : null}
+                      </View>
+                    </View>
+                    <Ionicons name="chevron-forward" size={14} color="#38bdf8" />
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            ) : (
+              <View style={{ padding: 12, alignItems: 'center' }}>
+                <Text style={{ color: '#94a3b8', fontSize: 11 }}>Không có sản phẩm nào khớp từ khóa</Text>
+              </View>
+            )}
+
+            {/* Direct search option */}
+            <TouchableOpacity
+              style={styles.suggestionDirectBtn}
+              onPress={() => handleExecuteSearch()}
+            >
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 }}>
+                <Ionicons name="search" size={12} color="#38bdf8" />
+                <Text style={styles.suggestionDirectText} numberOfLines={1}>
+                  Tìm tất cả vị trí cho "{searchInput.trim()}"
+                </Text>
+              </View>
+              <Text style={styles.suggestionDirectSub}>Tìm ngay →</Text>
+            </TouchableOpacity>
+          </View>
+        )}
       </View>
 
       {/* ── SEARCH VIEW TABS: DANH SÁCH vs SƠ ĐỒ ────────────────── */}
@@ -1584,9 +1756,15 @@ const styles = StyleSheet.create({
     backgroundColor: '#0e1626',
     borderBottomWidth: 1,
     borderBottomColor: '#1e293b',
-    zIndex: 10
+    zIndex: 100
+  },
+  searchInputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8
   },
   searchInputWrap: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#0f172a',
@@ -1607,6 +1785,111 @@ const styles = StyleSheet.create({
   },
   clearSearchBtn: {
     padding: 4
+  },
+  searchSubmitBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#0284c7',
+    paddingHorizontal: 12,
+    height: 40,
+    borderRadius: 12,
+    justifyContent: 'center'
+  },
+  searchSubmitBtnText: {
+    color: '#ffffff',
+    fontSize: 12,
+    fontWeight: '700'
+  },
+  suggestionsCard: {
+    position: 'absolute',
+    top: 52,
+    left: 10,
+    right: 10,
+    backgroundColor: '#0b1324',
+    borderWidth: 1,
+    borderColor: '#38bdf888',
+    borderRadius: 14,
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOpacity: 0.5,
+    shadowRadius: 10,
+    elevation: 12,
+    zIndex: 100
+  },
+  suggestionsHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    backgroundColor: '#0f172a',
+    borderBottomWidth: 1,
+    borderBottomColor: '#1e293b'
+  },
+  suggestionsHeaderTitle: {
+    color: '#38bdf8',
+    fontSize: 11,
+    fontWeight: '800'
+  },
+  suggestionsHeaderSub: {
+    color: '#64748b',
+    fontSize: 9
+  },
+  suggestionItem: {
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#1e293b66',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between'
+  },
+  suggestionTitle: {
+    color: '#f8fafc',
+    fontSize: 12,
+    fontWeight: '700'
+  },
+  suggestionAliasBadge: {
+    backgroundColor: '#f59e0b22',
+    borderColor: '#f59e0b88',
+    borderWidth: 1,
+    paddingHorizontal: 4,
+    paddingVertical: 1,
+    borderRadius: 4
+  },
+  suggestionAliasText: {
+    color: '#fbbf24',
+    fontSize: 9,
+    fontWeight: '800'
+  },
+  suggestionCountBadge: {
+    color: '#38bdf8',
+    fontSize: 10,
+    fontWeight: '700'
+  },
+  suggestionMeta: {
+    color: '#64748b',
+    fontSize: 10
+  },
+  suggestionDirectBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    backgroundColor: '#0f172a',
+    borderTopWidth: 1,
+    borderTopColor: '#1e293b',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between'
+  },
+  suggestionDirectText: {
+    color: '#94a3b8',
+    fontSize: 11
+  },
+  suggestionDirectSub: {
+    color: '#38bdf8',
+    fontSize: 10,
+    fontWeight: '700'
   },
   searchResultsDropdown: {
     position: 'absolute',
