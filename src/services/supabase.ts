@@ -1051,44 +1051,68 @@ export async function syncWarehouseMapOffline(): Promise<{
       zpMap.set(item.position_id, list);
     });
 
-    // 3. Fetch Lots info for occupied positions
+    // 3. Fetch Lots info for occupied positions in chunks of 100 (avoids HTTP 414 Request-URI Too Long)
     const occupiedLotIds = Array.from(new Set(rawPositions.map((p: any) => p.lot_id).filter(Boolean)));
     const lotMap = new Map<string, any>();
 
     if (occupiedLotIds.length > 0) {
-      const { data: lotsData } = await client
-        .from('lots')
-        .select(`
-          id,
-          code,
-          daily_seq,
-          packaging_date,
-          inbound_date,
-          quantity,
-          products ( name, sku ),
-          lot_items ( products ( name, sku ) )
-        `)
-        .in('id', occupiedLotIds);
+      const CHUNK_SIZE = 100;
+      const chunkPromises: Promise<any>[] = [];
+      for (let i = 0; i < occupiedLotIds.length; i += CHUNK_SIZE) {
+        const chunk = occupiedLotIds.slice(i, i + CHUNK_SIZE);
+        chunkPromises.push(
+          client
+            .from('lots')
+            .select(`
+              id,
+              code,
+              daily_seq,
+              packaging_date,
+              inbound_date,
+              quantity,
+              products ( name, sku, unit ),
+              lot_items ( quantity, unit, products ( name, sku, unit ) ),
+              lot_tags ( tag )
+            `)
+            .in('id', chunk)
+        );
+      }
 
-      lotsData?.forEach((l: any) => {
-        const prodName =
-          l.products?.name ||
-          l.lot_items?.[0]?.products?.name ||
-          'Hàng đông lạnh';
-        const sku =
-          l.products?.sku ||
-          l.lot_items?.[0]?.products?.sku ||
-          'SKU';
+      const chunkResults = await Promise.all(chunkPromises);
+      chunkResults.forEach((res: any) => {
+        if (res.data) {
+          res.data.forEach((l: any) => {
+            const tags = (l.lot_tags || []).map((t: any) => t.tag).filter(Boolean);
+            const tagsStr = tags.length > 0 ? tags.join(', ') : '';
 
-        lotMap.set(l.id, {
-          code: l.code,
-          stt: l.daily_seq ? decodeSTT(l.daily_seq) : null,
-          product_name: prodName,
-          sku,
-          packaging_date: l.packaging_date,
-          inbound_date: l.inbound_date,
-          quantity: l.quantity
-        });
+            const prodName =
+              l.products?.name ||
+              l.lot_items?.[0]?.products?.name ||
+              (tagsStr ? `Hàng ${tagsStr}` : 'Hàng đông lạnh');
+
+            const sku =
+              l.products?.sku ||
+              l.lot_items?.[0]?.products?.sku ||
+              (tags.length > 0 ? tags[0] : '---');
+
+            const unit =
+              l.products?.unit ||
+              l.lot_items?.[0]?.unit ||
+              'Thùng';
+
+            lotMap.set(l.id, {
+              code: l.code,
+              stt: l.daily_seq ? decodeSTT(l.daily_seq) : null,
+              product_name: prodName,
+              sku,
+              unit,
+              tags,
+              packaging_date: l.packaging_date ? String(l.packaging_date).split('T')[0] : null,
+              inbound_date: l.inbound_date ? String(l.inbound_date).split('T')[0] : null,
+              quantity: l.quantity || (l.lot_items?.[0]?.quantity ?? null)
+            });
+          });
+        }
       });
     }
 
@@ -1118,6 +1142,8 @@ export async function syncWarehouseMapOffline(): Promise<{
       const lotCode = lotInfo?.code || (pendInfo ? 'Chờ duyệt LOT' : null);
       const productName = lotInfo?.product_name || (pendInfo ? 'Đang chờ gán LOT' : null);
       const sku = lotInfo?.sku || null;
+      const unit = lotInfo?.unit || 'Thùng';
+      const tags = lotInfo?.tags || [];
       const pkgDate = lotInfo?.packaging_date || pendInfo?.packaging_date || null;
 
       return {
@@ -1129,6 +1155,8 @@ export async function syncWarehouseMapOffline(): Promise<{
         lot_code: lotCode,
         product_name: productName,
         sku,
+        unit,
+        tags,
         packaging_date: pkgDate,
         inbound_date: lotInfo?.inbound_date || null,
         quantity: lotInfo?.quantity || null

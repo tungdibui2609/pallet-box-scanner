@@ -39,6 +39,8 @@ interface PositionItem {
   lot_code?: string | null;
   product_name?: string | null;
   sku?: string | null;
+  unit?: string | null;
+  tags?: string[];
   packaging_date?: string | null;
   inbound_date?: string | null;
   quantity?: number | null;
@@ -930,32 +932,53 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
               {/* Occupied Lot details */}
               {selectedPosDetail.lot_id && (
                 <View style={styles.modalDetailCard}>
-                  <Text style={{ color: '#94a3b8', fontSize: 10, marginBottom: 2 }}>SẢN PHẨM:</Text>
+                  <Text style={{ color: '#94a3b8', fontSize: 10, marginBottom: 2 }}>SẢN PHẨM / PHÂN LOẠI:</Text>
                   <Text style={styles.modalProductName}>
-                    {selectedPosDetail.product_name || 'Hàng lưu kho'}
+                    {selectedPosDetail.product_name || 'Hàng đông lạnh'}
                   </Text>
 
                   <View style={styles.modalGrid}>
                     <View style={styles.modalGridCell}>
                       <Text style={styles.modalDim}>MÃ LOT:</Text>
-                      <Text style={styles.modalVal}>{selectedPosDetail.lot_code || '---'}</Text>
+                      <Text style={[styles.modalVal, { color: '#38bdf8', fontWeight: '800' }]}>
+                        {selectedPosDetail.lot_code || '---'}
+                      </Text>
                     </View>
                     <View style={styles.modalGridCell}>
                       <Text style={styles.modalDim}>SKU:</Text>
                       <Text style={styles.modalVal}>{selectedPosDetail.sku || '---'}</Text>
                     </View>
                     <View style={styles.modalGridCell}>
-                      <Text style={styles.modalDim}>NGÀY ĐÓNG GÓI:</Text>
+                      <Text style={styles.modalDim}>SỐ LƯỢNG:</Text>
+                      <Text style={[styles.modalVal, { color: '#34d399', fontWeight: '800' }]}>
+                        {selectedPosDetail.quantity ? `${selectedPosDetail.quantity} ${selectedPosDetail.unit || 'Thùng'}` : '---'}
+                      </Text>
+                    </View>
+                    <View style={styles.modalGridCell}>
+                      <Text style={styles.modalDim}>NGÀY ĐÓNG GÓI (NSX):</Text>
                       <Text style={[styles.modalVal, { color: '#fbbf24' }]}>
                         {selectedPosDetail.packaging_date || '---'}
                       </Text>
                     </View>
-                    <View style={styles.modalGridCell}>
-                      <Text style={styles.modalDim}>SỐ LƯỢNG:</Text>
+                    <View style={[styles.modalGridCell, { width: '100%' }]}>
+                      <Text style={styles.modalDim}>NGÀY NHẬP KHO:</Text>
                       <Text style={styles.modalVal}>
-                        {selectedPosDetail.quantity ? `${selectedPosDetail.quantity} Thùng` : '---'}
+                        {selectedPosDetail.inbound_date || '---'}
                       </Text>
                     </View>
+
+                    {selectedPosDetail.tags && selectedPosDetail.tags.length > 0 && (
+                      <View style={{ width: '100%', paddingTop: 6, borderTopWidth: 1, borderTopColor: '#1e293b' }}>
+                        <Text style={[styles.modalDim, { marginBottom: 4 }]}>THẺ PHÂN LOẠI (TAGS):</Text>
+                        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 4 }}>
+                          {selectedPosDetail.tags.map((tg, idx) => (
+                            <View key={idx} style={{ backgroundColor: '#1e3a5f', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, borderWidth: 1, borderColor: '#38bdf844' }}>
+                              <Text style={{ color: '#7dd3fc', fontSize: 10, fontWeight: '700' }}>🏷️ {tg}</Text>
+                            </View>
+                          ))}
+                        </View>
+                      </View>
+                    )}
                   </View>
                 </View>
               )}
