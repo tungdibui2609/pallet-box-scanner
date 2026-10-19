@@ -1389,25 +1389,10 @@ export default function PalletListScreen({ onBackToScanner }: { onBackToScanner:
                     {/* TUYỆT ĐỐI KHÔNG CÓ NÚT XÓA Ở TAB NÀY */}
                     <View style={styles.palletCardFooter}>
                       <TouchableOpacity
-                        style={styles.pullBtn}
-                        disabled={isPulling}
-                        onPress={() => handlePullCloudPallet(item)}
-                      >
-                        {isPulling ? (
-                          <ActivityIndicator color="#38bdf8" size="small" />
-                        ) : (
-                          <>
-                            <Ionicons name="cloud-download-outline" size={16} color="#38bdf8" />
-                            <Text style={styles.pullBtnText}>Kéo về máy</Text>
-                          </>
-                        )}
-                      </TouchableOpacity>
-
-                      <TouchableOpacity
-                        style={styles.viewDetailBtn}
+                        style={[styles.viewDetailBtn, { flex: 1, justifyContent: 'center' }]}
                         onPress={() => handleOpenCloudDetail(item)}
                       >
-                        <Ionicons name="eye-outline" size={16} color="#94a3b8" />
+                        <Ionicons name="eye-outline" size={16} color="#cbd5e1" />
                         <Text style={styles.viewDetailText}>Xem chi tiết</Text>
                       </TouchableOpacity>
                     </View>
