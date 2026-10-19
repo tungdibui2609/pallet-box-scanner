@@ -1,6 +1,6 @@
 {
   "name": "pallet-box-scanner",
-  "version": "1.0.33",
+  "version": "1.0.34",
   "main": "index.ts",
   "dependencies": {
     "@expo/vector-icons": "^15.0.2",

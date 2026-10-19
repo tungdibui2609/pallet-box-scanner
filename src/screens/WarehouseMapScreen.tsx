@@ -55,10 +55,11 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
   const [positions, setPositions] = useState<PositionItem[]>([]);
 
   // Hierarchy Navigation: Kho -> Dãy/Sảnh -> Ô -> Tầng
-  const [selectedWarehouseId, setSelectedWarehouseId] = useState<string | null>(null);
+  const [selectedWarehouseId, setSelectedWarehouseId] = useState<string | null>('all');
   const [selectedAisleId, setSelectedAisleId] = useState<string | null>(null);
   const [selectedSlotId, setSelectedSlotId] = useState<string | null>(null);
   const [selectedTierId, setSelectedTierId] = useState<string | null>(null);
+  const [onlyShowMatches, setOnlyShowMatches] = useState(false);
 
   // Search state
   const [searchQuery, setSearchQuery] = useState('');
@@ -86,8 +87,7 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
         setPositions(offline.positions);
         setCachedAt(offline.cachedAt);
         if (!selectedWarehouseId) {
-          const firstWh = offline.zones.find((z: any) => !z.parent_id);
-          if (firstWh) setSelectedWarehouseId(firstWh.id);
+          setSelectedWarehouseId('all');
         }
       }
     } catch {
@@ -105,8 +105,7 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
           setCachedAt(fresh.cachedAt);
           setIsOffline(false);
           if (!selectedWarehouseId) {
-            const firstWh = fresh.zones.find((z: any) => !z.parent_id);
-            if (firstWh) setSelectedWarehouseId(firstWh.id);
+            setSelectedWarehouseId('all');
           }
         }
       } else {
@@ -182,25 +181,34 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
     [activeZones]
   );
 
-  const aisles = useMemo(() => {
-    if (!selectedWarehouseId) return [];
-    return sortZones(activeZones.filter(z => z.parent_id === selectedWarehouseId));
-  }, [activeZones, selectedWarehouseId]);
+  const isSearchActive = searchQuery.trim().length > 0;
 
-  // Slots -> Ô GỘP: Ô 01, Ô 02...
-  const slots = useMemo(() => {
-    if (!selectedAisleId) return [];
-    return sortZones(activeZones.filter(z => z.parent_id === selectedAisleId));
-  }, [activeZones, selectedAisleId]);
+  // Full path helper: Kho > Dãy > Ô > Tầng
+  const getPositionPath = useCallback(
+    (pos: PositionItem) => {
+      const leafZoneId = pos.zone_ids[0];
+      if (!leafZoneId) return pos.code;
+      const realZoneMap = new Map(zones.map(z => [z.id, z]));
+      let curr = realZoneMap.get(leafZoneId);
+      const names: string[] = [];
+      while (curr) {
+        names.unshift(curr.name);
+        curr = curr.parent_id ? realZoneMap.get(curr.parent_id) : undefined;
+      }
+      return names.join(' > ') || pos.code;
+    },
+    [zones]
+  );
 
-  // Tiers -> Tầng của Ô gộp (Sắp xếp từ tầng cao nhất xuống tầng thấp nhất như kệ thực tế: Tầng 5 -> 4 -> 3 -> 2 -> 1)
-  const tiers = useMemo(() => {
-    if (!selectedSlotId) return [];
-    const list = activeZones.filter(z => z.parent_id === selectedSlotId);
-    return list.sort((a, b) =>
-      (b.name || '').localeCompare(a.name || '', undefined, { numeric: true })
-    );
-  }, [activeZones, selectedSlotId]);
+  const matchingPositions = useMemo(() => {
+    const q = searchQuery.trim();
+    if (!q) return [];
+    return positions.filter(p => matchPalletSearch(p, q));
+  }, [searchQuery, positions]);
+
+  const matchingPosIds = useMemo(() => {
+    return new Set(matchingPositions.map(p => p.id));
+  }, [matchingPositions]);
 
   const getDescendantZoneIds = useCallback(
     (targetZoneId: string): string[] => {
@@ -220,6 +228,70 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
     },
     [zones, virtualToRealMap]
   );
+
+  // Match count per zone
+  const zoneMatchCountMap = useMemo(() => {
+    const map = new Map<string, number>();
+    if (!isSearchActive || matchingPositions.length === 0) return map;
+
+    activeZones.forEach(z => {
+      const descIds = new Set(getDescendantZoneIds(z.id));
+      let count = 0;
+      matchingPositions.forEach(p => {
+        if (p.zone_ids.some(zid => descIds.has(zid))) {
+          count++;
+        }
+      });
+      map.set(z.id, count);
+    });
+
+    return map;
+  }, [isSearchActive, matchingPositions, activeZones, getDescendantZoneIds]);
+
+  const aisles = useMemo(() => {
+    let list: ZoneItem[] = [];
+    if (!selectedWarehouseId || selectedWarehouseId === 'all') {
+      const whIds = new Set(warehouses.map(w => w.id));
+      list = activeZones.filter(z => z.parent_id && whIds.has(z.parent_id));
+    } else {
+      list = activeZones.filter(z => z.parent_id === selectedWarehouseId);
+    }
+
+    if (isSearchActive) {
+      return [...list].sort((a, b) => {
+        const countA = zoneMatchCountMap.get(a.id) || 0;
+        const countB = zoneMatchCountMap.get(b.id) || 0;
+        if (countA !== countB) return countB - countA;
+        return a.name.localeCompare(b.name, undefined, { numeric: true });
+      });
+    }
+
+    return sortZones(list);
+  }, [activeZones, selectedWarehouseId, warehouses, isSearchActive, zoneMatchCountMap]);
+
+  // Slots -> Ô GỘP: Ô 01, Ô 02...
+  const slots = useMemo(() => {
+    if (!selectedAisleId) return [];
+    const list = activeZones.filter(z => z.parent_id === selectedAisleId);
+    if (isSearchActive) {
+      return [...list].sort((a, b) => {
+        const countA = zoneMatchCountMap.get(a.id) || 0;
+        const countB = zoneMatchCountMap.get(b.id) || 0;
+        if (countA !== countB) return countB - countA;
+        return a.name.localeCompare(b.name, undefined, { numeric: true });
+      });
+    }
+    return sortZones(list);
+  }, [activeZones, selectedAisleId, isSearchActive, zoneMatchCountMap]);
+
+  // Tiers -> Tầng của Ô gộp (Sắp xếp từ tầng cao nhất xuống tầng thấp nhất như kệ thực tế: Tầng 5 -> 4 -> 3 -> 2 -> 1)
+  const tiers = useMemo(() => {
+    if (!selectedSlotId) return [];
+    const list = activeZones.filter(z => z.parent_id === selectedSlotId);
+    return list.sort((a, b) =>
+      (b.name || '').localeCompare(a.name || '', undefined, { numeric: true })
+    );
+  }, [activeZones, selectedSlotId]);
 
   // ── Stats Calculator per Zone ──────────────────────────────────
   const zoneStatsMap = useMemo(() => {
@@ -256,14 +328,18 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
       getDescendantZoneIds(selectedTierId || selectedSlotId)
     );
 
-    const filtered = positions.filter(p =>
+    let filtered = positions.filter(p =>
       p.zone_ids.some(zid => targetZoneIds.has(zid))
     );
+
+    if (onlyShowMatches && isSearchActive) {
+      filtered = filtered.filter(p => matchingPosIds.has(p.id));
+    }
 
     return filtered.sort((a, b) =>
       a.code.localeCompare(b.code, undefined, { numeric: true })
     );
-  }, [selectedSlotId, selectedTierId, positions, getDescendantZoneIds]);
+  }, [selectedSlotId, selectedTierId, positions, getDescendantZoneIds, onlyShowMatches, isSearchActive, matchingPosIds]);
 
   // Group positions by tier when viewing all tiers in a Slot
   const tierPositionsMap = useMemo(() => {
@@ -271,13 +347,16 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
     const map = new Map<string, typeof positions>();
     tiers.forEach(tier => {
       const tierZoneIds = new Set(getDescendantZoneIds(tier.id));
-      const posInTier = positions
-        .filter(p => p.zone_ids.some(zid => tierZoneIds.has(zid)))
-        .sort((a, b) => a.code.localeCompare(b.code, undefined, { numeric: true }));
+      let posInTier = positions
+        .filter(p => p.zone_ids.some(zid => tierZoneIds.has(zid)));
+      if (onlyShowMatches && isSearchActive) {
+        posInTier = posInTier.filter(p => matchingPosIds.has(p.id));
+      }
+      posInTier.sort((a, b) => a.code.localeCompare(b.code, undefined, { numeric: true }));
       map.set(tier.id, posInTier);
     });
     return map;
-  }, [selectedSlotId, selectedTierId, tiers, positions, getDescendantZoneIds]);
+  }, [selectedSlotId, selectedTierId, tiers, positions, getDescendantZoneIds, onlyShowMatches, isSearchActive, matchingPosIds]);
 
   // ── Search & Jump to Position (Smart Vietnamese & Abbreviation search) ──
   const searchResults = useMemo(() => {
@@ -291,7 +370,7 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
         const scoreB = calculateSearchScore(b, q, { name: b.product_name, code: b.code, lot_code: b.lot_code, aliases: b.aliases });
         return scoreB - scoreA;
       })
-      .slice(0, 15);
+      .slice(0, 30);
   }, [searchQuery, positions]);
 
   const handleSelectSearchResult = (pos: PositionItem) => {
@@ -334,14 +413,15 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
     }
 
     setHighlightedPosId(pos.id);
-    setSearchQuery('');
     setIsSearching(false);
     setSelectedPosDetail(pos);
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
   };
 
-  const getZoneName = (id: string | null) =>
-    activeZones.find(z => z.id === id)?.name || '';
+  const getZoneName = (id: string | null) => {
+    if (!id || id === 'all') return 'Tất cả Kho';
+    return activeZones.find(z => z.id === id)?.name || '';
+  };
 
   return (
     <View style={styles.container}>
@@ -485,6 +565,9 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
                           </View>
                         )}
                       </View>
+                      <Text style={styles.dropdownItemPath} numberOfLines={1}>
+                        {getPositionPath(p)}
+                      </Text>
                       {p.lot_code && (
                         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 2, flexWrap: 'wrap' }}>
                           <Text style={[styles.dropdownItemLot, { flexShrink: 1 }]} numberOfLines={1}>
@@ -507,6 +590,39 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
         )}
       </View>
 
+      {/* ── SEARCH MATCH BANNER ─────────────────────────────────── */}
+      {isSearchActive && (
+        <View style={styles.searchBanner}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 }}>
+            <Ionicons name="filter" size={14} color="#f59e0b" />
+            <Text style={styles.searchBannerText} numberOfLines={1}>
+              Tìm thấy <Text style={styles.searchBannerCount}>{matchingPositions.length}</Text> vị trí khớp với "{searchQuery}"
+            </Text>
+          </View>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+            {matchingPositions.length > 0 && (
+              <TouchableOpacity
+                style={styles.searchBannerActionBtn}
+                onPress={() => {
+                  handleSelectSearchResult(matchingPositions[0]);
+                }}
+              >
+                <Text style={styles.searchBannerActionText}>Xem</Text>
+              </TouchableOpacity>
+            )}
+            <TouchableOpacity
+              style={styles.searchBannerCloseBtn}
+              onPress={() => {
+                setSearchQuery('');
+                setIsSearching(false);
+              }}
+            >
+              <Ionicons name="close" size={14} color="#94a3b8" />
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
+
       {/* ── BREADCRUMB NAVIGATION (Kho > Dãy > Ô > Tầng) ───────── */}
       <View style={styles.breadcrumbBar}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.breadcrumbScroll}>
@@ -520,7 +636,7 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
           >
             <Ionicons name="business" size={12} color={!selectedAisleId ? '#0f172a' : '#cbd5e1'} />
             <Text style={[styles.crumbText, !selectedAisleId && styles.crumbTextActive]}>
-              {getZoneName(selectedWarehouseId) || 'Chọn Kho'}
+              {getZoneName(selectedWarehouseId) || 'Tất cả Kho'}
             </Text>
           </TouchableOpacity>
 
@@ -585,24 +701,65 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
           </View>
 
           {/* Switch Warehouse Pills */}
-          {warehouses.length > 1 && (
+          {warehouses.length > 0 && (
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 12 }}>
-              {warehouses.map(wh => (
-                <TouchableOpacity
-                  key={wh.id}
-                  style={[styles.whPill, wh.id === selectedWarehouseId && styles.whPillActive]}
-                  onPress={() => {
-                    setSelectedWarehouseId(wh.id);
-                    setSelectedAisleId(null);
-                    setSelectedSlotId(null);
-                    setSelectedTierId(null);
-                  }}
-                >
-                  <Text style={[styles.whPillText, wh.id === selectedWarehouseId && styles.whPillTextActive]}>
-                    🏢 {wh.name}
+              {/* TẤT CẢ KHO Pill */}
+              <TouchableOpacity
+                style={[
+                  styles.whPill,
+                  (!selectedWarehouseId || selectedWarehouseId === 'all') && styles.whPillActive
+                ]}
+                onPress={() => {
+                  setSelectedWarehouseId('all');
+                  setSelectedAisleId(null);
+                  setSelectedSlotId(null);
+                  setSelectedTierId(null);
+                }}
+              >
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                  <Text
+                    style={[
+                      styles.whPillText,
+                      (!selectedWarehouseId || selectedWarehouseId === 'all') && styles.whPillTextActive
+                    ]}
+                  >
+                    🌐 TẤT CẢ KHO
                   </Text>
-                </TouchableOpacity>
-              ))}
+                  {isSearchActive && matchingPositions.length > 0 && (
+                    <View style={styles.whMatchBadge}>
+                      <Text style={styles.whMatchBadgeText}>{matchingPositions.length}</Text>
+                    </View>
+                  )}
+                </View>
+              </TouchableOpacity>
+
+              {warehouses.map(wh => {
+                const whMatchCount = isSearchActive ? zoneMatchCountMap.get(wh.id) || 0 : 0;
+                const isAct = selectedWarehouseId === wh.id;
+                return (
+                  <TouchableOpacity
+                    key={wh.id}
+                    style={[styles.whPill, isAct && styles.whPillActive]}
+                    onPress={() => {
+                      setSelectedWarehouseId(wh.id);
+                      setSelectedAisleId(null);
+                      setSelectedSlotId(null);
+                      setSelectedTierId(null);
+                    }}
+                  >
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                      <Text style={[styles.whPillText, isAct && styles.whPillTextActive]}>
+                        🏢 {wh.name}
+                      </Text>
+                      {whMatchCount > 0 && (
+                        <View style={styles.whMatchBadge}>
+                          <Text style={styles.whMatchBadgeText}>{whMatchCount}</Text>
+                        </View>
+                      )}
+                    </View>
+                  </TouchableOpacity>
+                );
+              })}
             </ScrollView>
           )}
 
@@ -610,11 +767,18 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
             {aisles.map(aisle => {
               const stats = zoneStatsMap.get(aisle.id) || { total: 0, occupied: 0, empty: 0 };
               const pct = stats.total > 0 ? Math.round((stats.occupied / stats.total) * 100) : 0;
+              const matchCount = isSearchActive ? zoneMatchCountMap.get(aisle.id) || 0 : 0;
+              const whName = (!selectedWarehouseId || selectedWarehouseId === 'all')
+                ? getZoneName(aisle.parent_id)
+                : '';
 
               return (
                 <TouchableOpacity
                   key={aisle.id}
-                  style={styles.aisleCard}
+                  style={[
+                    styles.aisleCard,
+                    matchCount > 0 && styles.aisleCardMatched
+                  ]}
                   onPress={() => {
                     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                     setSelectedAisleId(aisle.id);
@@ -623,8 +787,22 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
                   }}
                 >
                   <View style={styles.aisleCardHeader}>
-                    <Text style={styles.aisleCardTitle}>🚪 {aisle.name}</Text>
-                    <Text style={styles.aisleCardAction}>Xem Ô →</Text>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 }}>
+                      <Text style={styles.aisleCardTitle}>🚪 {aisle.name}</Text>
+                      {whName ? (
+                        <View style={styles.whTag}>
+                          <Text style={styles.whTagText}>{whName}</Text>
+                        </View>
+                      ) : null}
+                    </View>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                      {matchCount > 0 && (
+                        <View style={styles.matchCountBadge}>
+                          <Text style={styles.matchCountText}>🔥 {matchCount} khớp</Text>
+                        </View>
+                      )}
+                      <Text style={styles.aisleCardAction}>Xem Ô →</Text>
+                    </View>
                   </View>
 
                   <View style={styles.aisleStatsRow}>
@@ -664,11 +842,15 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
             {slots.map(slot => {
               const stats = zoneStatsMap.get(slot.id) || { total: 0, occupied: 0, empty: 0 };
               const pct = stats.total > 0 ? Math.round((stats.occupied / stats.total) * 100) : 0;
+              const matchCount = isSearchActive ? zoneMatchCountMap.get(slot.id) || 0 : 0;
 
               return (
                 <TouchableOpacity
                   key={slot.id}
-                  style={styles.slotCard}
+                  style={[
+                    styles.slotCard,
+                    matchCount > 0 && styles.slotCardMatched
+                  ]}
                   onPress={() => {
                     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                     setSelectedSlotId(slot.id);
@@ -676,6 +858,11 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
                   }}
                 >
                   <Text style={styles.slotCardTitle}>{slot.name}</Text>
+                  {matchCount > 0 && (
+                    <View style={styles.slotMatchBadge}>
+                      <Text style={styles.slotMatchText}>⚡ {matchCount} khớp</Text>
+                    </View>
+                  )}
                   <Text style={styles.slotEmptyText}>Trống {stats.empty}</Text>
 
                   <View style={styles.slotCardStats}>
@@ -702,7 +889,20 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
               <Ionicons name="arrow-back" size={14} color="#38bdf8" />
               <Text style={styles.backLevelText}>Quay lại Ô kệ</Text>
             </TouchableOpacity>
-            <Text style={styles.sectionCount}>{currentPositions.length} vị trí</Text>
+
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+              {isSearchActive && (
+                <TouchableOpacity
+                  style={[styles.onlyMatchToggle, onlyShowMatches && styles.onlyMatchToggleActive]}
+                  onPress={() => setOnlyShowMatches(!onlyShowMatches)}
+                >
+                  <Text style={[styles.onlyMatchToggleText, onlyShowMatches && styles.onlyMatchToggleTextActive]}>
+                    ⭐ Chỉ khớp ({matchingPosIds.size})
+                  </Text>
+                </TouchableOpacity>
+              )}
+              <Text style={styles.sectionCount}>{currentPositions.length} vị trí</Text>
+            </View>
           </View>
 
           {/* Tiers horizontal tabs */}
@@ -772,6 +972,7 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
                           {tierPositions.map(pos => {
                             const isOccupied = !!pos.lot_id;
                             const isHigh = pos.id === highlightedPosId;
+                            const isMatched = isSearchActive && matchingPosIds.has(pos.id);
 
                             return (
                               <TouchableOpacity
@@ -779,7 +980,8 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
                                 style={[
                                   styles.posCard,
                                   isOccupied ? styles.posCardOccupied : styles.posCardEmpty,
-                                  isHigh && styles.posCardHighlighted
+                                  isHigh && styles.posCardHighlighted,
+                                  isMatched && styles.posCardMatched
                                 ]}
                                 onPress={() => {
                                   Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -788,6 +990,11 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
                               >
                                 <View style={styles.posCardHeader}>
                                   <Text style={styles.posCodeText} numberOfLines={1}>{pos.code}</Text>
+                                  {isMatched && (
+                                    <View style={styles.matchTag}>
+                                      <Text style={styles.matchTagText}>⭐ Khớp</Text>
+                                    </View>
+                                  )}
                                   {isOccupied ? (
                                     <View style={styles.posSttBadge}>
                                       <Text style={styles.posSttBadgeText} numberOfLines={1}>
@@ -838,6 +1045,7 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
                 {currentPositions.map(pos => {
                   const isOccupied = !!pos.lot_id;
                   const isHigh = pos.id === highlightedPosId;
+                  const isMatched = isSearchActive && matchingPosIds.has(pos.id);
 
                   return (
                     <TouchableOpacity
@@ -845,7 +1053,8 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
                       style={[
                         styles.posCard,
                         isOccupied ? styles.posCardOccupied : styles.posCardEmpty,
-                        isHigh && styles.posCardHighlighted
+                        isHigh && styles.posCardHighlighted,
+                        isMatched && styles.posCardMatched
                       ]}
                       onPress={() => {
                         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -854,6 +1063,11 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
                     >
                       <View style={styles.posCardHeader}>
                         <Text style={styles.posCodeText} numberOfLines={1}>{pos.code}</Text>
+                        {isMatched && (
+                          <View style={styles.matchTag}>
+                            <Text style={styles.matchTagText}>⭐ Khớp</Text>
+                          </View>
+                        )}
                         {isOccupied ? (
                           <View style={styles.posSttBadge}>
                             <Text style={styles.posSttBadgeText} numberOfLines={1}>
@@ -1686,5 +1900,142 @@ const styles = StyleSheet.create({
     borderColor: '#10b981',
     alignItems: 'center',
     justifyContent: 'center'
+  },
+  dropdownItemPath: {
+    color: '#94a3b8',
+    fontSize: 10,
+    marginTop: 2
+  },
+  searchBanner: {
+    backgroundColor: '#78350f33',
+    borderColor: '#f59e0b66',
+    borderBottomWidth: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between'
+  },
+  searchBannerText: {
+    color: '#cbd5e1',
+    fontSize: 11,
+    flex: 1
+  },
+  searchBannerCount: {
+    color: '#fbbf24',
+    fontWeight: '800'
+  },
+  searchBannerActionBtn: {
+    backgroundColor: '#f59e0b',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6
+  },
+  searchBannerActionText: {
+    color: '#0f172a',
+    fontSize: 11,
+    fontWeight: '800'
+  },
+  searchBannerCloseBtn: {
+    padding: 4
+  },
+  whMatchBadge: {
+    backgroundColor: '#f59e0b',
+    borderRadius: 8,
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    marginLeft: 6
+  },
+  whMatchBadgeText: {
+    color: '#0f172a',
+    fontSize: 9,
+    fontWeight: '900'
+  },
+  whTag: {
+    backgroundColor: '#0369a133',
+    borderColor: '#0284c766',
+    borderWidth: 1,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 4
+  },
+  whTagText: {
+    color: '#38bdf8',
+    fontSize: 9,
+    fontWeight: '700'
+  },
+  matchCountBadge: {
+    backgroundColor: '#f59e0b22',
+    borderColor: '#f59e0b88',
+    borderWidth: 1,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6
+  },
+  matchCountText: {
+    color: '#fbbf24',
+    fontSize: 10,
+    fontWeight: '800'
+  },
+  aisleCardMatched: {
+    borderColor: '#f59e0b88',
+    backgroundColor: '#1e2433'
+  },
+  slotCardMatched: {
+    borderColor: '#f59e0b88',
+    backgroundColor: '#1e2433'
+  },
+  slotMatchBadge: {
+    backgroundColor: '#f59e0b22',
+    borderColor: '#f59e0b88',
+    borderWidth: 1,
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    borderRadius: 6,
+    marginBottom: 4
+  },
+  slotMatchText: {
+    color: '#fbbf24',
+    fontSize: 10,
+    fontWeight: '800'
+  },
+  onlyMatchToggle: {
+    backgroundColor: '#1e293b',
+    borderColor: '#334155',
+    borderWidth: 1,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8
+  },
+  onlyMatchToggleActive: {
+    backgroundColor: '#f59e0b22',
+    borderColor: '#f59e0b'
+  },
+  onlyMatchToggleText: {
+    color: '#94a3b8',
+    fontSize: 10,
+    fontWeight: '700'
+  },
+  onlyMatchToggleTextActive: {
+    color: '#fbbf24',
+    fontWeight: '800'
+  },
+  posCardMatched: {
+    borderColor: '#f59e0b',
+    borderWidth: 1.5,
+    backgroundColor: '#2e2013'
+  },
+  matchTag: {
+    backgroundColor: '#f59e0b22',
+    borderColor: '#f59e0b88',
+    borderWidth: 1,
+    paddingHorizontal: 4,
+    paddingVertical: 1,
+    borderRadius: 4
+  },
+  matchTagText: {
+    color: '#fbbf24',
+    fontSize: 8,
+    fontWeight: '900'
   }
 });

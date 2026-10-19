@@ -1085,20 +1085,26 @@ export async function syncWarehouseMapOffline(): Promise<{
             const tags = (l.lot_tags || []).map((t: any) => t.tag).filter(Boolean);
             const tagsStr = tags.length > 0 ? tags.join(', ') : '';
 
-            const prodName =
-              l.products?.name ||
-              l.lot_items?.[0]?.products?.name ||
-              (tagsStr ? `Hàng ${tagsStr}` : 'Hàng đông lạnh');
+            const allItems = l.lot_items || [];
+            const allProdNames = [
+              l.products?.name,
+              ...allItems.map((it: any) => it.products?.name)
+            ].filter(Boolean);
+            const prodName = allProdNames.length > 0
+              ? allProdNames.join(', ')
+              : (tagsStr ? `Hàng ${tagsStr}` : 'Hàng đông lạnh');
 
-            const sku =
-              l.products?.sku ||
-              l.lot_items?.[0]?.products?.sku ||
-              (tags.length > 0 ? tags[0] : '---');
+            const allSkus = [
+              l.products?.sku,
+              ...allItems.map((it: any) => it.products?.sku)
+            ].filter(Boolean);
+            const sku = allSkus.length > 0 ? allSkus.join(', ') : (tags.length > 0 ? tags[0] : '---');
 
-            const aliases =
-              l.products?.aliases ||
-              l.lot_items?.[0]?.products?.aliases ||
-              null;
+            const allAliases = [
+              l.products?.aliases,
+              ...allItems.map((it: any) => it.products?.aliases)
+            ].filter(Boolean);
+            const aliases = allAliases.length > 0 ? allAliases.join(', ') : null;
 
             const unit =
               l.products?.unit ||
