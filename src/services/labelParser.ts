@@ -162,8 +162,8 @@ export function parseBoxLabelText(cleanText: string): ParsedLabelData | null {
     unit,
     shift_group: shift_group || 'Nguyên',
     region: region || 'Tây Nguyên',
-    production_date: production_date || '07/09/2026',
-    packaging_date: packaging_date || '08/09/2026',
+    production_date: production_date || '',
+    packaging_date: packaging_date || '',
     spec: spec || 'Thùng/túi: 20kg',
     raw_text: cleanText
   };

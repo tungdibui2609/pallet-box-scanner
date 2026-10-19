@@ -184,8 +184,9 @@ export async function syncPalletToSupabase(pallet: Pallet, boxes: BoxLabel[]): P
           production_place: b.shift_group || null,
           factory: b.shift_group || null,
           region: b.region,
-          production_date: b.production_date,
-          packaging_date: b.packaging_date,
+          production_date: b.scan_type === 'stamp' ? null : (b.production_date || null),
+          packaging_date: b.packaging_date || null,
+          raw_material_date: b.scan_type === 'stamp' ? (b.raw_material_date || null) : null,
         }
       };
       if (companyId) row.company_id = companyId;
@@ -852,9 +853,9 @@ export async function fetchCloudPalletBoxes(
         unit: b.unit || 'Kg',
         shift_group: factory,
         region: province,
-        production_date: meta.production_date || rawMaterialDate,
+        production_date: isStamp ? '' : (meta.production_date || ''),
         packaging_date: packagingDate,
-        raw_material_date: rawMaterialDate,
+        raw_material_date: isStamp ? rawMaterialDate : '',
         supplier: supplierCode,
         supplier_name: supplierName,
         spec: specVal,
