@@ -21,6 +21,7 @@ import {
   getLastWarehouseMapOfflineSyncInfo
 } from '../services/supabase';
 import { decodeSTT } from '../utils/numberUtils';
+import { groupWarehouseData } from '../utils/warehouseUtils';
 
 interface ZoneItem {
   id: string;
@@ -158,50 +159,67 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
       (a.name || '').localeCompare(b.name || '', undefined, { numeric: true })
     );
 
+  // ── Ô Gộp (Group Warehouse Data) ───────────────────────────────
+  const { groupedZones, virtualToRealMap } = useMemo(() => {
+    if (zones.length === 0) {
+      return { groupedZones: [], virtualToRealMap: new Map<string, string[]>() };
+    }
+    const res = groupWarehouseData(zones as any, positions as any);
+    return {
+      groupedZones: (res.zones as ZoneItem[]) || zones,
+      virtualToRealMap: res.virtualToRealMap || new Map<string, string[]>()
+    };
+  }, [zones, positions]);
+
+  const activeZones = groupedZones.length > 0 ? groupedZones : zones;
+
   const warehouses = useMemo(
-    () => sortZones(zones.filter(z => !z.parent_id)),
-    [zones]
+    () => sortZones(activeZones.filter(z => !z.parent_id)),
+    [activeZones]
   );
 
   const aisles = useMemo(() => {
     if (!selectedWarehouseId) return [];
-    return sortZones(zones.filter(z => z.parent_id === selectedWarehouseId));
-  }, [zones, selectedWarehouseId]);
+    return sortZones(activeZones.filter(z => z.parent_id === selectedWarehouseId));
+  }, [activeZones, selectedWarehouseId]);
 
+  // Slots -> Ô GỘP: Ô 01, Ô 02...
   const slots = useMemo(() => {
     if (!selectedAisleId) return [];
-    return sortZones(zones.filter(z => z.parent_id === selectedAisleId));
-  }, [zones, selectedAisleId]);
+    return sortZones(activeZones.filter(z => z.parent_id === selectedAisleId));
+  }, [activeZones, selectedAisleId]);
 
+  // Tiers -> Tầng của Ô gộp
   const tiers = useMemo(() => {
     if (!selectedSlotId) return [];
-    return sortZones(zones.filter(z => z.parent_id === selectedSlotId));
-  }, [zones, selectedSlotId]);
+    return sortZones(activeZones.filter(z => z.parent_id === selectedSlotId));
+  }, [activeZones, selectedSlotId]);
 
   const getDescendantZoneIds = useCallback(
     (targetZoneId: string): string[] => {
-      const allIds = new Set<string>([targetZoneId]);
+      const directMembers = virtualToRealMap.get(targetZoneId) || [targetZoneId];
+      const allRealIds = new Set<string>(directMembers);
       let added = true;
       while (added) {
         added = false;
         for (const z of zones) {
-          if (z.parent_id && allIds.has(z.parent_id) && !allIds.has(z.id)) {
-            allIds.add(z.id);
+          if (z.parent_id && allRealIds.has(z.parent_id) && !allRealIds.has(z.id)) {
+            allRealIds.add(z.id);
             added = true;
           }
         }
       }
-      return Array.from(allIds);
+      return Array.from(allRealIds);
     },
-    [zones]
+    [zones, virtualToRealMap]
   );
 
   // ── Stats Calculator per Zone ──────────────────────────────────
   const zoneStatsMap = useMemo(() => {
     const map = new Map<string, { total: number; occupied: number; empty: number }>();
-    if (zones.length === 0 || positions.length === 0) return map;
+    if (activeZones.length === 0 || positions.length === 0) return map;
 
-    zones.forEach(z => {
+    activeZones.forEach(z => {
       const descIds = new Set(getDescendantZoneIds(z.id));
       let total = 0;
       let occupied = 0;
@@ -221,7 +239,7 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
     });
 
     return map;
-  }, [zones, positions, getDescendantZoneIds]);
+  }, [activeZones, positions, getDescendantZoneIds]);
 
   // Current positions in Slot / Tier view
   const currentPositions = useMemo(() => {
@@ -262,20 +280,40 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
   const handleSelectSearchResult = (pos: PositionItem) => {
     const leafZoneId = pos.zone_ids[0];
     if (leafZoneId) {
-      const zoneMap = new Map(zones.map(z => [z.id, z]));
-      let curr = zoneMap.get(leafZoneId);
-      const path: ZoneItem[] = [];
+      const realZoneMap = new Map(zones.map(z => [z.id, z]));
+      let curr = realZoneMap.get(leafZoneId);
+      const realPath: ZoneItem[] = [];
 
       while (curr) {
-        path.unshift(curr);
-        curr = curr.parent_id ? zoneMap.get(curr.parent_id) : undefined;
+        realPath.unshift(curr);
+        curr = curr.parent_id ? realZoneMap.get(curr.parent_id) : undefined;
       }
 
-      if (path.length >= 1) setSelectedWarehouseId(path[0].id);
-      if (path.length >= 2) setSelectedAisleId(path[1].id);
-      if (path.length >= 3) setSelectedSlotId(path[2].id);
-      if (path.length >= 4) setSelectedTierId(path[3].id);
-      else setSelectedTierId(null);
+      if (realPath.length >= 1) setSelectedWarehouseId(realPath[0].id);
+      if (realPath.length >= 2) {
+        const aisleId = realPath[1].id;
+        setSelectedAisleId(aisleId);
+
+        if (realPath.length >= 3) {
+          const realSlotId = realPath[2].id;
+          const vSlot = activeZones.find(
+            z => z.parent_id === aisleId && (z.id === realSlotId || virtualToRealMap.get(z.id)?.includes(realSlotId))
+          );
+          if (vSlot) {
+            setSelectedSlotId(vSlot.id);
+
+            if (realPath.length >= 4) {
+              const realTierId = realPath[3].id;
+              const vTier = activeZones.find(
+                z => z.parent_id === vSlot.id && (z.id === realTierId || virtualToRealMap.get(z.id)?.includes(realTierId))
+              );
+              setSelectedTierId(vTier ? vTier.id : null);
+            } else {
+              setSelectedTierId(null);
+            }
+          }
+        }
+      }
     }
 
     setHighlightedPosId(pos.id);
@@ -286,7 +324,7 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
   };
 
   const getZoneName = (id: string | null) =>
-    zones.find(z => z.id === id)?.name || '';
+    activeZones.find(z => z.id === id)?.name || '';
 
   return (
     <View style={styles.container}>
@@ -583,14 +621,19 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
         /* ── LEVEL 2: DANH SÁCH Ô KỆ TRONG DÃY ─────────────────── */
         <ScrollView style={styles.contentScroll} contentContainerStyle={styles.scrollPadding}>
           <View style={styles.sectionTitleRow}>
-            <TouchableOpacity
-              style={styles.backLevelBtn}
-              onPress={() => setSelectedAisleId(null)}
-            >
-              <Ionicons name="arrow-back" size={14} color="#38bdf8" />
-              <Text style={styles.backLevelText}>Quay lại Dãy</Text>
-            </TouchableOpacity>
-            <Text style={styles.sectionCount}>{slots.length} ô kệ</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+              <TouchableOpacity
+                style={styles.backLevelBtn}
+                onPress={() => setSelectedAisleId(null)}
+              >
+                <Ionicons name="arrow-back" size={14} color="#38bdf8" />
+                <Text style={styles.backLevelText}>Quay lại Dãy</Text>
+              </TouchableOpacity>
+              <Text style={{ color: '#34d399', fontSize: 11, fontWeight: '800', textTransform: 'uppercase' }}>
+                Bước 3: Chọn Ô ({getZoneName(selectedAisleId)})
+              </Text>
+            </View>
+            <Text style={styles.sectionCount}>{slots.length} ô gộp</Text>
           </View>
 
           <View style={styles.slotsGrid}>
@@ -608,14 +651,12 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
                     setSelectedTierId(null);
                   }}
                 >
-                  <View style={styles.slotCardHeader}>
-                    <Text style={styles.slotCardTitle}>📦 {slot.name}</Text>
-                    <Text style={styles.slotCardPct}>{pct}%</Text>
-                  </View>
+                  <Text style={styles.slotCardTitle}>{slot.name}</Text>
+                  <Text style={styles.slotEmptyText}>Trống {stats.empty}</Text>
 
                   <View style={styles.slotCardStats}>
-                    <Text style={styles.slotStatsText}>{stats.occupied}/{stats.total}</Text>
-                    <Text style={styles.slotEmptyText}>{stats.empty} trống</Text>
+                    <Text style={styles.slotStatsText}>{stats.occupied}/{stats.total} vị trí</Text>
+                    <Text style={styles.slotCardPct}>{pct}%</Text>
                   </View>
 
                   <View style={styles.progressBarBg}>
@@ -1140,40 +1181,40 @@ const styles = StyleSheet.create({
   },
   slotCard: {
     width: '48%',
-    padding: 12,
-    borderRadius: 14,
+    padding: 14,
+    borderRadius: 16,
     backgroundColor: '#111827',
     borderWidth: 1,
-    borderColor: '#1e293b',
-    gap: 6
-  },
-  slotCardHeader: {
-    flexDirection: 'row',
+    borderColor: '#334155',
     alignItems: 'center',
-    justifyContent: 'space-between'
+    gap: 4
   },
   slotCardTitle: {
     color: '#ffffff',
+    fontSize: 15,
+    fontWeight: '900',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5
+  },
+  slotEmptyText: {
+    color: '#34d399',
     fontSize: 12,
-    fontWeight: '800'
+    fontWeight: '800',
+    marginBottom: 4
   },
   slotCardPct: {
-    color: '#38bdf8',
+    color: '#94a3b8',
     fontSize: 10,
     fontWeight: '700'
   },
   slotCardStats: {
+    width: '100%',
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between'
   },
   slotStatsText: {
-    color: '#94a3b8',
-    fontSize: 10,
-    fontWeight: '700'
-  },
-  slotEmptyText: {
-    color: '#34d399',
+    color: '#64748b',
     fontSize: 10,
     fontWeight: '700'
   },
