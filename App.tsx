@@ -5,12 +5,13 @@ import { Ionicons } from '@expo/vector-icons';
 import ScannerScreen from './src/screens/ScannerScreen';
 import StampScannerScreen from './src/screens/StampScannerScreen';
 import PalletListScreen from './src/screens/PalletListScreen';
+import WarehouseMapScreen from './src/screens/WarehouseMapScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
 import LoginScreen from './src/screens/LoginScreen';
 import { AuthProvider, useAuth } from './src/contexts/AuthContext';
 import { triggerBackgroundAutoSync } from './src/services/autoSync';
 
-type AppTab = 'scanner' | 'stamp_scanner' | 'pallets' | 'settings';
+type AppTab = 'scanner' | 'stamp_scanner' | 'warehouse_map' | 'pallets' | 'settings';
 
 function AppContent() {
   const insets = useSafeAreaInsets();
@@ -108,6 +109,9 @@ function AppContent() {
         {currentTab === 'stamp_scanner' && (
           <StampScannerScreen onNavigateToPallets={() => setCurrentTab('pallets')} />
         )}
+        {currentTab === 'warehouse_map' && (
+          <WarehouseMapScreen onBackToScanner={() => setCurrentTab('scanner')} />
+        )}
         {currentTab === 'pallets' && (
           <PalletListScreen onBackToScanner={() => setCurrentTab('scanner')} />
         )}
@@ -149,6 +153,20 @@ function AppContent() {
           />
           <Text style={[styles.navText, currentTab === 'stamp_scanner' && { color: '#fbbf24' }]}>
             Dấu Đóng
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.navItem}
+          onPress={() => setCurrentTab('warehouse_map')}
+        >
+          <Ionicons
+            name={currentTab === 'warehouse_map' ? 'map' : 'map-outline'}
+            size={22}
+            color={currentTab === 'warehouse_map' ? '#06b6d4' : '#94a3b8'}
+          />
+          <Text style={[styles.navText, currentTab === 'warehouse_map' && { color: '#06b6d4' }]}>
+            Sơ Đồ Kho
           </Text>
         </TouchableOpacity>
 
