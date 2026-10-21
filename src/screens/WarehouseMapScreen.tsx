@@ -47,7 +47,21 @@ interface ZoneItem {
   name: string;
   parent_id: string | null;
   system_type: string;
+  is_hall?: boolean | null;
 }
+
+export const isHallZone = (z: ZoneItem | null | undefined): boolean => {
+  if (!z) return false;
+  if (z.is_hall) return true;
+  const nameUpper = (z.name || '').trim().toUpperCase();
+  return (
+    nameUpper.startsWith('SẢNH') ||
+    nameUpper.startsWith('SÀNH') ||
+    nameUpper.startsWith('SANH') ||
+    nameUpper.includes('SẢNH') ||
+    nameUpper.includes('SÀNH')
+  );
+};
 
 interface PositionItem {
   id: string;
@@ -62,9 +76,27 @@ interface PositionItem {
   unit?: string | null;
   tags?: string[];
   packaging_date?: string | null;
+  peeling_date?: string | null;
+  raw_material_date?: string | null;
   inbound_date?: string | null;
+  material_zone?: string | null;
+  production_code?: string | null;
+  batch_code?: string | null;
+  production_place?: string | null;
+  extra_info?: string | null;
   quantity?: number | null;
 }
+
+export const formatDateVN = (d?: string | null): string => {
+  if (!d) return '--/--/----';
+  const clean = String(d).split('T')[0];
+  const parts = clean.split('-');
+  if (parts.length === 3) {
+    const [y, m, day] = parts;
+    if (y.length === 4) return `${day.padStart(2, '0')}/${m.padStart(2, '0')}/${y}`;
+  }
+  return d;
+};
 
 // ── ISOLATED MEMOIZED SEARCH BAR (0ms Latency: typing updates only this component) ──
 const MobileWarehouseSearchBar = React.memo(function MobileWarehouseSearchBar({
@@ -353,14 +385,24 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
     try {
       const res = await syncWarehouseMapOffline();
       if (res.success) {
-        const fresh = await getWarehouseMapOfflineData();
-        if (fresh) {
-          setZones(fresh.zones);
-          setPositions(fresh.positions);
-          setCachedAt(fresh.cachedAt);
+        if ((res as any).zones && (res as any).positions) {
+          setZones((res as any).zones);
+          setPositions((res as any).positions);
+          setCachedAt(res.lastSyncedAt || new Date().toISOString());
           setIsOffline(false);
           if (!selectedWarehouseId) {
             setSelectedWarehouseId('all');
+          }
+        } else {
+          const fresh = await getWarehouseMapOfflineData();
+          if (fresh) {
+            setZones(fresh.zones);
+            setPositions(fresh.positions);
+            setCachedAt(fresh.cachedAt);
+            setIsOffline(false);
+            if (!selectedWarehouseId) {
+              setSelectedWarehouseId('all');
+            }
           }
         }
       } else {
@@ -384,12 +426,19 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
       const res = await syncWarehouseMapOffline();
       if (res.success) {
-        const fresh = await getWarehouseMapOfflineData();
-        if (fresh) {
-          setZones(fresh.zones);
-          setPositions(fresh.positions);
-          setCachedAt(fresh.cachedAt);
+        if ((res as any).zones && (res as any).positions) {
+          setZones((res as any).zones);
+          setPositions((res as any).positions);
+          setCachedAt(res.lastSyncedAt || new Date().toISOString());
           setIsOffline(false);
+        } else {
+          const fresh = await getWarehouseMapOfflineData();
+          if (fresh) {
+            setZones(fresh.zones);
+            setPositions(fresh.positions);
+            setCachedAt(fresh.cachedAt);
+            setIsOffline(false);
+          }
         }
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         Alert.alert(
@@ -690,6 +739,17 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
     return sortZones(list);
   }, [activeZones, selectedAisleId, isSearchActive, zoneMatchCountMap]);
 
+  // Selected Aisle & Phát hiện khu vực SẢNH (Khu vực không chia Ô / Kệ)
+  const selectedAisle = useMemo(() => {
+    if (!selectedAisleId) return null;
+    return activeZones.find(z => z.id === selectedAisleId) || null;
+  }, [activeZones, selectedAisleId]);
+
+  const isSelectedAisleHall = useMemo(() => {
+    if (!selectedAisle) return false;
+    return isHallZone(selectedAisle) || slots.length === 0;
+  }, [selectedAisle, slots.length]);
+
   // Tiers -> Tầng của Ô gộp (Sắp xếp từ tầng cao nhất xuống tầng thấp nhất như kệ thực tế: Tầng 5 -> 4 -> 3 -> 2 -> 1)
   const tiers = useMemo(() => {
     if (!selectedSlotId) return [];
@@ -729,8 +789,46 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
     return map;
   }, [activeZones, positions, zoneDescendantsMap]);
 
-  // Current positions in Slot / Tier view (fix: selectedTierId uses getDescendantZoneIds)
+  // Thống kê phân loại (Kệ vs Sảnh) cho từng Kho (chuẩn theo Web)
+  const getWhBreakdown = useCallback((whId: string) => {
+    const directChildren = activeZones.filter(z => z.parent_id === whId);
+    let rackTotal = 0;
+    let rackOccupied = 0;
+    let hallTotal = 0;
+    let hallOccupied = 0;
+
+    directChildren.forEach(child => {
+      const isHall = isHallZone(child);
+      const stats = zoneStatsMap.get(child.id) || { total: 0, occupied: 0, empty: 0 };
+      if (isHall) {
+        hallTotal += stats.total;
+        hallOccupied += stats.occupied;
+      } else {
+        rackTotal += stats.total;
+        rackOccupied += stats.occupied;
+      }
+    });
+
+    return { rackTotal, rackOccupied, hallTotal, hallOccupied };
+  }, [activeZones, zoneStatsMap]);
+
+  // Current positions in Slot / Tier view & SẢNH (Hall)
   const currentPositions = useMemo(() => {
+    // Nếu đang vào Sảnh (hoặc khu vực không phân chia ô tầng)
+    if (isSelectedAisleHall) {
+      if (!selectedAisleId) return [];
+      const targetZoneIds = getDescendantZoneIds(selectedAisleId);
+      let filtered = positions.filter(p =>
+        p.zone_ids.some(zid => targetZoneIds.has(zid))
+      );
+      if (onlyShowMatches && isSearchActive) {
+        filtered = filtered.filter(p => matchingPosIds.has(p.id));
+      }
+      return filtered.sort((a, b) =>
+        a.code.localeCompare(b.code, undefined, { numeric: true })
+      );
+    }
+
     if (!selectedSlotId) return [];
 
     const targetZoneId = selectedTierId || selectedSlotId;
@@ -747,7 +845,17 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
     return filtered.sort((a, b) =>
       a.code.localeCompare(b.code, undefined, { numeric: true })
     );
-  }, [selectedSlotId, selectedTierId, positions, getDescendantZoneIds, onlyShowMatches, isSearchActive, matchingPosIds]);
+  }, [
+    isSelectedAisleHall,
+    selectedAisleId,
+    selectedSlotId,
+    selectedTierId,
+    positions,
+    getDescendantZoneIds,
+    onlyShowMatches,
+    isSearchActive,
+    matchingPosIds
+  ]);
 
   // Group positions by tier when viewing all tiers in a Slot
   const tierPositionsMap = useMemo(() => {
@@ -961,18 +1069,49 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
         <View style={styles.breadcrumbBar}>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.breadcrumbScroll}>
             <TouchableOpacity
-              style={[styles.crumbBtn, !selectedAisleId && styles.crumbBtnActive]}
+              style={[
+                styles.crumbBtn,
+                (!selectedWarehouseId || selectedWarehouseId === 'all') && styles.crumbBtnActive
+              ]}
               onPress={() => {
+                setSelectedWarehouseId('all');
                 setSelectedAisleId(null);
                 setSelectedSlotId(null);
                 setSelectedTierId(null);
               }}
             >
-              <Ionicons name="business" size={12} color={!selectedAisleId ? '#0f172a' : '#cbd5e1'} />
-              <Text style={[styles.crumbText, !selectedAisleId && styles.crumbTextActive]}>
-                {getZoneName(selectedWarehouseId) || 'Tất cả Kho'}
+              <Ionicons
+                name="business"
+                size={12}
+                color={(!selectedWarehouseId || selectedWarehouseId === 'all') ? '#0f172a' : '#cbd5e1'}
+              />
+              <Text
+                style={[
+                  styles.crumbText,
+                  (!selectedWarehouseId || selectedWarehouseId === 'all') && styles.crumbTextActive
+                ]}
+              >
+                Tất cả Kho
               </Text>
             </TouchableOpacity>
+
+            {selectedWarehouseId && selectedWarehouseId !== 'all' && (
+              <>
+                <Ionicons name="chevron-forward" size={12} color="#64748b" />
+                <TouchableOpacity
+                  style={[styles.crumbBtn, !selectedAisleId && styles.crumbBtnActive]}
+                  onPress={() => {
+                    setSelectedAisleId(null);
+                    setSelectedSlotId(null);
+                    setSelectedTierId(null);
+                  }}
+                >
+                  <Text style={[styles.crumbText, !selectedAisleId && styles.crumbTextActive]}>
+                    {getZoneName(selectedWarehouseId)}
+                  </Text>
+                </TouchableOpacity>
+              </>
+            )}
 
             {selectedAisleId && (
               <>
@@ -1246,13 +1385,116 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
             </View>
           )}
 
-          {!selectedAisleId ? (
-            /* ── LEVEL 1: DANH SÁCH DÃY / SẢNH ─────────────────────── */
+          {(!selectedWarehouseId || selectedWarehouseId === 'all') ? (
+            /* ── LEVEL 0: DANH SÁCH CÁC KHO (TẤT CẢ KHO - CHUẨN GIAO DIỆN WEB) ── */
             <ScrollView style={styles.contentScroll} contentContainerStyle={styles.scrollPadding}>
               <View style={styles.sectionTitleRow}>
-                <Text style={styles.sectionTitle}>
-                  CHỌN DÃY / SẢNH ({getZoneName(selectedWarehouseId)}):
-                </Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <Ionicons name="business" size={15} color="#38bdf8" />
+                  <Text style={styles.sectionTitle}>
+                    CHỌN KHO (TẤT CẢ KHO):
+                  </Text>
+                </View>
+                <Text style={styles.sectionCount}>{warehouses.length} kho</Text>
+              </View>
+
+              <View style={styles.warehouseList}>
+                {warehouses.map(wh => {
+                  const stats = zoneStatsMap.get(wh.id) || { total: 0, occupied: 0, empty: 0 };
+                  const pct = stats.total > 0 ? Math.round((stats.occupied / stats.total) * 100) : 0;
+                  const whMatchCount = isSearchActive ? zoneMatchCountMap.get(wh.id) || 0 : 0;
+                  const breakdown = getWhBreakdown(wh.id);
+
+                  return (
+                    <TouchableOpacity
+                      key={wh.id}
+                      style={[
+                        styles.warehouseCard,
+                        whMatchCount > 0 && styles.warehouseCardMatched
+                      ]}
+                      onPress={() => {
+                        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                        setSelectedWarehouseId(wh.id);
+                        setSelectedAisleId(null);
+                        setSelectedSlotId(null);
+                        setSelectedTierId(null);
+                      }}
+                      activeOpacity={0.8}
+                    >
+                      {/* Header: Icon + Tên Kho & Xem Dãy */}
+                      <View style={styles.warehouseCardHeader}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 }}>
+                          <Ionicons name="business" size={18} color="#38bdf8" />
+                          <Text style={styles.warehouseCardTitle}>{wh.name}</Text>
+                        </View>
+                        {isSearchActive && whMatchCount > 0 ? (
+                          <View style={styles.whMatchBadgeInline}>
+                            <Text style={styles.whMatchBadgeInlineText}>🔥 {whMatchCount} khớp</Text>
+                          </View>
+                        ) : (
+                          <Text style={styles.warehouseCardAction}>Xem Dãy →</Text>
+                        )}
+                      </View>
+
+                      {/* Thống kê Tổng, Đã chứa, Còn trống */}
+                      <View style={styles.aisleStatsRow}>
+                        <Text style={styles.statLabel}>Tổng: <Text style={styles.statValWhite}>{stats.total}</Text></Text>
+                        <Text style={styles.statLabel}>Đã chứa: <Text style={styles.statValAmber}>{stats.occupied}</Text></Text>
+                        <Text style={styles.statLabel}>Còn trống: <Text style={styles.statValEmerald}>{stats.empty}</Text></Text>
+                      </View>
+
+                      {/* Chi tiết phụ: Kệ & Sảnh */}
+                      {(breakdown.rackTotal > 0 || breakdown.hallTotal > 0) && (
+                        <View style={styles.whBreakdownRow}>
+                          <Text style={styles.whBreakdownText}>
+                            Kệ: <Text style={styles.statValWhite}>{breakdown.rackTotal}</Text> ({breakdown.rackOccupied} có hàng)
+                          </Text>
+                          {breakdown.hallTotal > 0 && (
+                            <Text style={[styles.whBreakdownText, { color: '#34d399' }]}>
+                              Sảnh: <Text style={{ color: '#34d399', fontWeight: '800' }}>{breakdown.hallTotal}</Text> ({breakdown.hallOccupied})
+                            </Text>
+                          )}
+                        </View>
+                      )}
+
+                      {/* Progress Bar (2 màu xanh lá / vàng cam) */}
+                      <View style={styles.progressBarBg}>
+                        <View
+                          style={[
+                            styles.progressBarFill,
+                            {
+                              width: `${pct}%`,
+                              backgroundColor: pct > 80 ? '#f59e0b' : '#10b981'
+                            }
+                          ]}
+                        />
+                      </View>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            </ScrollView>
+          ) : !selectedAisleId ? (
+            /* ── LEVEL 1: DANH SÁCH DÃY / SẢNH CỦA KHO ─────────────────────── */
+            <ScrollView style={styles.contentScroll} contentContainerStyle={styles.scrollPadding}>
+              <View style={styles.sectionTitleRow}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 }}>
+                  <TouchableOpacity
+                    style={styles.backLevelBtn}
+                    onPress={() => {
+                      setSelectedWarehouseId('all');
+                      setSelectedAisleId(null);
+                      setSelectedSlotId(null);
+                      setSelectedTierId(null);
+                    }}
+                  >
+                    <Ionicons name="arrow-back" size={13} color="#38bdf8" />
+                    <Text style={styles.backLevelText}>Tất cả Kho</Text>
+                  </TouchableOpacity>
+                  <Text style={[styles.sectionTitle, { marginLeft: 4 }]} numberOfLines={1}>
+                    CHỌN DÃY / SẢNH:
+                  </Text>
+                </View>
                 <Text style={styles.sectionCount}>{aisles.length} phân khu</Text>
               </View>
 
@@ -1374,6 +1616,121 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
               );
             })}
           </View>
+        </ScrollView>
+      ) : isSelectedAisleHall ? (
+        /* ── LEVEL 2-HALL: LƯỚI VỊ TRÍ TRONG SẢNH (CHUẨN GIAO DIỆN WEB) ── */
+        <ScrollView style={styles.contentScroll} contentContainerStyle={styles.scrollPadding}>
+          <View style={styles.sectionTitleRow}>
+            <TouchableOpacity
+              style={styles.backLevelBtn}
+              onPress={() => {
+                setSelectedAisleId(null);
+                setSelectedSlotId(null);
+                setSelectedTierId(null);
+              }}
+            >
+              <Ionicons name="arrow-back" size={14} color="#38bdf8" />
+              <Text style={styles.backLevelText}>Quay lại Dãy / Sảnh</Text>
+            </TouchableOpacity>
+
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              {isSearchActive && (
+                <TouchableOpacity
+                  style={[styles.onlyMatchToggle, onlyShowMatches && styles.onlyMatchToggleActive]}
+                  onPress={() => setOnlyShowMatches(!onlyShowMatches)}
+                >
+                  <Text style={[styles.onlyMatchToggleText, onlyShowMatches && styles.onlyMatchToggleTextActive]}>
+                    ⭐ {onlyShowMatches ? 'Hiện tất cả' : 'Chỉ khớp'}
+                  </Text>
+                </TouchableOpacity>
+              )}
+              <Text style={styles.sectionCount}>{currentPositions.length} vị trí</Text>
+            </View>
+          </View>
+
+          {/* Hall Banner */}
+          <View style={styles.hallBanner}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+              <View style={styles.hallBadge}>
+                <Text style={styles.hallBadgeText}>SẢNH</Text>
+              </View>
+              <Text style={styles.hallTitle}>{getZoneName(selectedAisleId)}</Text>
+            </View>
+            <Text style={styles.hallSub}>
+              <Text style={{ color: '#fbbf24', fontWeight: '800' }}>
+                {currentPositions.filter(p => p.lot_id).length} có hàng
+              </Text>
+              {' · '}
+              <Text style={{ color: '#34d399', fontWeight: '800' }}>
+                {currentPositions.filter(p => !p.lot_id).length} trống
+              </Text>
+            </Text>
+          </View>
+
+          {/* Lưới 2 cột các vị trí */}
+          {currentPositions.length === 0 ? (
+            <View style={{ paddingVertical: 40, alignItems: 'center' }}>
+              <Text style={{ color: '#64748b', fontSize: 13 }}>Chưa có dữ liệu vị trí nào trong sảnh này.</Text>
+            </View>
+          ) : (
+            <View style={styles.hallPositionsGrid}>
+              {currentPositions.map(pos => {
+                const isOccupied = !!pos.lot_id;
+                const isHighlighted = pos.id === highlightedPosId;
+                const isMatched = matchingPosIds.has(pos.id);
+
+                return (
+                  <TouchableOpacity
+                    key={pos.id}
+                    style={[
+                      styles.hallPosCard,
+                      isOccupied ? styles.hallPosCardOccupied : styles.hallPosCardEmpty,
+                      isMatched && styles.hallPosCardMatched,
+                      isHighlighted && styles.hallPosCardHighlighted
+                    ]}
+                    onPress={() => {
+                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                      setSelectedPosDetail(pos);
+                    }}
+                    activeOpacity={0.8}
+                  >
+                    <View style={styles.hallPosCardHeader}>
+                      <Text style={styles.hallPosCode} numberOfLines={1}>{pos.code}</Text>
+                      {isOccupied ? (
+                        <View style={styles.hallSttBadge}>
+                          <Text style={styles.hallSttBadgeText}>#{pos.stt || 'LOT'}</Text>
+                        </View>
+                      ) : (
+                        <View style={styles.hallEmptyBadge}>
+                          <Text style={styles.hallEmptyBadgeText}>TRỐNG</Text>
+                        </View>
+                      )}
+                    </View>
+
+                    {isOccupied ? (
+                      <View style={{ marginTop: 4, gap: 2 }}>
+                        <Text style={styles.hallProductName} numberOfLines={1}>
+                          {pos.product_name || 'Hàng đông lạnh'}
+                        </Text>
+                        <View style={styles.hallPosMetaRow}>
+                          <Text style={styles.hallLotText} numberOfLines={1}>LOT: {pos.lot_code || '---'}</Text>
+                          {pos.quantity ? (
+                            <Text style={styles.hallQtyText}>
+                              {pos.quantity} {pos.unit?.toLowerCase().startsWith('thùng') ? 'th' : (pos.unit || 'th')}
+                            </Text>
+                          ) : null}
+                        </View>
+                      </View>
+                    ) : (
+                      <View style={styles.hallEmptyPlaceholder}>
+                        <Text style={styles.hallEmptyPlaceholderText}>+ Vị trí trống</Text>
+                      </View>
+                    )}
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          )}
         </ScrollView>
       ) : !selectedSlotId ? (
         /* ── LEVEL 2: DANH SÁCH Ô KỆ TRONG DÃY ─────────────────── */
@@ -1574,7 +1931,9 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
                                         {pos.lot_code || '---'}
                                       </Text>
                                       {pos.quantity ? (
-                                        <Text style={styles.posQtyText}>{pos.quantity} Thùng</Text>
+                                        <Text style={styles.posQtyText}>
+                                          {pos.quantity} {pos.unit?.toLowerCase().startsWith('thùng') ? 'th' : (pos.unit || 'th')}
+                                        </Text>
                                       ) : null}
                                     </View>
                                   </View>
@@ -1647,7 +2006,9 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
                               LOT: {pos.lot_code || '---'}
                             </Text>
                             {pos.quantity ? (
-                              <Text style={styles.posQtyText}>{pos.quantity} Thùng</Text>
+                              <Text style={styles.posQtyText}>
+                                {pos.quantity} {pos.unit?.toLowerCase().startsWith('thùng') ? 'th' : (pos.unit || 'th')}
+                              </Text>
                             ) : null}
                           </View>
                         </View>
@@ -1735,16 +2096,71 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
                       </Text>
                     </View>
                     <View style={styles.modalGridCell}>
-                      <Text style={styles.modalDim}>NGÀY ĐÓNG GÓI (NSX):</Text>
+                      <Text style={styles.modalDim}>NGÀY ĐÓNG GÓI:</Text>
                       <Text style={[styles.modalVal, { color: '#fbbf24' }]}>
-                        {selectedPosDetail.packaging_date || '---'}
+                        {formatDateVN(selectedPosDetail.packaging_date)}
                       </Text>
                     </View>
-                    <View style={[styles.modalGridCell, { width: '100%' }]}>
+                    <View style={styles.modalGridCell}>
+                      <Text style={styles.modalDim}>NGÀY SX (BÓC MÚI):</Text>
+                      <Text style={[styles.modalVal, { color: '#fde68a' }]}>
+                        {formatDateVN(selectedPosDetail.peeling_date)}
+                      </Text>
+                    </View>
+                    <View style={styles.modalGridCell}>
+                      <Text style={styles.modalDim}>NGÀY NGUYÊN LIỆU:</Text>
+                      <Text style={styles.modalVal}>
+                        {formatDateVN(selectedPosDetail.raw_material_date)}
+                      </Text>
+                    </View>
+                    <View style={styles.modalGridCell}>
                       <Text style={styles.modalDim}>NGÀY NHẬP KHO:</Text>
                       <Text style={styles.modalVal}>
-                        {selectedPosDetail.inbound_date || '---'}
+                        {formatDateVN(selectedPosDetail.inbound_date)}
                       </Text>
+                    </View>
+
+                    {/* 4 Thẻ Thông Tin Chi Tiết của LOT (Khớp Web Mẹ) */}
+                    <View style={styles.modalLotInfoSection}>
+                      <View style={styles.modalLotInfoCard}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5, marginBottom: 2 }}>
+                          <Ionicons name="barcode-outline" size={13} color="#94a3b8" />
+                          <Text style={styles.modalDim}>MÃ SẢN XUẤT</Text>
+                        </View>
+                        <Text style={[styles.modalVal, { color: '#f8fafc', fontSize: 11 }]} numberOfLines={1}>
+                          {selectedPosDetail.production_code || '---'}
+                        </Text>
+                      </View>
+
+                      <View style={styles.modalLotInfoCard}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5, marginBottom: 2 }}>
+                          <Ionicons name="location" size={13} color="#34d399" />
+                          <Text style={styles.modalDim}>VÙNG NGUYÊN LIỆU</Text>
+                        </View>
+                        <Text style={[styles.modalVal, { color: '#34d399', fontSize: 11, fontWeight: '700' }]} numberOfLines={2}>
+                          {selectedPosDetail.material_zone || '---'}
+                        </Text>
+                      </View>
+
+                      <View style={styles.modalLotInfoCard}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5, marginBottom: 2 }}>
+                          <Ionicons name="business" size={13} color="#38bdf8" />
+                          <Text style={styles.modalDim}>NƠI SẢN XUẤT</Text>
+                        </View>
+                        <Text style={[styles.modalVal, { color: '#38bdf8', fontSize: 11, fontWeight: '700' }]} numberOfLines={2}>
+                          {selectedPosDetail.production_place || '---'}
+                        </Text>
+                      </View>
+
+                      <View style={styles.modalLotInfoCard}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5, marginBottom: 2 }}>
+                          <Ionicons name="information-circle" size={13} color="#cbd5e1" />
+                          <Text style={styles.modalDim}>THÔNG TIN THÊM</Text>
+                        </View>
+                        <Text style={[styles.modalVal, { color: '#cbd5e1', fontSize: 11 }]} numberOfLines={2}>
+                          {selectedPosDetail.extra_info || '---'}
+                        </Text>
+                      </View>
                     </View>
 
                     {selectedPosDetail.aliases && (
@@ -2135,8 +2551,200 @@ const styles = StyleSheet.create({
   whPillTextActive: {
     color: '#ffffff'
   },
+  warehouseList: {
+    gap: 12
+  },
+  warehouseCard: {
+    padding: 14,
+    borderRadius: 16,
+    backgroundColor: '#111827',
+    borderWidth: 1,
+    borderColor: '#1e293b',
+    gap: 8
+  },
+  warehouseCardMatched: {
+    borderColor: '#0284c7',
+    borderWidth: 1.5
+  },
+  warehouseCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between'
+  },
+  warehouseCardTitle: {
+    color: '#ffffff',
+    fontSize: 15,
+    fontWeight: '900',
+    letterSpacing: 0.3
+  },
+  warehouseCardAction: {
+    color: '#38bdf8',
+    fontSize: 12,
+    fontWeight: '700'
+  },
+  whBreakdownRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingTop: 6,
+    borderTopWidth: 1,
+    borderTopColor: '#1e293b88'
+  },
+  whBreakdownText: {
+    color: '#94a3b8',
+    fontSize: 10
+  },
+  whMatchBadgeInline: {
+    backgroundColor: '#f59e0b22',
+    borderWidth: 1,
+    borderColor: '#f59e0b55',
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 12
+  },
+  whMatchBadgeInlineText: {
+    color: '#fbbf24',
+    fontSize: 10,
+    fontWeight: '800'
+  },
   aislesList: {
     gap: 10
+  },
+  hallBanner: {
+    padding: 12,
+    borderRadius: 14,
+    backgroundColor: '#17255422',
+    borderWidth: 1,
+    borderColor: '#f59e0b44',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 10
+  },
+  hallBadge: {
+    backgroundColor: '#f59e0b',
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 6
+  },
+  hallBadgeText: {
+    color: '#0f172a',
+    fontSize: 10,
+    fontWeight: '900'
+  },
+  hallTitle: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '900',
+    letterSpacing: 0.3
+  },
+  hallSub: {
+    color: '#94a3b8',
+    fontSize: 11,
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace'
+  },
+  hallPositionsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    justifyContent: 'space-between'
+  },
+  hallPosCard: {
+    width: '48.5%',
+    padding: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    minHeight: 74,
+    justifyContent: 'space-between'
+  },
+  hallPosCardOccupied: {
+    backgroundColor: '#131d33',
+    borderColor: '#0284c788'
+  },
+  hallPosCardEmpty: {
+    backgroundColor: '#0f172a88',
+    borderColor: '#334155'
+  },
+  hallPosCardMatched: {
+    borderColor: '#f59e0b',
+    borderWidth: 1.5
+  },
+  hallPosCardHighlighted: {
+    borderColor: '#fbbf24',
+    borderWidth: 2,
+    backgroundColor: '#451a03'
+  },
+  hallPosCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 4
+  },
+  hallPosCode: {
+    color: '#e2e8f0',
+    fontSize: 11,
+    fontWeight: '800',
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+    flex: 1
+  },
+  hallSttBadge: {
+    backgroundColor: '#f59e0b',
+    paddingHorizontal: 5,
+    paddingVertical: 1.5,
+    borderRadius: 4
+  },
+  hallSttBadgeText: {
+    color: '#0f172a',
+    fontSize: 9,
+    fontWeight: '900',
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace'
+  },
+  hallEmptyBadge: {
+    backgroundColor: '#10b98122',
+    borderWidth: 1,
+    borderColor: '#10b98155',
+    paddingHorizontal: 4,
+    paddingVertical: 1,
+    borderRadius: 4
+  },
+  hallEmptyBadgeText: {
+    color: '#34d399',
+    fontSize: 8,
+    fontWeight: '800'
+  },
+  hallProductName: {
+    color: '#ffffff',
+    fontSize: 11,
+    fontWeight: '700',
+    lineHeight: 14
+  },
+  hallPosMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingTop: 3
+  },
+  hallLotText: {
+    color: '#94a3b8',
+    fontSize: 9,
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+    maxWidth: '55%'
+  },
+  hallQtyText: {
+    color: '#fbbf24',
+    fontSize: 9,
+    fontWeight: '800',
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace'
+  },
+  hallEmptyPlaceholder: {
+    paddingVertical: 6,
+    alignItems: 'center',
+    justifyContent: 'center'
+  },
+  hallEmptyPlaceholderText: {
+    color: '#10b981aa',
+    fontSize: 10,
+    fontWeight: '600'
   },
   aisleCard: {
     padding: 14,
@@ -2515,6 +3123,23 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
     marginTop: 1
+  },
+  modalLotInfoSection: {
+    width: '100%',
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: '#1e293b'
+  },
+  modalLotInfoCard: {
+    width: '48%',
+    backgroundColor: '#131d2e',
+    borderWidth: 1,
+    borderColor: '#1e293b',
+    borderRadius: 10,
+    padding: 8
   },
   modalCloseBtn: {
     backgroundColor: '#1e293b',

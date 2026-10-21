@@ -1016,15 +1016,17 @@ export async function syncWarehouseMapOffline(): Promise<{
   totalPositions: number;
   totalWarehouses: number;
   lastSyncedAt?: string;
+  zones?: any[];
+  positions?: any[];
   message: string;
 }> {
   try {
     const client = await getSupabaseClient();
 
-    // 1. Fetch Zones for Cold Storage
+    // 1. Fetch Zones for Cold Storage (bao gồm cờ is_hall)
     const { data: zonesData, error: zonesErr } = await client
       .from('zones')
-      .select('id, name, parent_id, system_type')
+      .select('id, name, parent_id, system_type, is_hall')
       .eq('system_type', 'KHO_DONG_LANH');
 
     if (zonesErr) throw zonesErr;
@@ -1068,7 +1070,13 @@ export async function syncWarehouseMapOffline(): Promise<{
               code,
               daily_seq,
               packaging_date,
+              peeling_date,
+              raw_material_date,
               inbound_date,
+              production_code,
+              batch_code,
+              notes,
+              metadata,
               quantity,
               products ( name, sku, unit, aliases ),
               lot_items ( quantity, unit, products ( name, sku, unit, aliases ) ),
@@ -1086,30 +1094,67 @@ export async function syncWarehouseMapOffline(): Promise<{
             const tagsStr = tags.length > 0 ? tags.join(', ') : '';
 
             const allItems = l.lot_items || [];
-            const allProdNames = [
+            const allProdNames = Array.from(new Set([
               l.products?.name,
               ...allItems.map((it: any) => it.products?.name)
-            ].filter(Boolean);
+            ].filter(Boolean))) as string[];
             const prodName = allProdNames.length > 0
               ? allProdNames.join(', ')
               : (tagsStr ? `Hàng ${tagsStr}` : 'Hàng đông lạnh');
 
-            const allSkus = [
+            const allSkus = Array.from(new Set([
               l.products?.sku,
               ...allItems.map((it: any) => it.products?.sku)
-            ].filter(Boolean);
+            ].filter(Boolean))) as string[];
             const sku = allSkus.length > 0 ? allSkus.join(', ') : (tags.length > 0 ? tags[0] : '---');
 
-            const allAliases = [
+            const allAliases = Array.from(new Set([
               l.products?.aliases,
               ...allItems.map((it: any) => it.products?.aliases)
-            ].filter(Boolean);
+            ].filter(Boolean))) as string[];
             const aliases = allAliases.length > 0 ? allAliases.join(', ') : null;
 
+            const itemUnit = allItems.map((it: any) => it.unit).find(Boolean);
             const unit =
+              itemUnit ||
+              l.metadata?.unit ||
               l.products?.unit ||
-              l.lot_items?.[0]?.unit ||
               'Thùng';
+
+            // Trích xuất ngày sản xuất (bóc múi)
+            const peelingDate = l.peeling_date
+              ? String(l.peeling_date).split('T')[0]
+              : (Array.isArray(l.metadata?.peeling_dates) && l.metadata.peeling_dates[0]
+                ? String(l.metadata.peeling_dates[0]).split('T')[0]
+                : (l.metadata?.production_date ? String(l.metadata.production_date).split('T')[0] : null));
+
+            // Trích xuất ngày nhập nguyên liệu
+            const rawMaterialDate = l.raw_material_date
+              ? String(l.raw_material_date).split('T')[0]
+              : (l.metadata?.raw_material_date ? String(l.metadata.raw_material_date).split('T')[0] : null);
+
+            // Trích xuất vùng miền / vùng nguyên liệu
+            const metaZones: string[] = [];
+            if (Array.isArray(l.metadata?.material_zones)) {
+              l.metadata.material_zones.forEach((z: any) => {
+                if (typeof z === 'string' && z.trim()) metaZones.push(z.trim());
+              });
+            } else if (l.metadata?.material_zone && typeof l.metadata.material_zone === 'string') {
+              l.metadata.material_zone.split(',').forEach((z: string) => {
+                if (z.trim()) metaZones.push(z.trim());
+              });
+            } else if (l.metadata?.region && typeof l.metadata.region === 'string' && l.metadata.region !== '---') {
+              metaZones.push(l.metadata.region.trim());
+            } else if (l.metadata?.province && typeof l.metadata.province === 'string' && l.metadata.province !== '---') {
+              metaZones.push(l.metadata.province.trim());
+            }
+            const cleanMaterialZone = Array.from(new Set(metaZones.filter(Boolean))).join(', ') || null;
+
+            // Trích xuất nơi sản xuất / nhà máy
+            const rawPlaces = l.metadata?.production_places;
+            const prodPlace = (Array.isArray(rawPlaces) && rawPlaces.length > 0)
+              ? rawPlaces.join(', ')
+              : (l.metadata?.production_place || null);
 
             lotMap.set(l.id, {
               code: l.code,
@@ -1120,7 +1165,14 @@ export async function syncWarehouseMapOffline(): Promise<{
               unit,
               tags,
               packaging_date: l.packaging_date ? String(l.packaging_date).split('T')[0] : null,
+              peeling_date: peelingDate,
+              raw_material_date: rawMaterialDate,
               inbound_date: l.inbound_date ? String(l.inbound_date).split('T')[0] : null,
+              material_zone: cleanMaterialZone,
+              production_code: l.production_code || l.metadata?.production_code || null,
+              batch_code: l.batch_code || l.metadata?.batch_code || null,
+              production_place: prodPlace,
+              extra_info: l.metadata?.extra_info || l.notes || null,
               quantity: l.quantity || (l.lot_items?.[0]?.quantity ?? null)
             });
           });
@@ -1172,7 +1224,14 @@ export async function syncWarehouseMapOffline(): Promise<{
         unit,
         tags,
         packaging_date: pkgDate,
+        peeling_date: lotInfo?.peeling_date || null,
+        raw_material_date: lotInfo?.raw_material_date || null,
         inbound_date: lotInfo?.inbound_date || null,
+        material_zone: lotInfo?.material_zone || null,
+        production_code: lotInfo?.production_code || null,
+        batch_code: lotInfo?.batch_code || null,
+        production_place: lotInfo?.production_place || null,
+        extra_info: lotInfo?.extra_info || null,
         quantity: lotInfo?.quantity || null
       };
     });
@@ -1180,24 +1239,49 @@ export async function syncWarehouseMapOffline(): Promise<{
     const now = new Date().toISOString();
     const warehousesCount = rawZones.filter((z: any) => !z.parent_id).length;
 
-    const snapshot: WarehouseMapOfflineData = {
-      zones: rawZones,
-      positions: formattedPositions,
-      cachedAt: now,
-      totalPositions: formattedPositions.length,
-      totalWarehouses: warehousesCount
-    };
+    // Tinh gọn dữ liệu (Compact Storage) để giảm 75% dung lượng, tránh SQLITE_FULL và CursorWindow trên Android
+    try {
+      // 1. Dọn dẹp triệt để các key cũ trước khi ghi để giải phóng quota SQLite
+      await AsyncStorage.multiRemove([
+        'warehouse_map_offline_cache',
+        'warehouse_map_offline_pos_1',
+        'warehouse_map_offline_pos_2'
+      ]);
 
-    await AsyncStorage.setItem('warehouse_map_offline_cache', JSON.stringify(snapshot));
-    await AsyncStorage.setItem('warehouse_map_cached_at', now);
-    await AsyncStorage.setItem('warehouse_map_cached_count', String(formattedPositions.length));
-    await AsyncStorage.setItem('warehouse_map_cached_warehouses', String(warehousesCount));
+      // 2. Compact Zones: lưu [id, name, parent_id, is_hall ? 1 : 0] (giảm từ 1MB xuống ~170KB)
+      const compactZones = rawZones.map((z: any) => [z.id, z.name, z.parent_id, z.is_hall ? 1 : 0]);
+
+      // 3. Compact Positions: tách riêng vị trí có hàng và vị trí trống (giảm từ 2.4MB xuống ~700KB)
+      const occupiedList: any[] = [];
+      const emptyList: any[] = [];
+
+      formattedPositions.forEach((p: any) => {
+        if (p.lot_id) {
+          occupiedList.push(p);
+        } else {
+          emptyList.push([p.id, p.code, p.zone_ids]);
+        }
+      });
+
+      await AsyncStorage.multiSet([
+        ['warehouse_map_offline_zones', JSON.stringify(compactZones)],
+        ['warehouse_map_offline_empty_pos', JSON.stringify(emptyList)],
+        ['warehouse_map_offline_occupied_pos', JSON.stringify(occupiedList)],
+        ['warehouse_map_cached_at', now],
+        ['warehouse_map_cached_count', String(formattedPositions.length)],
+        ['warehouse_map_cached_warehouses', String(warehousesCount)]
+      ]);
+    } catch (saveErr) {
+      console.warn('Lỗi lưu AsyncStorage sơ đồ kho:', saveErr);
+    }
 
     return {
       success: true,
       totalPositions: formattedPositions.length,
       totalWarehouses: warehousesCount,
       lastSyncedAt: now,
+      zones: rawZones,
+      positions: formattedPositions,
       message: `Đã lưu thành công ${formattedPositions.length} vị trí (${warehousesCount} kho) vào máy để xem ngoại tuyến!`
     };
   } catch (err: any) {
@@ -1211,10 +1295,96 @@ export async function syncWarehouseMapOffline(): Promise<{
 }
 
 /**
- * Lấy dữ liệu Sơ Đồ Kho Offline đã lưu trong máy
+ * Lấy dữ liệu Sơ Đồ Kho Offline đã lưu trong máy (Hỗ trợ giải nén Compact Storage & tương thích ngược)
  */
 export async function getWarehouseMapOfflineData(): Promise<WarehouseMapOfflineData | null> {
   try {
+    const [zonesRaw, emptyRaw, occupiedRaw, timeRaw, countRaw, whsRaw] = await Promise.all([
+      AsyncStorage.getItem('warehouse_map_offline_zones'),
+      AsyncStorage.getItem('warehouse_map_offline_empty_pos'),
+      AsyncStorage.getItem('warehouse_map_offline_occupied_pos'),
+      AsyncStorage.getItem('warehouse_map_cached_at'),
+      AsyncStorage.getItem('warehouse_map_cached_count'),
+      AsyncStorage.getItem('warehouse_map_cached_warehouses')
+    ]);
+
+    if (zonesRaw && (emptyRaw || occupiedRaw)) {
+      const parsedZones = JSON.parse(zonesRaw);
+      const zones = parsedZones.map((item: any) => {
+        if (Array.isArray(item)) {
+          return {
+            id: item[0],
+            name: item[1],
+            parent_id: item[2],
+            system_type: 'KHO_DONG_LANH',
+            is_hall: Boolean(item[3] || /s[ảàa]nh|lobby/i.test(item[1] || ''))
+          };
+        }
+        return item;
+      });
+
+      const parsedEmpty = emptyRaw ? JSON.parse(emptyRaw) : [];
+      const restoredEmpty = parsedEmpty.map((item: any) => {
+        if (Array.isArray(item)) {
+          return {
+            id: item[0],
+            code: item[1],
+            lot_id: null,
+            zone_ids: Array.isArray(item[2]) ? item[2] : (item[2] ? [item[2]] : []),
+            stt: null,
+            lot_code: null,
+            product_name: null,
+            sku: null,
+            aliases: null,
+            unit: 'Thùng',
+            tags: [],
+            packaging_date: null,
+            peeling_date: null,
+            raw_material_date: null,
+            inbound_date: null,
+            material_zone: null,
+            production_code: null,
+            batch_code: null,
+            production_place: null,
+            extra_info: null,
+            quantity: null
+          };
+        }
+        return item;
+      });
+
+      const restoredOccupied = occupiedRaw ? JSON.parse(occupiedRaw) : [];
+      const positions = [...restoredEmpty, ...restoredOccupied];
+
+      return {
+        zones,
+        positions,
+        cachedAt: timeRaw || new Date().toISOString(),
+        totalPositions: positions.length,
+        totalWarehouses: Number(whsRaw) || zones.filter((z: any) => !z.parent_id).length
+      };
+    }
+
+    // Fallback nếu máy cũ còn định dạng pos_1 / pos_2
+    const [pos1Raw, pos2Raw] = await Promise.all([
+      AsyncStorage.getItem('warehouse_map_offline_pos_1'),
+      AsyncStorage.getItem('warehouse_map_offline_pos_2')
+    ]);
+    if (zonesRaw && (pos1Raw || pos2Raw)) {
+      const zones = JSON.parse(zonesRaw);
+      const p1 = pos1Raw ? JSON.parse(pos1Raw) : [];
+      const p2 = pos2Raw ? JSON.parse(pos2Raw) : [];
+      const positions = [...p1, ...p2];
+      return {
+        zones,
+        positions,
+        cachedAt: timeRaw || new Date().toISOString(),
+        totalPositions: positions.length,
+        totalWarehouses: Number(whsRaw) || zones.filter((z: any) => !z.parent_id).length
+      };
+    }
+
+    // Fallback nếu máy cũ còn key đơn lẻ
     const raw = await AsyncStorage.getItem('warehouse_map_offline_cache');
     if (!raw) return null;
     return JSON.parse(raw);
