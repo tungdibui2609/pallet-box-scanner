@@ -18,7 +18,8 @@ import {
   getSupabaseClient,
   syncWarehouseMapOffline,
   getWarehouseMapOfflineData,
-  getLastWarehouseMapOfflineSyncInfo
+  getLastWarehouseMapOfflineSyncInfo,
+  getMemoryWarehouseMapCache
 } from '../services/supabase';
 import { decodeSTT } from '../utils/numberUtils';
 import { groupWarehouseData } from '../utils/warehouseUtils';
@@ -46,8 +47,10 @@ export interface UniqueProductItem {
 interface ZoneItem {
   id: string;
   name: string;
+  code?: string;
   parent_id: string | null;
   system_type: string;
+  display_order?: number | null;
   is_hall?: boolean | null;
 }
 
@@ -97,6 +100,26 @@ export const formatDateVN = (d?: string | null): string => {
     if (y.length === 4) return `${day.padStart(2, '0')}/${m.padStart(2, '0')}/${y}`;
   }
   return d;
+};
+
+export const formatDateShortVN = (d?: string | null): string => {
+  if (!d) return '';
+  const clean = String(d).split('T')[0];
+  const parts = clean.split('-');
+  if (parts.length === 3) {
+    const [y, m, day] = parts;
+    const shortYear = y.length === 4 ? y.slice(2) : y;
+    return `${day.padStart(2, '0')}/${m.padStart(2, '0')}/${shortYear}`;
+  }
+  return d;
+};
+
+export const getPositionTag = (pos: PositionItem): string | null => {
+  if (pos.tags && pos.tags.length > 0) {
+    const validTags = pos.tags.filter(t => t && !t.startsWith('MERGED_FROM:') && !t.startsWith('MERGED_DATA:'));
+    if (validTags.length > 0) return validTags.join(', ');
+  }
+  return null;
 };
 
 // ── ISOLATED MEMOIZED SEARCH BAR (0ms Latency: typing updates only this component) ──
@@ -327,16 +350,20 @@ const MobileWarehouseSearchBar = React.memo(function MobileWarehouseSearchBar({
 });
 
 export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanner: () => void }) {
-  const [loading, setLoading] = useState(true);
+  const initialMemory = getMemoryWarehouseMapCache();
+  const hasMemoryCache = Boolean(initialMemory && initialMemory.positions && initialMemory.positions.length > 0);
+
+  const [loading, setLoading] = useState(!hasMemoryCache);
   const [refreshing, setRefreshing] = useState(false);
-  const [zones, setZones] = useState<ZoneItem[]>([]);
-  const [positions, setPositions] = useState<PositionItem[]>([]);
+  const [zones, setZones] = useState<ZoneItem[]>(initialMemory?.zones || []);
+  const [positions, setPositions] = useState<PositionItem[]>(initialMemory?.positions || []);
 
   // Hierarchy Navigation: Kho -> Dãy/Sảnh -> Ô -> Tầng
   const [selectedWarehouseId, setSelectedWarehouseId] = useState<string | null>('all');
   const [selectedAisleId, setSelectedAisleId] = useState<string | null>(null);
   const [selectedSlotId, setSelectedSlotId] = useState<string | null>(null);
   const [selectedTierId, setSelectedTierId] = useState<string | null>(null);
+  const [expandedTierIds, setExpandedTierIds] = useState<Set<string>>(new Set());
   const [onlyShowMatches, setOnlyShowMatches] = useState(false);
 
   // Search state (searchQuery drives the map, while typing is fully isolated in MobileWarehouseSearchBar)
@@ -352,11 +379,11 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
 
   // Offline state
   const [isOffline, setIsOffline] = useState(false);
-  const [cachedAt, setCachedAt] = useState<string | null>(null);
+  const [cachedAt, setCachedAt] = useState<string | null>(initialMemory?.cachedAt || null);
   const [downloadingOffline, setDownloadingOffline] = useState(false);
 
   // ── Fetch Master Data (Zones, Positions, Lots) ─────────────────
-  const loadMapData = useCallback(async (isSilent = false) => {
+  const loadMapData = useCallback(async (isSilent = false, forceSync = false) => {
     let hasCache = false;
 
     // 1. Initial cached fallback - display immediately so mobile map opens in 0s!
@@ -371,7 +398,6 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
         }
         hasCache = true;
         setLoading(false);
-        setRefreshing(true);
       }
     } catch {
       // ignore
@@ -380,6 +406,25 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
     if (!hasCache) {
       if (!isSilent) setLoading(true);
       else setRefreshing(true);
+    }
+
+    // Kiểm tra cache có mới trong vòng 5 phút không
+    const isCacheRecent = () => {
+      const ts = cachedAt || initialMemory?.cachedAt;
+      if (!ts) return false;
+      const diffMs = Date.now() - new Date(ts).getTime();
+      return diffMs < 5 * 60 * 1000;
+    };
+
+    // Nếu không ép đồng bộ (forceSync) và cache còn mới (< 5 phút) -> dừng lại ngay, mở tức thì 0ms!
+    if (!forceSync && hasCache && isCacheRecent()) {
+      setLoading(false);
+      setRefreshing(false);
+      return;
+    }
+
+    if (hasCache) {
+      setRefreshing(true);
     }
 
     // 2. Fetch fresh online & auto-cache in background
@@ -751,14 +796,54 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
     return isHallZone(selectedAisle) || slots.length === 0;
   }, [selectedAisle, slots.length]);
 
-  // Tiers -> Tầng của Ô gộp (Sắp xếp từ tầng cao nhất xuống tầng thấp nhất như kệ thực tế: Tầng 5 -> 4 -> 3 -> 2 -> 1)
+  // Tiers -> Tầng của Ô gộp (Sắp xếp từ tầng 1 đến tầng 5)
   const tiers = useMemo(() => {
     if (!selectedSlotId) return [];
     const list = activeZones.filter(z => z.parent_id === selectedSlotId);
-    return list.sort((a, b) =>
-      (b.name || '').localeCompare(a.name || '', undefined, { numeric: true })
-    );
+    return list.sort((a, b) => {
+      const oa = a.display_order ?? 0;
+      const ob = b.display_order ?? 0;
+      if (oa !== ob) return oa - ob;
+      return (a.name || '').localeCompare(b.name || '', undefined, { numeric: true });
+    });
   }, [activeZones, selectedSlotId]);
+
+  const toggleTierExpand = useCallback((tierId: string) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setExpandedTierIds(prev => {
+      const next = new Set(prev);
+      if (next.has(tierId)) next.delete(tierId);
+      else next.add(tierId);
+      return next;
+    });
+  }, []);
+
+  const handleExpandAllTiers = useCallback(() => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setExpandedTierIds(new Set(tiers.map(t => t.id)));
+  }, [tiers]);
+
+  const handleCollapseAllTiers = useCallback(() => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setExpandedTierIds(new Set());
+  }, []);
+
+  // Tự động mở rộng tầng khi có vị trí highlight
+  useEffect(() => {
+    if (!selectedSlotId || tiers.length === 0) return;
+    if (highlightedPosId) {
+      const targetPos = positions.find(p => p.id === highlightedPosId);
+      if (targetPos) {
+        const matchingTier = tiers.find(tier => {
+          const desc = getDescendantZoneIds(tier.id);
+          return targetPos.zone_ids.some(zid => desc.has(zid));
+        });
+        if (matchingTier) {
+          setExpandedTierIds(prev => new Set([...prev, matchingTier.id]));
+        }
+      }
+    }
+  }, [highlightedPosId, selectedSlotId, tiers, positions, getDescendantZoneIds]);
 
   // ── Stats Calculator per Zone (O(1) Set Lookups) ───────────────
   const zoneStatsMap = useMemo(() => {
@@ -986,7 +1071,7 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
             style={styles.refreshBtn}
             onPress={() => {
               Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-              loadMapData(true);
+              loadMapData(true, true);
             }}
             disabled={refreshing}
           >
@@ -1014,7 +1099,7 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
           <TouchableOpacity
             onPress={() => {
               Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-              loadMapData(true);
+              loadMapData(true, true);
             }}
             style={styles.retryBtn}
           >
@@ -1611,7 +1696,15 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
                   </View>
 
                   <View style={styles.progressBarBg}>
-                    <View style={[styles.progressBarFill, { width: `${pct}%` }]} />
+                    <View
+                      style={[
+                        styles.progressBarFill,
+                        {
+                          width: `${pct}%`,
+                          backgroundColor: pct >= 90 ? '#f59e0b' : '#10b981'
+                        }
+                      ]}
+                    />
                   </View>
                 </TouchableOpacity>
               );
@@ -1696,7 +1789,16 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
                     activeOpacity={0.8}
                   >
                     <View style={styles.hallPosCardHeader}>
-                      <Text style={styles.hallPosCode} numberOfLines={1}>{pos.code}</Text>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 3, flex: 1, minWidth: 0, paddingRight: 2 }}>
+                        <Text style={styles.hallPosCode} numberOfLines={1}>{pos.code}</Text>
+                        {pos.inbound_date ? (
+                          <View style={styles.posDateBadge}>
+                            <Text style={styles.posDateBadgeText} numberOfLines={1}>
+                              {formatDateShortVN(pos.inbound_date)}
+                            </Text>
+                          </View>
+                        ) : null}
+                      </View>
                       {isOccupied ? (
                         <View style={styles.hallSttBadge}>
                           <Text style={styles.hallSttBadgeText}>#{pos.stt || 'LOT'}</Text>
@@ -1710,11 +1812,13 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
 
                     {isOccupied ? (
                       <View style={{ marginTop: 4, gap: 2 }}>
-                        <Text style={styles.hallProductName} numberOfLines={1}>
+                        <Text style={styles.hallProductName}>
                           {pos.product_name || 'Hàng đông lạnh'}
                         </Text>
                         <View style={styles.hallPosMetaRow}>
-                          <Text style={styles.hallLotText} numberOfLines={1}>LOT: {pos.lot_code || '---'}</Text>
+                          {getPositionTag(pos) ? (
+                            <Text style={styles.hallTagText} numberOfLines={1}>TAG: {getPositionTag(pos)}</Text>
+                          ) : <View style={{ flex: 1 }} />}
                           {pos.quantity ? (
                             <Text style={styles.hallQtyText}>
                               {pos.quantity} {pos.unit?.toLowerCase().startsWith('thùng') ? 'th' : (pos.unit || 'th')}
@@ -1785,7 +1889,15 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
                   </View>
 
                   <View style={styles.progressBarBg}>
-                    <View style={[styles.progressBarFill, { width: `${pct}%` }]} />
+                    <View
+                      style={[
+                        styles.progressBarFill,
+                        {
+                          width: `${pct}%`,
+                          backgroundColor: pct >= 90 ? '#f59e0b' : '#10b981'
+                        }
+                      ]}
+                    />
                   </View>
                 </TouchableOpacity>
               );
@@ -1852,100 +1964,131 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
           {/* Positions Grid & Shelves */}
           <ScrollView contentContainerStyle={styles.positionsGridPadding}>
             {!selectedTierId ? (
-              /* Khi xem tất cả tầng: Hiển thị dạng KỆ KHO từng TẦNG (từ trên xuống: Tầng 5 -> Tầng 1) */
+              /* Khi xem tất cả tầng: Hiển thị Accordion có Mở tất cả & Thu tất cả (Tầng 1 -> Tầng 5) */
               <View style={styles.tierShelvesContainer}>
+                {/* Thanh điều khiển Mở tất cả / Thu tất cả */}
+                <View style={styles.tierAccordionHeaderBar}>
+                  <Text style={styles.tierAccordionTitle}>
+                    Chi tiết theo tầng ({tiers.length} tầng):
+                  </Text>
+                  <View style={{ flexDirection: 'row', gap: 6 }}>
+                    <TouchableOpacity style={styles.tierToggleBtn} onPress={handleExpandAllTiers}>
+                      <Text style={[styles.tierToggleBtnText, { color: '#38bdf8' }]}>+ Mở tất cả</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={styles.tierToggleBtn} onPress={handleCollapseAllTiers}>
+                      <Text style={[styles.tierToggleBtnText, { color: '#cbd5e1' }]}>− Thu tất cả</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+
                 {tiers.map(tier => {
                   const tierPositions = tierPositionsMap?.get(tier.id) || [];
                   const stats = zoneStatsMap.get(tier.id) || { total: 0, occupied: 0, empty: 0 };
-                  const pct = stats.total > 0 ? Math.round((stats.occupied / stats.total) * 100) : 0;
+                  const isExpanded = expandedTierIds.has(tier.id);
+                  if (tierPositions.length === 0) return null;
 
                   return (
-                    <View key={tier.id} style={styles.tierShelfCard}>
+                    <View key={tier.id} style={[styles.tierAccordionCard, isExpanded && styles.tierAccordionCardExpanded]}>
                       <TouchableOpacity
-                        style={styles.tierShelfHeader}
-                        onPress={() => setSelectedTierId(tier.id)}
+                        style={[styles.tierAccordionBtn, isExpanded && styles.tierAccordionBtnExpanded]}
+                        onPress={() => toggleTierExpand(tier.id)}
+                        activeOpacity={0.7}
                       >
-                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                          <View style={styles.tierBadge}>
-                            <Text style={styles.tierBadgeText}>{tier.name}</Text>
-                          </View>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7, flex: 1 }}>
+                          <Ionicons
+                            name={isExpanded ? 'chevron-down' : 'chevron-forward'}
+                            size={14}
+                            color={isExpanded ? '#38bdf8' : '#64748b'}
+                          />
+                          <View style={styles.tierDot} />
+                          <Text style={styles.tierAccordionName}>{tier.name}</Text>
                           <Text style={styles.tierOccupancyText}>
-                            {stats.occupied}/{stats.total} vị trí ({pct}%)
+                            ({stats.occupied}/{stats.total} vị trí có hàng)
                           </Text>
                         </View>
-                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 3 }}>
-                          <Text style={styles.tierFocusLink}>Xem riêng</Text>
-                          <Ionicons name="chevron-forward" size={13} color="#38bdf8" />
-                        </View>
+                        <Text style={styles.tierEmptyCountText}>
+                          {stats.empty} trống
+                        </Text>
                       </TouchableOpacity>
 
-                      {tierPositions.length === 0 ? (
-                        <Text style={styles.emptyTierText}>Chưa có vị trí nào trong tầng này</Text>
-                      ) : (
-                        <View style={styles.positionsGrid}>
-                          {tierPositions.map(pos => {
-                            const isOccupied = !!pos.lot_id;
-                            const isHigh = pos.id === highlightedPosId;
-                            const isMatched = isSearchActive && matchingPosIds.has(pos.id);
+                      {isExpanded && (
+                        <View style={styles.tierAccordionBody}>
+                          <View style={styles.positionsGrid}>
+                            {tierPositions.map(pos => {
+                              const isOccupied = !!pos.lot_id;
+                              const isHigh = pos.id === highlightedPosId;
+                              const isMatched = isSearchActive && matchingPosIds.has(pos.id);
 
-                            return (
-                              <TouchableOpacity
-                                key={pos.id}
-                                style={[
-                                  styles.posCard,
-                                  isOccupied ? styles.posCardOccupied : styles.posCardEmpty,
-                                  isHigh && styles.posCardHighlighted,
-                                  isMatched && styles.posCardMatched
-                                ]}
-                                onPress={() => {
-                                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                                  setSelectedPosDetail(pos);
-                                }}
-                              >
-                                <View style={styles.posCardHeader}>
-                                  <Text style={styles.posCodeText} numberOfLines={1}>{pos.code}</Text>
-                                  {isMatched && (
-                                    <View style={styles.matchTag}>
-                                      <Text style={styles.matchTagText}>⭐ Khớp</Text>
-                                    </View>
-                                  )}
-                                  {isOccupied ? (
-                                    <View style={styles.posSttBadge}>
-                                      <Text style={styles.posSttBadgeText} numberOfLines={1}>
-                                        {pos.stt ? `#${pos.stt}` : 'LOT'}
-                                      </Text>
-                                    </View>
-                                  ) : (
-                                    <View style={styles.posEmptyBadge}>
-                                      <Text style={styles.posEmptyBadgeText}>TRỐNG</Text>
-                                    </View>
-                                  )}
-                                </View>
-
-                                {isOccupied ? (
-                                  <View style={{ gap: 2 }}>
-                                    <Text style={styles.posProdTitle} numberOfLines={1}>
-                                      {pos.product_name || 'Hàng đông lạnh'}
-                                    </Text>
-                                    <View style={styles.posBottomMeta}>
-                                      <Text style={styles.posLotText} numberOfLines={1}>
-                                        {pos.lot_code || '---'}
-                                      </Text>
-                                      {pos.quantity ? (
-                                        <Text style={styles.posQtyText}>
-                                          {pos.quantity} {pos.unit?.toLowerCase().startsWith('thùng') ? 'th' : (pos.unit || 'th')}
-                                        </Text>
+                              return (
+                                <TouchableOpacity
+                                  key={pos.id}
+                                  style={[
+                                    styles.posCard,
+                                    isOccupied ? styles.posCardOccupied : styles.posCardEmpty,
+                                    isHigh && styles.posCardHighlighted,
+                                    isMatched && styles.posCardMatched
+                                  ]}
+                                  onPress={() => {
+                                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                                    setSelectedPosDetail(pos);
+                                  }}
+                                >
+                                  <View style={styles.posCardHeader}>
+                                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 3, flex: 1, minWidth: 0, paddingRight: 2 }}>
+                                      <Text style={styles.posCodeText} numberOfLines={1}>{pos.code}</Text>
+                                      {pos.inbound_date ? (
+                                        <View style={styles.posDateBadge}>
+                                          <Text style={styles.posDateBadgeText} numberOfLines={1}>
+                                            {formatDateShortVN(pos.inbound_date)}
+                                          </Text>
+                                        </View>
                                       ) : null}
                                     </View>
+                                    {isMatched && (
+                                      <View style={styles.matchTag}>
+                                        <Text style={styles.matchTagText}>⭐ Khớp</Text>
+                                      </View>
+                                    )}
+                                    {isOccupied ? (
+                                      <View style={styles.posSttBadge}>
+                                        <Text style={styles.posSttBadgeText} numberOfLines={1}>
+                                          {pos.stt ? `#${pos.stt}` : 'LOT'}
+                                        </Text>
+                                      </View>
+                                    ) : (
+                                      <View style={styles.posEmptyBadge}>
+                                        <Text style={styles.posEmptyBadgeText}>TRỐNG</Text>
+                                      </View>
+                                    )}
                                   </View>
-                                ) : (
-                                  <View style={styles.emptySlotHint}>
-                                    <Text style={styles.emptySlotHintText}>+ Trống</Text>
-                                  </View>
-                                )}
-                              </TouchableOpacity>
-                            );
-                          })}
+
+                                  {isOccupied ? (
+                                    <View style={{ gap: 2 }}>
+                                      <Text style={styles.posProdTitle}>
+                                        {pos.product_name || 'Hàng đông lạnh'}
+                                      </Text>
+                                      <View style={styles.posBottomMeta}>
+                                        {getPositionTag(pos) ? (
+                                          <Text style={styles.posTagText} numberOfLines={1}>
+                                            TAG: {getPositionTag(pos)}
+                                          </Text>
+                                        ) : <View style={{ flex: 1 }} />}
+                                        {pos.quantity ? (
+                                          <Text style={styles.posQtyText}>
+                                            {pos.quantity} {pos.unit?.toLowerCase().startsWith('thùng') ? 'th' : (pos.unit || 'th')}
+                                          </Text>
+                                        ) : null}
+                                      </View>
+                                    </View>
+                                  ) : (
+                                    <View style={styles.emptySlotHint}>
+                                      <Text style={styles.emptySlotHintText}>+ Trống</Text>
+                                    </View>
+                                  )}
+                                </TouchableOpacity>
+                              );
+                            })}
+                          </View>
                         </View>
                       )}
                     </View>
@@ -1978,7 +2121,16 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
                       }}
                     >
                       <View style={styles.posCardHeader}>
-                        <Text style={styles.posCodeText} numberOfLines={1}>{pos.code}</Text>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 3, flex: 1, minWidth: 0, paddingRight: 2 }}>
+                          <Text style={styles.posCodeText} numberOfLines={1}>{pos.code}</Text>
+                          {pos.inbound_date ? (
+                            <View style={styles.posDateBadge}>
+                              <Text style={styles.posDateBadgeText} numberOfLines={1}>
+                                {formatDateShortVN(pos.inbound_date)}
+                              </Text>
+                            </View>
+                          ) : null}
+                        </View>
                         {isMatched && (
                           <View style={styles.matchTag}>
                             <Text style={styles.matchTagText}>⭐ Khớp</Text>
@@ -1999,13 +2151,15 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
 
                       {isOccupied ? (
                         <View style={{ gap: 2 }}>
-                          <Text style={styles.posProdTitle} numberOfLines={1}>
+                          <Text style={styles.posProdTitle}>
                             {pos.product_name || 'Hàng đông lạnh'}
                           </Text>
                           <View style={styles.posBottomMeta}>
-                            <Text style={styles.posLotText} numberOfLines={1}>
-                              LOT: {pos.lot_code || '---'}
-                            </Text>
+                            {getPositionTag(pos) ? (
+                              <Text style={styles.posTagText} numberOfLines={1}>
+                                TAG: {getPositionTag(pos)}
+                              </Text>
+                            ) : <View style={{ flex: 1 }} />}
                             {pos.quantity ? (
                               <Text style={styles.posQtyText}>
                                 {pos.quantity} {pos.unit?.toLowerCase().startsWith('thùng') ? 'th' : (pos.unit || 'th')}
@@ -2683,20 +2837,19 @@ const styles = StyleSheet.create({
   },
   hallPosCode: {
     color: '#e2e8f0',
-    fontSize: 11,
+    fontSize: 8.2,
     fontWeight: '800',
-    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
-    flex: 1
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace'
   },
   hallSttBadge: {
     backgroundColor: '#f59e0b',
-    paddingHorizontal: 5,
-    paddingVertical: 1.5,
+    paddingHorizontal: 3.5,
+    paddingVertical: 1,
     borderRadius: 4
   },
   hallSttBadgeText: {
     color: '#0f172a',
-    fontSize: 9,
+    fontSize: 8,
     fontWeight: '900',
     fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace'
   },
@@ -2715,9 +2868,9 @@ const styles = StyleSheet.create({
   },
   hallProductName: {
     color: '#ffffff',
-    fontSize: 11,
+    fontSize: 9.5,
     fontWeight: '700',
-    lineHeight: 14
+    lineHeight: 13
   },
   hallPosMetaRow: {
     flexDirection: 'row',
@@ -2730,6 +2883,13 @@ const styles = StyleSheet.create({
     fontSize: 9,
     fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
     maxWidth: '55%'
+  },
+  hallTagText: {
+    color: '#38bdf8',
+    fontSize: 9,
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+    fontWeight: '700',
+    maxWidth: '65%'
   },
   hallQtyText: {
     color: '#fbbf24',
@@ -2792,15 +2952,17 @@ const styles = StyleSheet.create({
     fontWeight: '800'
   },
   progressBarBg: {
-    height: 4,
-    borderRadius: 2,
+    width: '100%',
+    height: 6,
+    borderRadius: 3,
     backgroundColor: '#1e293b',
-    overflow: 'hidden'
+    overflow: 'hidden',
+    marginTop: 6
   },
   progressBarFill: {
     height: '100%',
-    backgroundColor: '#06b6d4',
-    borderRadius: 2
+    backgroundColor: '#10b981',
+    borderRadius: 3
   },
   backLevelBtn: {
     flexDirection: 'row',
@@ -2880,7 +3042,75 @@ const styles = StyleSheet.create({
     color: '#0f172a'
   },
   tierShelvesContainer: {
-    gap: 12
+    gap: 8
+  },
+  tierAccordionHeaderBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 2,
+    paddingBottom: 4,
+    marginBottom: 4
+  },
+  tierAccordionTitle: {
+    color: '#94a3b8',
+    fontSize: 12,
+    fontWeight: '700'
+  },
+  tierToggleBtn: {
+    paddingHorizontal: 9,
+    paddingVertical: 5,
+    borderRadius: 8,
+    backgroundColor: '#1e293b',
+    borderWidth: 1,
+    borderColor: '#334155'
+  },
+  tierToggleBtnText: {
+    fontSize: 11,
+    fontWeight: '700'
+  },
+  tierAccordionCard: {
+    backgroundColor: '#0f172a',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#1e293b',
+    overflow: 'hidden',
+    marginBottom: 6
+  },
+  tierAccordionCardExpanded: {
+    borderColor: '#334155'
+  },
+  tierAccordionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: 12,
+    backgroundColor: '#0f172a'
+  },
+  tierAccordionBtnExpanded: {
+    borderBottomWidth: 1,
+    borderBottomColor: '#1e293b',
+    backgroundColor: '#131d2e'
+  },
+  tierDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#38bdf8'
+  },
+  tierAccordionName: {
+    color: '#ffffff',
+    fontSize: 12,
+    fontWeight: '800',
+    textTransform: 'uppercase'
+  },
+  tierEmptyCountText: {
+    color: '#34d399',
+    fontSize: 11,
+    fontWeight: '700'
+  },
+  tierAccordionBody: {
+    padding: 10
   },
   tierShelfCard: {
     backgroundColor: '#0f172a',
@@ -2960,27 +3190,47 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    gap: 4
+    gap: 3
   },
   posCodeText: {
     color: '#ffffff',
-    fontSize: 10.5,
+    fontSize: 8.2,
     fontWeight: '800',
-    flex: 1,
     fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace'
+  },
+  posDateBadge: {
+    backgroundColor: '#10b98118',
+    borderWidth: 0.8,
+    borderColor: '#10b98166',
+    paddingHorizontal: 3.5,
+    paddingVertical: 0.5,
+    borderRadius: 3.5,
+    flexShrink: 0
+  },
+  posDateBadgeText: {
+    color: '#34d399',
+    fontSize: 7.6,
+    fontWeight: '800',
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace'
+  },
+  posInboundDateText: {
+    color: '#34d399',
+    fontSize: 7.6,
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+    marginTop: 0
   },
   posSttBadge: {
     backgroundColor: '#f59e0b22',
     borderWidth: 1,
     borderColor: '#f59e0b88',
-    paddingHorizontal: 4,
+    paddingHorizontal: 3,
     paddingVertical: 1,
     borderRadius: 4,
     flexShrink: 0
   },
   posSttBadgeText: {
     color: '#fbbf24',
-    fontSize: 8.5,
+    fontSize: 8,
     fontWeight: '900'
   },
   posEmptyBadge: {
@@ -2999,9 +3249,9 @@ const styles = StyleSheet.create({
   },
   posProdTitle: {
     color: '#e2e8f0',
-    fontSize: 10,
+    fontSize: 9,
     fontWeight: '700',
-    lineHeight: 14
+    lineHeight: 12.5
   },
   posBottomMeta: {
     flexDirection: 'row',
@@ -3013,6 +3263,13 @@ const styles = StyleSheet.create({
     color: '#64748b',
     fontSize: 9,
     fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+    flex: 1
+  },
+  posTagText: {
+    color: '#38bdf8',
+    fontSize: 9,
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+    fontWeight: '700',
     flex: 1
   },
   posQtyText: {

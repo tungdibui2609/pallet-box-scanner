@@ -1009,6 +1009,13 @@ export interface WarehouseMapOfflineData {
   totalWarehouses: number;
 }
 
+// In-Memory RAM Cache for instant 0ms access
+let memoryWarehouseMapCache: WarehouseMapOfflineData | null = null;
+
+export function getMemoryWarehouseMapCache(): WarehouseMapOfflineData | null {
+  return memoryWarehouseMapCache;
+}
+
 /**
  * Tải đồng bộ toàn bộ Sơ Đồ Kho (Zones, Positions, Lots gán vị trí) về máy để xem ngoại tuyến (Offline)
  */
@@ -1024,10 +1031,10 @@ export async function syncWarehouseMapOffline(): Promise<{
   try {
     const client = await getSupabaseClient();
 
-    // 1. Fetch Zones for Cold Storage (bao gồm cờ is_hall)
+    // 1. Fetch Zones for Cold Storage (bao gồm cờ is_hall và display_order)
     const { data: zonesData, error: zonesErr } = await client
       .from('zones')
-      .select('id, name, parent_id, system_type, is_hall')
+      .select('id, name, parent_id, system_type, display_order, is_hall')
       .eq('system_type', 'KHO_DONG_LANH');
 
     if (zonesErr) throw zonesErr;
@@ -1059,7 +1066,7 @@ export async function syncWarehouseMapOffline(): Promise<{
     const lotMap = new Map<string, any>();
 
     if (occupiedLotIds.length > 0) {
-      const CHUNK_SIZE = 100;
+      const CHUNK_SIZE = 250;
       const chunkPromises: Promise<any>[] = [];
       for (let i = 0; i < occupiedLotIds.length; i += CHUNK_SIZE) {
         const chunk = occupiedLotIds.slice(i, i + CHUNK_SIZE);
@@ -1091,7 +1098,14 @@ export async function syncWarehouseMapOffline(): Promise<{
       chunkResults.forEach((res: any) => {
         if (res.data) {
           res.data.forEach((l: any) => {
-            const tags = (l.lot_tags || []).map((t: any) => t.tag).filter(Boolean);
+            const rawTags = [
+              ...(l.lot_tags || []).map((t: any) => t.tag),
+              l.metadata?.tag,
+              l.metadata?.pallet_tag
+            ].filter(Boolean);
+            const tags = Array.from(new Set(rawTags.map(t => String(t).trim()))).filter(t => 
+              t && !t.startsWith('MERGED_FROM:') && !t.startsWith('MERGED_DATA:')
+            );
             const tagsStr = tags.length > 0 ? tags.join(', ') : '';
 
             const allItems = l.lot_items || [];
@@ -1237,8 +1251,8 @@ export async function syncWarehouseMapOffline(): Promise<{
         'warehouse_map_offline_pos_2'
       ]);
 
-      // 2. Compact Zones: lưu [id, name, parent_id, is_hall ? 1 : 0] (giảm từ 1MB xuống ~170KB)
-      const compactZones = rawZones.map((z: any) => [z.id, z.name, z.parent_id, z.is_hall ? 1 : 0]);
+      // 2. Compact Zones: lưu [id, name, parent_id, is_hall ? 1 : 0, display_order ?? 0]
+      const compactZones = rawZones.map((z: any) => [z.id, z.name, z.parent_id, z.is_hall ? 1 : 0, z.display_order ?? 0]);
 
       // 3. Compact Positions: tách riêng vị trí có hàng và vị trí trống (giảm từ 2.4MB xuống ~700KB)
       const occupiedList: any[] = [];
@@ -1260,6 +1274,14 @@ export async function syncWarehouseMapOffline(): Promise<{
         ['warehouse_map_cached_count', String(formattedPositions.length)],
         ['warehouse_map_cached_warehouses', String(warehousesCount)]
       ]);
+
+      memoryWarehouseMapCache = {
+        zones: rawZones,
+        positions: formattedPositions,
+        cachedAt: now,
+        totalPositions: formattedPositions.length,
+        totalWarehouses: warehousesCount
+      };
     } catch (saveErr) {
       console.warn('Lỗi lưu AsyncStorage sơ đồ kho:', saveErr);
     }
@@ -1287,6 +1309,9 @@ export async function syncWarehouseMapOffline(): Promise<{
  * Lấy dữ liệu Sơ Đồ Kho Offline đã lưu trong máy (Hỗ trợ giải nén Compact Storage & tương thích ngược)
  */
 export async function getWarehouseMapOfflineData(): Promise<WarehouseMapOfflineData | null> {
+  if (memoryWarehouseMapCache && memoryWarehouseMapCache.positions && memoryWarehouseMapCache.positions.length > 0) {
+    return memoryWarehouseMapCache;
+  }
   try {
     const [zonesRaw, emptyRaw, occupiedRaw, timeRaw, countRaw, whsRaw] = await Promise.all([
       AsyncStorage.getItem('warehouse_map_offline_zones'),
@@ -1306,7 +1331,8 @@ export async function getWarehouseMapOfflineData(): Promise<WarehouseMapOfflineD
             name: item[1],
             parent_id: item[2],
             system_type: 'KHO_DONG_LANH',
-            is_hall: Boolean(item[3] || /s[ảàa]nh|lobby/i.test(item[1] || ''))
+            is_hall: Boolean(item[3] || /s[ảàa]nh|lobby/i.test(item[1] || '')),
+            display_order: item[4] ?? 0
           };
         }
         return item;
@@ -1345,13 +1371,15 @@ export async function getWarehouseMapOfflineData(): Promise<WarehouseMapOfflineD
       const restoredOccupied = occupiedRaw ? JSON.parse(occupiedRaw) : [];
       const positions = [...restoredEmpty, ...restoredOccupied];
 
-      return {
+      const result: WarehouseMapOfflineData = {
         zones,
         positions,
         cachedAt: timeRaw || new Date().toISOString(),
         totalPositions: positions.length,
         totalWarehouses: Number(whsRaw) || zones.filter((z: any) => !z.parent_id).length
       };
+      memoryWarehouseMapCache = result;
+      return result;
     }
 
     // Fallback nếu máy cũ còn định dạng pos_1 / pos_2
@@ -1364,19 +1392,23 @@ export async function getWarehouseMapOfflineData(): Promise<WarehouseMapOfflineD
       const p1 = pos1Raw ? JSON.parse(pos1Raw) : [];
       const p2 = pos2Raw ? JSON.parse(pos2Raw) : [];
       const positions = [...p1, ...p2];
-      return {
+      const fallbackResult: WarehouseMapOfflineData = {
         zones,
         positions,
         cachedAt: timeRaw || new Date().toISOString(),
         totalPositions: positions.length,
         totalWarehouses: Number(whsRaw) || zones.filter((z: any) => !z.parent_id).length
       };
+      memoryWarehouseMapCache = fallbackResult;
+      return fallbackResult;
     }
 
     // Fallback nếu máy cũ còn key đơn lẻ
     const raw = await AsyncStorage.getItem('warehouse_map_offline_cache');
     if (!raw) return null;
-    return JSON.parse(raw);
+    const oldParsed = JSON.parse(raw);
+    memoryWarehouseMapCache = oldParsed;
+    return oldParsed;
   } catch {
     return null;
   }

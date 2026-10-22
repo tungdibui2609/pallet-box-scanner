@@ -17,6 +17,17 @@ function AppContent() {
   const insets = useSafeAreaInsets();
   const { user, isLoading } = useAuth();
   const [currentTab, setCurrentTab] = useState<AppTab>('scanner');
+  const [visitedTabs, setVisitedTabs] = useState<Record<string, boolean>>({
+    scanner: true,
+    warehouse_map: false,
+    pallets: false,
+  });
+
+  useEffect(() => {
+    if (!visitedTabs[currentTab]) {
+      setVisitedTabs(prev => ({ ...prev, [currentTab]: true }));
+    }
+  }, [currentTab]);
 
   useEffect(() => {
     if (!user) return;
@@ -109,12 +120,18 @@ function AppContent() {
         {currentTab === 'stamp_scanner' && (
           <StampScannerScreen onNavigateToPallets={() => setCurrentTab('pallets')} />
         )}
-        {currentTab === 'warehouse_map' && (
-          <WarehouseMapScreen onBackToScanner={() => setCurrentTab('scanner')} />
-        )}
-        {currentTab === 'pallets' && (
-          <PalletListScreen onBackToScanner={() => setCurrentTab('scanner')} />
-        )}
+        {/* Keep-Alive cho Sơ Đồ Kho: Sau khi vào 1 lần, giữ trong RAM, hiển thị 0ms khi quay lại */}
+        <View style={[styles.tabKeepAlive, currentTab !== 'warehouse_map' && styles.tabHidden]}>
+          {visitedTabs.warehouse_map && (
+            <WarehouseMapScreen onBackToScanner={() => setCurrentTab('scanner')} />
+          )}
+        </View>
+        {/* Keep-Alive cho Pallet Kho */}
+        <View style={[styles.tabKeepAlive, currentTab !== 'pallets' && styles.tabHidden]}>
+          {visitedTabs.pallets && (
+            <PalletListScreen onBackToScanner={() => setCurrentTab('scanner')} />
+          )}
+        </View>
         {currentTab === 'settings' && (
           <SettingsScreen onBack={() => setCurrentTab('scanner')} />
         )}
@@ -219,6 +236,12 @@ const styles = StyleSheet.create({
   },
   body: {
     flex: 1,
+  },
+  tabKeepAlive: {
+    flex: 1,
+  },
+  tabHidden: {
+    display: 'none',
   },
   loadingScreen: {
     alignItems: 'center',
