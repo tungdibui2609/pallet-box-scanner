@@ -9,6 +9,7 @@ import {
   saveCloudBoxesToCache, getCloudBoxesFromCache
 } from './database';
 import { DEFAULT_STAMP_DICTIONARY } from './stampParser';
+import { formatMaterialZoneList } from '../utils/provinces';
 
 export const DEFAULT_SUPABASE_URL = 'https://api.chanhthu.click';
 export const DEFAULT_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6ImFub24iLCJleHAiOjE5ODM4MTI5OTZ9.CRXP1A7WOeoJeXxjNni43kdQwgnWNReilDMblYTn_I0';
@@ -1133,22 +1134,10 @@ export async function syncWarehouseMapOffline(): Promise<{
               ? String(l.raw_material_date).split('T')[0]
               : (l.metadata?.raw_material_date ? String(l.metadata.raw_material_date).split('T')[0] : null);
 
-            // Trích xuất vùng miền / vùng nguyên liệu
-            const metaZones: string[] = [];
-            if (Array.isArray(l.metadata?.material_zones)) {
-              l.metadata.material_zones.forEach((z: any) => {
-                if (typeof z === 'string' && z.trim()) metaZones.push(z.trim());
-              });
-            } else if (l.metadata?.material_zone && typeof l.metadata.material_zone === 'string') {
-              l.metadata.material_zone.split(',').forEach((z: string) => {
-                if (z.trim()) metaZones.push(z.trim());
-              });
-            } else if (l.metadata?.region && typeof l.metadata.region === 'string' && l.metadata.region !== '---') {
-              metaZones.push(l.metadata.region.trim());
-            } else if (l.metadata?.province && typeof l.metadata.province === 'string' && l.metadata.province !== '---') {
-              metaZones.push(l.metadata.province.trim());
-            }
-            const cleanMaterialZone = Array.from(new Set(metaZones.filter(Boolean))).join(', ') || null;
+            // Trích xuất vùng miền / vùng nguyên liệu (chuẩn hóa tên tỉnh như web quản lý LOT)
+            const rawMz = l.metadata?.material_zones || l.metadata?.material_zone || l.metadata?.region || l.metadata?.province;
+            const formattedMz = formatMaterialZoneList(rawMz);
+            const cleanMaterialZone = formattedMz && formattedMz !== '---' ? formattedMz : null;
 
             // Trích xuất nơi sản xuất / nhà máy
             const rawPlaces = l.metadata?.production_places;

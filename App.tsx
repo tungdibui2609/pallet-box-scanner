@@ -158,20 +158,6 @@ function AppContent() {
 
         <TouchableOpacity
           style={styles.navItem}
-          onPress={() => setCurrentTab('warehouse_map')}
-        >
-          <Ionicons
-            name={currentTab === 'warehouse_map' ? 'map' : 'map-outline'}
-            size={22}
-            color={currentTab === 'warehouse_map' ? '#06b6d4' : '#94a3b8'}
-          />
-          <Text style={[styles.navText, currentTab === 'warehouse_map' && { color: '#06b6d4' }]}>
-            Sơ Đồ Kho
-          </Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={styles.navItem}
           onPress={() => setCurrentTab('pallets')}
         >
           <Ionicons
@@ -181,6 +167,20 @@ function AppContent() {
           />
           <Text style={[styles.navText, currentTab === 'pallets' && { color: '#38bdf8' }]}>
             Pallet Kho
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.navItem}
+          onPress={() => setCurrentTab('warehouse_map')}
+        >
+          <Ionicons
+            name={currentTab === 'warehouse_map' ? 'map' : 'map-outline'}
+            size={22}
+            color={currentTab === 'warehouse_map' ? '#06b6d4' : '#94a3b8'}
+          />
+          <Text style={[styles.navText, currentTab === 'warehouse_map' && { color: '#06b6d4' }]}>
+            Sơ Đồ Kho
           </Text>
         </TouchableOpacity>
 

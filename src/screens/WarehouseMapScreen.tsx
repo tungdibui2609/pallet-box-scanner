@@ -23,6 +23,7 @@ import {
 import { decodeSTT } from '../utils/numberUtils';
 import { groupWarehouseData } from '../utils/warehouseUtils';
 import { matchPalletSearch, calculateSearchScore, matchSearch, normalizeSearchString } from '../utils/searchUtils';
+import { formatMaterialZoneList } from '../utils/provinces';
 
 export interface UniqueProductItem {
   name: string;
@@ -2138,7 +2139,7 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
                           <Text style={styles.modalDim}>VÙNG NGUYÊN LIỆU</Text>
                         </View>
                         <Text style={[styles.modalVal, { color: '#34d399', fontSize: 11, fontWeight: '700' }]} numberOfLines={2}>
-                          {selectedPosDetail.material_zone || '---'}
+                          {formatMaterialZoneList(selectedPosDetail.material_zone)}
                         </Text>
                       </View>
 
