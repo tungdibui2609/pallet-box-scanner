@@ -13,7 +13,7 @@ import {
   getBoxesByPallet, addStampBoxToPallet, deleteBox,
   getPalletByCode, activateExistingPallet, getStampDictionariesMap,
   getActiveStampFormat, cloneBoxToPallet, addStampBoxesBulkToPallet,
-  updatePalletTag, updatePalletTagAndNotes
+  updatePalletTag, updatePalletTagAndNotes, resetPalletBoxes
 } from '../services/database';
 import { parseStampText, isStampContent, decodeStamp } from '../services/stampParser';
 
@@ -283,6 +283,32 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
     }
   }
 
+  // ── Làm mới / Xoá toàn bộ thùng của Pallet đang chọn ─────
+  function handleResetActivePallet() {
+    if (!activePallet) return;
+    Alert.alert(
+      `Xoá thùng Pallet ${activePallet.code}?`,
+      `Bạn có chắc chắn muốn xoá toàn bộ ${boxes.length} thùng (${activePallet.total_weight.toFixed(1)} Kg) của Pallet ${activePallet.code} để quét lại từ đầu không?`,
+      [
+        { text: 'Huỷ', style: 'cancel' },
+        {
+          text: '🔄 Xoá và Quét lại',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await resetPalletBoxes(activePallet.id);
+              await loadActivePallet();
+              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+              triggerSuccessBanner(`Đã làm mới Pallet ${activePallet.code} về 0 thùng!`);
+            } catch (err: any) {
+              Alert.alert('Lỗi', err.message);
+            }
+          }
+        }
+      ]
+    );
+  }
+
   // ── Tạo Pallet mới ───────────────────────────────────────
   async function handleCreateNewPallet() {
     if (!newPalletCode.trim()) {
@@ -293,30 +319,87 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
     try {
       const cleanCode = newPalletCode.trim().toUpperCase();
       const existing = await getPalletByCode(cleanCode);
-      let targetPallet: Pallet;
 
       if (existing) {
-        await updatePalletTagAndNotes(existing.id, newPalletTag.trim() || null, newPalletNotes.trim() || null);
-        targetPallet = (await activateExistingPallet(existing.id)) || existing;
-        targetPallet = {
-          ...targetPallet,
-          tag: newPalletTag.trim() || existing.tag,
-          notes: newPalletNotes.trim() || existing.notes
-        };
-      } else {
-        const qty = parseInt(newTargetQty, 10) || 30;
-        targetPallet = await createNewPallet(
-          cleanCode,
-          qty,
-          'KHO_DONG_LANH',
-          newPalletTag.trim() || null,
-          newPalletNotes.trim() || null
-        );
+        if (existing.scanned_qty > 0) {
+          Alert.alert(
+            `⚠️ STT ${cleanCode} ĐÃ CÓ TRONG HỆ THỐNG!`,
+            `STT ${cleanCode} hiện đang có ${existing.scanned_qty} thùng (${existing.total_weight.toFixed(1)} Kg).\n\nPallet này có bị xáo trộn hàng và bạn cần quét lại không?`,
+            [
+              {
+                text: '🔄 Quét lại từ đầu (Xoá cũ)',
+                style: 'destructive',
+                onPress: async () => {
+                  await updatePalletTagAndNotes(existing.id, newPalletTag.trim() || null, newPalletNotes.trim() || null);
+                  await resetPalletBoxes(existing.id);
+                  const activated = (await activateExistingPallet(existing.id)) || existing;
+                  setActivePallet({
+                    ...activated,
+                    tag: newPalletTag.trim() || existing.tag,
+                    notes: newPalletNotes.trim() || existing.notes,
+                    scanned_qty: 0,
+                    total_weight: 0
+                  });
+                  setBoxes([]);
+                  setIsNewPalletModal(false);
+                  setNewPalletCode('');
+                  setNewPalletTag('');
+                  setNewPalletNotes('');
+                  Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                  triggerSuccessBanner(`Đã đặt lại STT ${cleanCode} về 0 thùng để quét lại!`);
+                }
+              },
+              {
+                text: 'Tiếp tục quét thêm',
+                onPress: async () => {
+                  await updatePalletTagAndNotes(existing.id, newPalletTag.trim() || null, newPalletNotes.trim() || null);
+                  const activated = (await activateExistingPallet(existing.id)) || existing;
+                  setActivePallet({
+                    ...activated,
+                    tag: newPalletTag.trim() || existing.tag,
+                    notes: newPalletNotes.trim() || existing.notes
+                  });
+                  const existingBoxes = await getBoxesByPallet(existing.id);
+                  setBoxes(existingBoxes);
+                  setIsNewPalletModal(false);
+                  setNewPalletCode('');
+                  setNewPalletTag('');
+                  setNewPalletNotes('');
+                  Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                }
+              },
+              { text: 'Huỷ', style: 'cancel' }
+            ]
+          );
+          return;
+        } else {
+          await updatePalletTagAndNotes(existing.id, newPalletTag.trim() || null, newPalletNotes.trim() || null);
+          const activated = (await activateExistingPallet(existing.id)) || existing;
+          setActivePallet({
+            ...activated,
+            tag: newPalletTag.trim() || existing.tag,
+            notes: newPalletNotes.trim() || existing.notes
+          });
+          setBoxes([]);
+          setIsNewPalletModal(false);
+          setNewPalletCode('');
+          setNewPalletTag('');
+          setNewPalletNotes('');
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+          return;
+        }
       }
 
+      const qty = parseInt(newTargetQty, 10) || 30;
+      const targetPallet = await createNewPallet(
+        cleanCode,
+        qty,
+        'KHO_DONG_LANH',
+        newPalletTag.trim() || null,
+        newPalletNotes.trim() || null
+      );
       setActivePallet(targetPallet);
-      const boxList = await getBoxesByPallet(targetPallet.id);
-      setBoxes(boxList);
+      setBoxes([]);
       setIsNewPalletModal(false);
       setNewPalletCode('');
       setNewPalletTag('');
@@ -412,9 +495,20 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
         {activePallet && (
           <View style={styles.progressContainer}>
             <View style={styles.progressHeader}>
-              <Text style={styles.progressText}>
-                Tiến độ: <Text style={styles.progressHighlight}>{boxes.length}</Text> / {activePallet.target_qty} thùng
-              </Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                <Text style={styles.progressText}>
+                  Tiến độ: <Text style={styles.progressHighlight}>{boxes.length}</Text> / {activePallet.target_qty} thùng
+                </Text>
+                {boxes.length > 0 && (
+                  <TouchableOpacity
+                    style={styles.resetButton}
+                    onPress={handleResetActivePallet}
+                  >
+                    <Ionicons name="refresh-outline" size={12} color="#ef4444" />
+                    <Text style={styles.resetButtonText}>Làm mới</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
               <Text style={styles.weightText}>
                 Tổng: <Text style={styles.progressHighlight}>{activePallet.total_weight.toFixed(1)}</Text> Kg
               </Text>
@@ -1108,7 +1202,25 @@ const styles = StyleSheet.create({
   progressHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
+    alignItems: 'center',
     marginBottom: 4,
+  },
+  resetButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(239, 68, 68, 0.15)',
+    borderWidth: 1,
+    borderColor: '#ef4444',
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    borderRadius: 6,
+    marginLeft: 8,
+    gap: 3,
+  },
+  resetButtonText: {
+    color: '#ef4444',
+    fontSize: 11,
+    fontWeight: '700',
   },
   progressText: {
     fontSize: 12,

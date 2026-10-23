@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   View, Text, StyleSheet, FlatList, TouchableOpacity,
   Alert, ActivityIndicator, Modal, ScrollView, TextInput,
-  KeyboardAvoidingView, Platform
+  KeyboardAvoidingView, Platform, RefreshControl
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
@@ -30,7 +30,13 @@ export interface ProductSuggestionItem {
   badgeText?: string;
 }
 
-export default function PalletListScreen({ onBackToScanner }: { onBackToScanner: () => void }) {
+export default function PalletListScreen({
+  onBackToScanner,
+  isActive
+}: {
+  onBackToScanner: () => void;
+  isActive?: boolean;
+}) {
   // Tabs: 'pending' (Chờ đẩy lên / Chưa đồng bộ) vs 'cloud' (Đã lên Web mẹ / Đã đồng bộ)
   const [activeTab, setActiveTab] = useState<'pending' | 'cloud'>('pending');
 
@@ -79,6 +85,15 @@ export default function PalletListScreen({ onBackToScanner }: { onBackToScanner:
     refreshSyncInfo();
   }, []);
 
+  // Tự động làm mới danh sách Pallet từ SQLite ngay lập tức khi người dùng chuyển sang tab Pallet Kho
+  useEffect(() => {
+    if (isActive) {
+      loadLocalPallets(pallets.length > 0);
+      checkNetwork();
+      setActiveTab('pending');
+    }
+  }, [isActive]);
+
   async function refreshSyncInfo() {
     try {
       const info = await getLastOfflineSyncInfo();
@@ -111,15 +126,15 @@ export default function PalletListScreen({ onBackToScanner }: { onBackToScanner:
     setConnectionStatus(res.success ? '🟢 api.chanhthu.click (Đã kết nối)' : '🔴 Mất kết nối máy chủ');
   }
 
-  async function loadLocalPallets() {
-    setLoading(true);
+  async function loadLocalPallets(isSilent = false) {
+    if (!isSilent) setLoading(true);
     try {
       const data = await getAllPallets();
       setPallets(data);
     } catch (e: any) {
       Alert.alert('Lỗi', e.message);
     } finally {
-      setLoading(false);
+      if (!isSilent) setLoading(false);
     }
   }
 
@@ -219,28 +234,24 @@ export default function PalletListScreen({ onBackToScanner }: { onBackToScanner:
     await loadCloudPallets();
   }
 
-  // ── DELETE LOCAL PALLET (QUY TẮC: ĐÃ ĐẨY LÊN WEB THÌ KHÔNG ĐƯỢC XÓA) ──
+  // ── DELETE LOCAL PALLET ──
   async function handleDelete(pallet: Pallet) {
-    if (pallet.sync_status === 'synced') {
-      Alert.alert(
-        'Không được phép xóa',
-        'Pallet này đã được đẩy lên Web mẹ thành công. Ứng dụng di động không cho phép xóa dữ liệu đã đồng bộ để bảo vệ an toàn kho!'
-      );
-      return;
-    }
+    const isSynced = pallet.sync_status === 'synced';
 
     Alert.alert(
-      'Xóa Pallet chưa đồng bộ',
-      `Bạn có chắc muốn xóa Pallet ${pallet.code} cùng ${pallet.scanned_qty} thùng bên trong khỏi máy?`,
+      isSynced ? 'Xóa Pallet đã đồng bộ khỏi máy' : 'Xóa Pallet chưa đồng bộ',
+      isSynced
+        ? `Pallet ${pallet.code} (${pallet.scanned_qty} thùng) đã từng được đẩy lên Web mẹ.\n\nBạn có muốn xóa Pallet này khỏi bộ nhớ máy con để dọn dẹp hoặc quét lại không? (Thao tác này chỉ xóa trên điện thoại, không ảnh hưởng tới dữ liệu trên Web mẹ).`
+        : `Bạn có chắc muốn xóa Pallet ${pallet.code} cùng ${pallet.scanned_qty} thùng bên trong khỏi máy?`,
       [
         { text: 'Hủy', style: 'cancel' },
         {
-          text: 'Xóa ngay',
+          text: isSynced ? 'Xóa khỏi máy' : 'Xóa ngay',
           style: 'destructive',
           onPress: async () => {
             await deletePallet(pallet.id);
             Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-            loadLocalPallets();
+            await loadLocalPallets();
           }
         }
       ]
@@ -912,6 +923,14 @@ export default function PalletListScreen({ onBackToScanner }: { onBackToScanner:
               data={pendingPallets}
               keyExtractor={item => item.id}
               contentContainerStyle={{ padding: 16 }}
+              refreshControl={
+                <RefreshControl
+                  refreshing={loading}
+                  onRefresh={() => loadLocalPallets(false)}
+                  tintColor="#38bdf8"
+                  colors={['#38bdf8']}
+                />
+              }
               renderItem={({ item }) => {
                 const isSyncing = syncingId === item.id;
                 const isError = item.sync_status === 'error';

@@ -129,7 +129,10 @@ function AppContent() {
         {/* Keep-Alive cho Pallet Kho */}
         <View style={[styles.tabKeepAlive, currentTab !== 'pallets' && styles.tabHidden]}>
           {visitedTabs.pallets && (
-            <PalletListScreen onBackToScanner={() => setCurrentTab('scanner')} />
+            <PalletListScreen
+              onBackToScanner={() => setCurrentTab('scanner')}
+              isActive={currentTab === 'pallets'}
+            />
           )}
         </View>
         {currentTab === 'settings' && (

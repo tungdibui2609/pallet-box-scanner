@@ -263,7 +263,13 @@ export async function getActivePallet(): Promise<Pallet | null> {
 export async function getAllPallets(): Promise<Pallet[]> {
   const db = await getDb();
   return await db.getAllAsync<Pallet>(
-    `SELECT * FROM pallets ORDER BY created_at DESC`
+    `SELECT p.*,
+       CASE 
+         WHEN EXISTS (SELECT 1 FROM boxes b WHERE b.pallet_id = p.id AND b.sync_status = 'pending') THEN 'pending'
+         ELSE p.sync_status
+       END as sync_status
+     FROM pallets p 
+     ORDER BY p.created_at DESC`
   );
 }
 
@@ -356,11 +362,12 @@ export async function addBoxToPallet(
     ]
   );
 
-  // Update scanned_qty and total_weight in pallets table
+  // Update scanned_qty, total_weight and sync_status in pallets table
   await db.runAsync(
     `UPDATE pallets SET 
        scanned_qty = (SELECT COUNT(*) FROM boxes WHERE pallet_id = ?),
        total_weight = (SELECT COALESCE(SUM(weight), 0) FROM boxes WHERE pallet_id = ?),
+       sync_status = 'pending',
        updated_at = ?
      WHERE id = ?`,
     [palletId, palletId, now, palletId]
@@ -452,11 +459,12 @@ export async function addStampBoxToPallet(
     ]
   );
 
-  // Update scanned_qty and total_weight in pallets table
+  // Update scanned_qty, total_weight and sync_status in pallets table
   await db.runAsync(
     `UPDATE pallets SET 
        scanned_qty = (SELECT COUNT(*) FROM boxes WHERE pallet_id = ?),
        total_weight = (SELECT COALESCE(SUM(weight), 0) FROM boxes WHERE pallet_id = ?),
+       sync_status = 'pending',
        updated_at = ?
      WHERE id = ?`,
     [palletId, palletId, now, palletId]
@@ -501,9 +509,10 @@ export async function deleteBox(boxId: string, palletId: string): Promise<void> 
     `UPDATE pallets SET 
        scanned_qty = (SELECT COUNT(*) FROM boxes WHERE pallet_id = ?),
        total_weight = (SELECT COALESCE(SUM(weight), 0) FROM boxes WHERE pallet_id = ?),
+       sync_status = CASE WHEN (SELECT COUNT(*) FROM boxes WHERE pallet_id = ? AND sync_status = 'pending') > 0 THEN 'pending' ELSE sync_status END,
        updated_at = ?
      WHERE id = ?`,
-    [palletId, palletId, now, palletId]
+    [palletId, palletId, palletId, now, palletId]
   );
 }
 
@@ -574,11 +583,12 @@ export async function cloneBoxToPallet(
     });
   }
 
-  // Cập nhật lại số lượng và tổng trọng lượng của Pallet
+  // Cập nhật lại số lượng, tổng trọng lượng và sync_status của Pallet
   await db.runAsync(
     `UPDATE pallets SET 
        scanned_qty = (SELECT COUNT(*) FROM boxes WHERE pallet_id = ?),
        total_weight = (SELECT COALESCE(SUM(weight), 0) FROM boxes WHERE pallet_id = ?),
+       sync_status = 'pending',
        updated_at = ?
      WHERE id = ?`,
     [palletId, palletId, now, palletId]
@@ -690,11 +700,12 @@ export async function addStampBoxesBulkToPallet(
     });
   }
 
-  // Cập nhật lại số lượng và tổng trọng lượng của Pallet
+  // Cập nhật lại số lượng, tổng trọng lượng và sync_status của Pallet
   await db.runAsync(
     `UPDATE pallets SET 
        scanned_qty = (SELECT COUNT(*) FROM boxes WHERE pallet_id = ?),
        total_weight = (SELECT COALESCE(SUM(weight), 0) FROM boxes WHERE pallet_id = ?),
+       sync_status = 'pending',
        updated_at = ?
      WHERE id = ?`,
     [palletId, palletId, now, palletId]
@@ -1034,42 +1045,51 @@ export async function saveCloudPalletsToCache(
     const db = await getDb();
     const now = new Date().toISOString();
 
-    if (isFullReplace) {
-      await db.runAsync('DELETE FROM cloud_pallets_cache');
-    }
+    await db.withExclusiveTransactionAsync(async () => {
+      if (isFullReplace) {
+        await db.runAsync('DELETE FROM cloud_pallets_cache');
+      }
 
-    for (const cp of items) {
-      await db.runAsync(
-        `INSERT OR REPLACE INTO cloud_pallets_cache (
-          id, stt, lot_code, lot_id, boxes_count, total_weight, is_linked,
-          status, product_name, sku, product_aliases, tag, notes,
-          production_place, material_zone, packaging_date, production_date,
-          location_code, created_at, cached_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          cp.id,
-          cp.stt,
-          cp.lot_code || null,
-          cp.lot_id || null,
-          cp.boxes_count || 0,
-          cp.total_weight || 0,
-          cp.is_linked ? 1 : 0,
-          cp.status || null,
-          cp.product_name || null,
-          cp.sku || null,
-          cp.product_aliases || null,
-          cp.tag || null,
-          cp.notes || null,
-          cp.production_place || null,
-          cp.material_zone || null,
-          cp.packaging_date || null,
-          cp.production_date || null,
-          cp.location_code || null,
-          cp.created_at || now,
-          now
-        ]
-      );
-    }
+      const CHUNK_SIZE = 25;
+      for (let i = 0; i < items.length; i += CHUNK_SIZE) {
+        const chunk = items.slice(i, i + CHUNK_SIZE);
+        const placeholders = chunk.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
+        const values: any[] = [];
+        for (const cp of chunk) {
+          values.push(
+            cp.id,
+            cp.stt,
+            cp.lot_code || null,
+            cp.lot_id || null,
+            cp.boxes_count || 0,
+            cp.total_weight || 0,
+            cp.is_linked ? 1 : 0,
+            cp.status || null,
+            cp.product_name || null,
+            cp.sku || null,
+            cp.product_aliases || null,
+            cp.tag || null,
+            cp.notes || null,
+            cp.production_place || null,
+            cp.material_zone || null,
+            cp.packaging_date || null,
+            cp.production_date || null,
+            cp.location_code || null,
+            cp.created_at || now,
+            now
+          );
+        }
+        await db.runAsync(
+          `INSERT OR REPLACE INTO cloud_pallets_cache (
+            id, stt, lot_code, lot_id, boxes_count, total_weight, is_linked,
+            status, product_name, sku, product_aliases, tag, notes,
+            production_place, material_zone, packaging_date, production_date,
+            location_code, created_at, cached_at
+          ) VALUES ${placeholders}`,
+          values
+        );
+      }
+    });
     return items.length;
   } catch (err) {
     console.warn('saveCloudPalletsToCache warning:', err);
@@ -1138,13 +1158,21 @@ export async function saveProductsToCache(items: any[]): Promise<number> {
     const db = await getDb();
     const now = new Date().toISOString();
 
-    for (const p of items) {
-      await db.runAsync(
-        `INSERT OR REPLACE INTO products_cache (id, name, sku, aliases, system_type, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-        [p.id, p.name, p.sku || null, p.aliases || null, p.system_type || null, now]
-      );
-    }
+    await db.withExclusiveTransactionAsync(async () => {
+      const CHUNK_SIZE = 50;
+      for (let i = 0; i < items.length; i += CHUNK_SIZE) {
+        const chunk = items.slice(i, i + CHUNK_SIZE);
+        const placeholders = chunk.map(() => '(?, ?, ?, ?, ?, ?)').join(', ');
+        const values: any[] = [];
+        for (const p of chunk) {
+          values.push(p.id, p.name, p.sku || null, p.aliases || null, p.system_type || null, now);
+        }
+        await db.runAsync(
+          `INSERT OR REPLACE INTO products_cache (id, name, sku, aliases, system_type, updated_at) VALUES ${placeholders}`,
+          values
+        );
+      }
+    });
     return items.length;
   } catch (err) {
     console.warn('saveProductsToCache warning:', err);
@@ -1177,39 +1205,48 @@ export async function saveCloudBoxesToCache(stt: string, lotId: string | null | 
     const now = new Date().toISOString();
     const cleanStt = (stt || '').trim().toUpperCase();
 
-    for (const b of boxes) {
-      await db.runAsync(
-        `INSERT OR REPLACE INTO cloud_boxes_cache (
-          id, pallet_stt, lot_id, code, box_index, quantity, unit,
-          sku, product_name, lot_code, shift_group, region,
-          production_date, packaging_date, spec, scan_type,
-          stamp_line1, stamp_line2, raw_text, created_at, cached_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          b.id,
-          cleanStt,
-          lotId || null,
-          (b as any).code || b.id,
-          b.box_index || null,
-          b.weight || 0,
-          b.unit || 'Kg',
-          b.sku || null,
-          b.product_name || null,
-          b.lot_code || null,
-          b.shift_group || null,
-          b.region || null,
-          b.production_date || null,
-          b.packaging_date || null,
-          b.spec || null,
-          b.scan_type || null,
-          b.stamp_line1 || null,
-          b.stamp_line2 || null,
-          b.raw_text || null,
-          b.created_at || now,
-          now
-        ]
-      );
-    }
+    await db.withExclusiveTransactionAsync(async () => {
+      const CHUNK_SIZE = 25;
+      for (let i = 0; i < boxes.length; i += CHUNK_SIZE) {
+        const chunk = boxes.slice(i, i + CHUNK_SIZE);
+        const placeholders = chunk.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
+        const values: any[] = [];
+        for (const b of chunk) {
+          values.push(
+            b.id,
+            cleanStt,
+            lotId || null,
+            (b as any).code || b.id,
+            b.box_index || null,
+            b.weight || 0,
+            b.unit || 'Kg',
+            b.sku || null,
+            b.product_name || null,
+            b.lot_code || null,
+            b.shift_group || null,
+            b.region || null,
+            b.production_date || null,
+            b.packaging_date || null,
+            b.spec || null,
+            b.scan_type || null,
+            b.stamp_line1 || null,
+            b.stamp_line2 || null,
+            b.raw_text || null,
+            b.created_at || now,
+            now
+          );
+        }
+        await db.runAsync(
+          `INSERT OR REPLACE INTO cloud_boxes_cache (
+            id, pallet_stt, lot_id, code, box_index, quantity, unit,
+            sku, product_name, lot_code, shift_group, region,
+            production_date, packaging_date, spec, scan_type,
+            stamp_line1, stamp_line2, raw_text, created_at, cached_at
+          ) VALUES ${placeholders}`,
+          values
+        );
+      }
+    });
     return boxes.length;
   } catch (err) {
     console.warn('saveCloudBoxesToCache warning:', err);
