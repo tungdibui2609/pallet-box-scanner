@@ -62,9 +62,21 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
 
   useEffect(() => {
     loadActivePallet();
-    getStampDictionariesMap().then(map => setDictMap(map)).catch(() => {});
-    getActiveStampFormat().then(fmt => setActiveFormat(fmt)).catch(() => {});
+    refreshStampRules();
   }, []);
+
+  async function refreshStampRules() {
+    try {
+      const [map, fmt] = await Promise.all([
+        getStampDictionariesMap(),
+        getActiveStampFormat()
+      ]);
+      setDictMap(map);
+      setActiveFormat(fmt);
+    } catch (e) {
+      console.warn('Lỗi nạp từ điển con dấu:', e);
+    }
+  }
 
   async function loadActivePallet() {
     try {
@@ -129,7 +141,17 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
           return;
         }
 
-        const parsed = parseStampText(raw, dictMap, activeFormat);
+        let currentDict = dictMap;
+        let currentFmt = activeFormat;
+        try {
+          const [m, f] = await Promise.all([getStampDictionariesMap(), getActiveStampFormat()]);
+          currentDict = m;
+          currentFmt = f;
+          setDictMap(m);
+          setActiveFormat(f);
+        } catch {}
+
+        const parsed = parseStampText(raw, currentDict, currentFmt);
         if (parsed && (parsed.stamp_line1 || parsed.stamp_line2)) {
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
           Vibration.vibrate(80);
@@ -191,12 +213,22 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
     }
 
     try {
+      let currentDict = dictMap;
+      let currentFmt = activeFormat;
+      try {
+        const [m, f] = await Promise.all([getStampDictionariesMap(), getActiveStampFormat()]);
+        currentDict = m;
+        currentFmt = f;
+        setDictMap(m);
+        setActiveFormat(f);
+      } catch {}
+
       const stampData: ParsedStampData = {
         stamp_line1: manualLine1.trim(),
         stamp_line2: manualLine2.trim(),
         raw_text: `${manualLine1.trim()}\n${manualLine2.trim()}`,
         detected_lines: [manualLine1.trim(), manualLine2.trim()].filter(Boolean),
-        decoded: decodeStamp(manualLine1.trim(), manualLine2.trim(), dictMap, activeFormat)
+        decoded: decodeStamp(manualLine1.trim(), manualLine2.trim(), currentDict, currentFmt)
       };
 
       const w = parseFloat(manualWeight) || 20;
@@ -555,7 +587,7 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
 
               {/* Giải mã tiếng Việt tức thì từ bộ từ điển offline */}
               {(() => {
-                const dec = decodeStamp(pendingStamp.stamp_line1, pendingStamp.stamp_line2, dictMap);
+                const dec = decodeStamp(pendingStamp.stamp_line1, pendingStamp.stamp_line2, dictMap, activeFormat);
                 return (
                   <View style={{ backgroundColor: '#1e1b4b', padding: 12, borderRadius: 14, borderWidth: 1, borderColor: '#4338ca', marginBottom: 12 }}>
                     <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>

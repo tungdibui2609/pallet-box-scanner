@@ -414,13 +414,15 @@ export async function addStampBoxToPallet(
     }
   }
 
-  // Lấy bộ từ điển để tự động giải mã dãy số đóng dấu sang tiếng Việt
+  // Lấy bộ từ điển và mẫu định dạng con dấu đang kích hoạt
   let dictMap: Record<string, Record<string, string>> = DEFAULT_STAMP_DICTIONARY;
+  let activeFormat: StampFormat | null = null;
   try {
     dictMap = await getStampDictionariesMap();
+    activeFormat = await getActiveStampFormat();
   } catch {}
 
-  const decoded = decodeStamp(stampData.stamp_line1, stampData.stamp_line2, dictMap);
+  const decoded = decodeStamp(stampData.stamp_line1, stampData.stamp_line2, dictMap, activeFormat);
 
   const productName = decoded.product_name_full || 'Thùng đóng dấu mực';
   const cleanSku = decoded.special_12_code
@@ -599,11 +601,13 @@ export async function addStampBoxesBulkToPallet(
   const db = await getDb();
 
   let dictMap: Record<string, Record<string, string>> = DEFAULT_STAMP_DICTIONARY;
+  let activeFormat: StampFormat | null = null;
   try {
     dictMap = await getStampDictionariesMap();
+    activeFormat = await getActiveStampFormat();
   } catch {}
 
-  const decoded = decodeStamp(stampData.stamp_line1, stampData.stamp_line2, dictMap);
+  const decoded = decodeStamp(stampData.stamp_line1, stampData.stamp_line2, dictMap, activeFormat);
   const productName = decoded.product_name_full || 'Thùng đóng dấu mực';
   const cleanSku = decoded.special_12_code
     ? decoded.special_12_code
@@ -805,10 +809,13 @@ export async function saveStampDictionaries(items: StampDictionaryItem[]): Promi
   const db = await getDb();
   let count = 0;
 
+  // Xóa sạch các quy tắc cũ trong máy để khớp chính xác 100% với Web mẹ
+  await db.runAsync('DELETE FROM stamp_dictionaries');
+
   for (const item of items) {
     if (!item.category || !item.code || !item.name) continue;
     await db.runAsync(
-      `INSERT OR REPLACE INTO stamp_dictionaries (category, code, name, description, sort_order)
+      `INSERT INTO stamp_dictionaries (category, code, name, description, sort_order)
        VALUES (?, ?, ?, ?, ?)`,
       [
         item.category.trim(),
@@ -838,12 +845,14 @@ export async function getStampDictionariesMap(): Promise<Record<string, Record<s
     map[r.category][r.code.toUpperCase()] = r.name;
   }
 
-  // Merge với fallback mặc định để luôn có giá trị cơ bản
-  for (const [cat, codes] of Object.entries(DEFAULT_STAMP_DICTIONARY)) {
-    if (!map[cat]) map[cat] = {};
-    for (const [c, n] of Object.entries(codes)) {
-      if (!map[cat][c]) {
-        map[cat][c] = n;
+  // CHỈ merge với fallback mặc định nếu bảng trong máy hoàn toàn rỗng
+  if (rows.length === 0) {
+    for (const [cat, codes] of Object.entries(DEFAULT_STAMP_DICTIONARY)) {
+      if (!map[cat]) map[cat] = {};
+      for (const [c, n] of Object.entries(codes)) {
+        if (!map[cat][c]) {
+          map[cat][c] = n;
+        }
       }
     }
   }
@@ -866,10 +875,11 @@ export async function getStampDictionariesCount(): Promise<number> {
 export async function saveStampFormats(formats: StampFormat[]): Promise<void> {
   if (!formats || formats.length === 0) return;
   const db = await getDb();
+  await db.runAsync('DELETE FROM stamp_formats');
 
   for (const f of formats) {
     await db.runAsync(
-      `INSERT OR REPLACE INTO stamp_formats (id, code, name, description, is_default, is_active, line1_config, line2_config, updated_at)
+      `INSERT INTO stamp_formats (id, code, name, description, is_default, is_active, line1_config, line2_config, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         f.id || f.code,
