@@ -128,17 +128,46 @@ export async function syncPalletToSupabase(pallet: Pallet, boxes: BoxLabel[]): P
       }
     }
 
-    // Nếu Lô đã tồn tại VÀ đã có thùng bên trong -> ĐÂY LÀ ĐỢT QUÉT TRÙNG / QUÉT LẠI
-    // Tuân thủ nguyên tắc: App không tự ý ghi đè/xóa tem cũ của Lô đã hoàn tất!
-    // Gửi lên mục Chưa kết nối để Quản lý trên Web mẹ ra quyết định (Cập nhật, Tách LOT, hoặc Hủy)
+    // Quy tắc nghiêm ngặt:
+    // Mobile Scanner TUYỆT ĐỐI KHÔNG tự động kết nối thẳng vào LOT (kể cả khi đã có LOT trên Web).
+    // Toàn bộ thùng luôn được gửi lên ở trạng thái CHỜ DUYỆT (lot_id = null, status = 'unlinked').
+    // Quản lý kho trên Web mẹ sẽ là người kiểm tra số lượng và bấm Duyệt/Ghép vào LOT tại trang Quản lý Pallet!
     const isConflictDuplicate = !!(foundLot && hasExistingBoxes);
-    const targetLotId = isConflictDuplicate ? null : (foundLot ? foundLot.id : null);
-    const isLinked = !!targetLotId;
+    const targetLotId = null; // Luôn luôn là null để bắt buộc đi qua bước duyệt trên Web
+    const isLinked = false;
     const targetLotCode = foundLot ? foundLot.code : null;
 
-    // Phân biệt mã thùng nếu là đợt quét trùng để bảo vệ tuyệt đối các thùng của Lô cũ không bị ghi đè
+    // Phân biệt mã thùng nếu là đợt quét trùng với LOT đã có trong kho để bảo vệ tuyệt đối các thùng của Lô cũ không bị ghi đè
     const cleanStt = sttCode.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
     const batchSuffix = isConflictDuplicate ? `-${pallet.id.slice(-4)}` : '';
+
+    // XỬ LÝ LÀM SẠCH ĐỢT QUÉT CŨ CHƯA DUYỆT (Tránh tình trạng công nhân quét thêm lần nữa/sửa/xóa thùng làm loạn số liệu):
+    if (isConflictDuplicate) {
+      // Nếu là đợt quét trùng với LOT đã có trong kho: chỉ dọn dẹp các thùng chưa kết nối cũ của chính pallet_local_id này (nếu đã từng sync trước đó)
+      try {
+        await client
+          .from('box_labels')
+          .delete()
+          .is('lot_id', null)
+          .eq('system_code', pallet.system_code || 'KHO_DONG_LANH')
+          .eq('metadata->>pallet_local_id', pallet.id);
+      } catch (delErr) {
+        console.warn('Lỗi dọn thùng conflict unlinked cũ:', delErr);
+      }
+    } else {
+      // Nếu là đợt quét bình thường: dọn sạch các thùng CHƯA DUYỆT (lot_id IS NULL) cũ của STT này
+      // Đảm bảo số lượng thùng trên Web khớp 100% với danh sách thùng hiện tại trên điện thoại
+      try {
+        await client
+          .from('box_labels')
+          .delete()
+          .is('lot_id', null)
+          .eq('system_code', pallet.system_code || 'KHO_DONG_LANH')
+          .eq('metadata->>pallet_stt', sttCode);
+      } catch (delErr) {
+        console.warn('Lỗi dọn thùng unlinked cũ của STT:', delErr);
+      }
+    }
 
     // 2. Chuẩn bị danh sách tem thùng (box_labels)
     const boxRows = boxes.map(b => {
@@ -254,19 +283,19 @@ export async function syncPalletToSupabase(pallet: Pallet, boxes: BoxLabel[]): P
       return {
         success: true,
         isLinked: false,
-        message: `ℹ️ Đã gửi ${boxes.length} thùng lên Web mẹ an toàn. STT "${sttCode}" đã có LOT "${targetLotCode}" (${existingBoxCount} thùng) trên hệ thống — Web mẹ sẽ hiển thị nhắc nhở để Quản lý phê duyệt phương án xử lý (Cập nhật, Tách LOT, hoặc Hủy)!`
+        message: `ℹ️ Đã gửi ${boxes.length} thùng lên Web mẹ an toàn. STT "${sttCode}" đã có LOT "${targetLotCode}" (${existingBoxCount} thùng) trong kho — Web mẹ đã chuyển vào mục "Chờ duyệt" để Quản lý kiểm tra và phê duyệt phương án xử lý (Thay thế, Tách LOT, hoặc Hủy)!`
       };
-    } else if (isLinked) {
+    } else if (foundLot) {
       return {
         success: true,
-        isLinked: true,
-        message: `✅ Đã kết nối thành công ${boxes.length} thùng vào LOT "${targetLotCode}" (STT: ${sttCode}) trên Web mẹ!`
+        isLinked: false,
+        message: `✅ Đã gửi ${boxes.length} thùng lên Web mẹ thành công. STT "${sttCode}" khớp với LOT "${foundLot.code}" — Vui lòng vào trang Quản lý Pallet (http://localhost:3000/warehouses/pallets) để Duyệt & Ghép vào LOT!`
       };
     } else {
       return {
         success: true,
         isLinked: false,
-        message: `ℹ️ Đã lưu ${boxes.length} thùng lên mục "Chờ duyệt LOT". Trên Web mẹ chưa có LOT mang STT "${sttCode}". Khi Web tạo LOT, hệ thống sẽ tự động ghép nối!`
+        message: `✅ Đã lưu ${boxes.length} thùng lên mục "Chờ duyệt LOT". Trên Web mẹ chưa có LOT mang STT "${sttCode}". Vui lòng vào trang Quản lý Pallet để Duyệt & Tạo LOT!`
       };
     }
   } catch (err: any) {
@@ -321,8 +350,10 @@ export async function pullPalletFromSupabase(
 
       if (boxErr) throw boxErr;
       cloudBoxes = data || [];
-    } else {
-      // 2B. Lấy từ mục Chưa kết nối theo metadata->>pallet_stt
+    }
+
+    // Nếu Lot chưa có thùng hoặc chưa tìm thấy Lot: tìm tiếp ở mục Chưa kết nối theo metadata->>pallet_stt
+    if (cloudBoxes.length === 0) {
       const { data, error: boxErr } = await client
         .from('box_labels')
         .select(`
