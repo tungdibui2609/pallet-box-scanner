@@ -199,9 +199,13 @@ export default function PalletListScreen({
       const res = await syncPalletToSupabase(pallet, boxes);
       if (res.success) {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        Alert.alert('Thành công', res.message);
+        // Tải lại ngay danh sách Pallet cục bộ trên máy để hiển thị đã đồng bộ
         await loadLocalPallets();
-        await loadCloudPallets();
+        // Tắt ngay loading của nút để người dùng không phải chờ
+        setSyncingId(null);
+        Alert.alert('Thành công', res.message);
+        // Cho phép load danh sách đám mây chạy ngầm ở nền, không chặn giao diện người dùng
+        loadCloudPallets().catch(err => console.warn('Lỗi tải ngầm cloud pallets:', err));
       } else {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
         Alert.alert('Lỗi đồng bộ', res.message);
@@ -222,16 +226,22 @@ export default function PalletListScreen({
 
     setIsSyncingAll(true);
     let successCount = 0;
-    for (const p of pending) {
-      const boxes = await getBoxesByPallet(p.id);
-      const res = await syncPalletToSupabase(p, boxes);
-      if (res.success) successCount++;
+    try {
+      for (const p of pending) {
+        const boxes = await getBoxesByPallet(p.id);
+        const res = await syncPalletToSupabase(p, boxes);
+        if (res.success) successCount++;
+      }
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      await loadLocalPallets();
+      setIsSyncingAll(false);
+      Alert.alert('Đồng bộ xong', `Đã đồng bộ thành công ${successCount} / ${pending.length} Pallet lên Web mẹ!`);
+      loadCloudPallets().catch(err => console.warn('Lỗi tải ngầm cloud pallets:', err));
+    } catch (err: any) {
+      Alert.alert('Lỗi', err.message);
+    } finally {
+      setIsSyncingAll(false);
     }
-    setIsSyncingAll(false);
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    Alert.alert('Đồng bộ xong', `Đã đồng bộ thành công ${successCount} / ${pending.length} Pallet lên Web mẹ!`);
-    await loadLocalPallets();
-    await loadCloudPallets();
   }
 
   // ── DELETE LOCAL PALLET ──

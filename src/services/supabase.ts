@@ -45,7 +45,11 @@ export async function testConnection(): Promise<{ success: boolean; message: str
   const start = Date.now();
   try {
     const client = await getSupabaseClient();
-    const { error } = await client.from('box_labels').select('id').limit(1);
+    const { error } = await withTimeout(
+      client.from('box_labels').select('id').limit(1),
+      5000,
+      'Hết thời gian chờ kiểm tra kết nối (5s)'
+    );
     const latency = Date.now() - start;
     if (error) {
       return { success: false, message: 'Lỗi Supabase: ' + error.message, latency };
@@ -54,6 +58,22 @@ export async function testConnection(): Promise<{ success: boolean; message: str
   } catch (err: any) {
     return { success: false, message: 'Không thể kết nối máy chủ: ' + err.message };
   }
+}
+
+/**
+ * Hàm bọc timeout để ngắt các truy vấn mạng Supabase khi bị mất kết nối hoặc sóng yếu
+ */
+export function withTimeout<T = any>(
+  promise: Promise<T> | any,
+  timeoutMs = 12000,
+  errorMsg = 'Quá thời gian phản hồi từ máy chủ. Vui lòng thử lại!'
+): Promise<T> {
+  return Promise.race([
+    promise as Promise<T>,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error(errorMsg)), timeoutMs)
+    )
+  ]);
 }
 
 import { encodeSTT, decodeSTT } from '../utils/numberUtils';
@@ -87,29 +107,30 @@ export async function syncPalletToSupabase(pallet: Pallet, boxes: BoxLabel[]): P
       }
     } catch {}
 
-    // 1. Tìm kiếm Lô trên Web mẹ có STT trùng khớp
+    // 1. Tìm kiếm Lô trên Web mẹ có STT trùng khớp (giới hạn timeout tối đa 6s)
     let foundLot: any = null;
+    try {
+      if (encodedSeq !== null) {
+        let q = client
+          .from('lots')
+          .select('id, code, daily_seq, production_code, system_code, quantity, status')
+          .eq('daily_seq', encodedSeq);
+        if (companyId) q = q.eq('company_id', companyId);
+        const { data } = await withTimeout(q.maybeSingle(), 5000, 'Quá hạn tìm Lô');
+        if (data) foundLot = data;
+      }
 
-    // 1.1 Tìm theo STT (daily_seq) nếu sttCode chuyển đổi được thành số
-    if (encodedSeq !== null) {
-      let q = client
-        .from('lots')
-        .select('id, code, daily_seq, production_code, system_code, quantity, status')
-        .eq('daily_seq', encodedSeq);
-      if (companyId) q = q.eq('company_id', companyId);
-      const { data } = await q.maybeSingle();
-      if (data) foundLot = data;
-    }
-
-    // 1.2 Nếu chưa tìm thấy theo daily_seq, tìm theo code chính xác (TUYỆT ĐỐI KHÔNG dùng ilike %sttCode% vì sẽ match nhầm vào các mã Lô ngẫu nhiên như DL-LOT-HG23GA)
-    if (!foundLot) {
-      let q = client
-        .from('lots')
-        .select('id, code, daily_seq, production_code, system_code, quantity, status')
-        .or(`code.eq.${sttCode},production_code.eq.${sttCode}`);
-      if (companyId) q = q.eq('company_id', companyId);
-      const { data } = await q.maybeSingle();
-      if (data) foundLot = data;
+      if (!foundLot) {
+        let q = client
+          .from('lots')
+          .select('id, code, daily_seq, production_code, system_code, quantity, status')
+          .or(`code.eq.${sttCode},production_code.eq.${sttCode}`);
+        if (companyId) q = q.eq('company_id', companyId);
+        const { data } = await withTimeout(q.maybeSingle(), 5000, 'Quá hạn tìm Lô');
+        if (data) foundLot = data;
+      }
+    } catch (lotErr) {
+      console.warn('Lỗi kiểm tra LOT trên Web mẹ (bỏ qua để tiếp tục đẩy thùng):', lotErr);
     }
 
     // 1.3 Kiểm tra xem Lô này đã có thùng gắn vào hoặc đã có số lượng tồn kho chưa
@@ -117,10 +138,14 @@ export async function syncPalletToSupabase(pallet: Pallet, boxes: BoxLabel[]): P
     let existingBoxCount = 0;
     if (foundLot) {
       try {
-        const { count } = await client
-          .from('box_labels')
-          .select('id', { count: 'exact', head: true })
-          .eq('lot_id', foundLot.id);
+        const { count } = await withTimeout(
+          client
+            .from('box_labels')
+            .select('id', { count: 'exact', head: true })
+            .eq('lot_id', foundLot.id),
+          4000,
+          'Quá hạn đếm thùng'
+        );
         existingBoxCount = count || 0;
         const lotQty = Number(foundLot.quantity) || 0;
         hasExistingBoxes = existingBoxCount > 0 || lotQty > 0;
@@ -145,29 +170,28 @@ export async function syncPalletToSupabase(pallet: Pallet, boxes: BoxLabel[]): P
     const cleanStt = sttCode.replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
     const batchSuffix = isConflictDuplicate ? `-${pallet.id.slice(-4)}` : '';
 
-    // XỬ LÝ LÀM SẠCH ĐỢT QUÉT CŨ CHƯA DUYỆT (Tránh tình trạng công nhân quét thêm lần nữa/sửa/xóa thùng làm loạn số liệu):
+    // XỬ LÝ LÀM SẠCH ĐỢT QUÉT CŨ CHƯA DUYỆT (giới hạn timeout 3.5s tránh block mạng)
     if (isConflictDuplicate) {
-      // Nếu là đợt quét trùng với LOT đã có trong kho: chỉ dọn dẹp các thùng chưa kết nối cũ của chính pallet_local_id này (nếu đã từng sync trước đó)
       try {
-        await client
+        const delQ = client
           .from('box_labels')
           .delete()
           .is('lot_id', null)
           .eq('system_code', pallet.system_code || 'KHO_DONG_LANH')
           .eq('metadata->>pallet_local_id', pallet.id);
+        await withTimeout(delQ, 3500, 'Dọn thùng conflict timeout');
       } catch (delErr) {
         console.warn('Lỗi dọn thùng conflict unlinked cũ:', delErr);
       }
     } else {
-      // Nếu là đợt quét bình thường: dọn sạch các thùng CHƯA DUYỆT (lot_id IS NULL) cũ của STT này
-      // Đảm bảo số lượng thùng trên Web khớp 100% với danh sách thùng hiện tại trên điện thoại
       try {
-        await client
+        const delQ = client
           .from('box_labels')
           .delete()
           .is('lot_id', null)
           .eq('system_code', pallet.system_code || 'KHO_DONG_LANH')
           .eq('metadata->>pallet_stt', sttCode);
+        await withTimeout(delQ, 3500, 'Dọn thùng unlinked timeout');
       } catch (delErr) {
         console.warn('Lỗi dọn thùng unlinked cũ của STT:', delErr);
       }
@@ -229,9 +253,12 @@ export async function syncPalletToSupabase(pallet: Pallet, boxes: BoxLabel[]): P
       return row;
     });
 
-    // 3. Upsert vào bảng box_labels
-    const { error: boxErr } = await (client.from('box_labels') as any)
-      .upsert(boxRows, { onConflict: 'code' });
+    // 3. Upsert vào bảng box_labels (giới hạn timeout tối đa 12s)
+    const { error: boxErr } = await withTimeout(
+      (client.from('box_labels') as any).upsert(boxRows, { onConflict: 'code' }),
+      12000,
+      'Quá thời gian gửi dữ liệu thùng hàng lên máy chủ (12s). Vui lòng kiểm tra lại kết nối mạng!'
+    );
 
     if (boxErr) {
       throw new Error('Lỗi đồng bộ thùng: ' + boxErr.message);
@@ -493,7 +520,14 @@ async function fetchAllPaginated<T>(
   while (true) {
     let q = client.from(table).select(selectQuery).range(from, from + pageSize - 1);
     if (applyFilter) q = applyFilter(q);
-    const { data, error } = await q;
+    const { data, error } = await withTimeout(
+      q,
+      10000,
+      `Quá thời gian tải dữ liệu trang từ bảng ${table}`
+    ).catch(e => {
+      console.warn(`Timeout/lỗi fetchAllPaginated cho ${table}:`, e);
+      return { data: null, error: e };
+    });
     if (error) {
       console.error(`Error in fetchAllPaginated for ${table}:`, error);
       break;
