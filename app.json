@@ -2,7 +2,7 @@
   "expo": {
     "name": "Anywarehouse",
     "slug": "bao-duy",
-    "version": "1.0.64",
+    "version": "1.0.65",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
@@ -16,7 +16,7 @@
       },
       "predictiveBackGestureEnabled": false,
       "package": "com.anywarehouse.scanner",
-      "versionCode": 65,
+      "versionCode": 66,
       "permissions": [
         "android.permission.CAMERA",
         "android.permission.RECORD_AUDIO"
@@ -37,9 +37,9 @@
     ],
     "extra": {
       "eas": {
-        "projectId": "337c08b1-018e-439a-9b8a-ee0d49fc438c"
+        "projectId": "5fba333e-02a0-4b9b-a833-4a101edc7124"
       }
     },
-    "owner": "bkbaoduys-team"
+    "owner": "dinhtung"
   }
 }

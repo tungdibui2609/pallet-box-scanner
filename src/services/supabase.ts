@@ -94,7 +94,7 @@ export async function syncPalletToSupabase(pallet: Pallet, boxes: BoxLabel[]): P
     if (encodedSeq !== null) {
       let q = client
         .from('lots')
-        .select('id, code, daily_seq, production_code, system_code')
+        .select('id, code, daily_seq, production_code, system_code, quantity, status')
         .eq('daily_seq', encodedSeq);
       if (companyId) q = q.eq('company_id', companyId);
       const { data } = await q.maybeSingle();
@@ -105,14 +105,14 @@ export async function syncPalletToSupabase(pallet: Pallet, boxes: BoxLabel[]): P
     if (!foundLot) {
       let q = client
         .from('lots')
-        .select('id, code, daily_seq, production_code, system_code')
+        .select('id, code, daily_seq, production_code, system_code, quantity, status')
         .or(`code.eq.${sttCode},production_code.eq.${sttCode}`);
       if (companyId) q = q.eq('company_id', companyId);
       const { data } = await q.maybeSingle();
       if (data) foundLot = data;
     }
 
-    // 1.3 Kiểm tra xem Lô này đã có thùng gắn vào chưa
+    // 1.3 Kiểm tra xem Lô này đã có thùng gắn vào hoặc đã có số lượng tồn kho chưa
     let hasExistingBoxes = false;
     let existingBoxCount = 0;
     if (foundLot) {
@@ -122,7 +122,11 @@ export async function syncPalletToSupabase(pallet: Pallet, boxes: BoxLabel[]): P
           .select('id', { count: 'exact', head: true })
           .eq('lot_id', foundLot.id);
         existingBoxCount = count || 0;
-        hasExistingBoxes = existingBoxCount > 0;
+        const lotQty = Number(foundLot.quantity) || 0;
+        hasExistingBoxes = existingBoxCount > 0 || lotQty > 0;
+        if (existingBoxCount === 0 && lotQty > 0) {
+          existingBoxCount = lotQty;
+        }
       } catch (cntErr) {
         console.warn('Lỗi kiểm tra thùng của lot:', cntErr);
       }
@@ -132,7 +136,7 @@ export async function syncPalletToSupabase(pallet: Pallet, boxes: BoxLabel[]): P
     // Mobile Scanner TUYỆT ĐỐI KHÔNG tự động kết nối thẳng vào LOT (kể cả khi đã có LOT trên Web).
     // Toàn bộ thùng luôn được gửi lên ở trạng thái CHỜ DUYỆT (lot_id = null, status = 'unlinked').
     // Quản lý kho trên Web mẹ sẽ là người kiểm tra số lượng và bấm Duyệt/Ghép vào LOT tại trang Quản lý Pallet!
-    const isConflictDuplicate = !!(foundLot && hasExistingBoxes);
+    const isConflictDuplicate = !!(foundLot && foundLot.status !== 'exported' && hasExistingBoxes);
     const targetLotId = null; // Luôn luôn là null để bắt buộc đi qua bước duyệt trên Web
     const isLinked = false;
     const targetLotCode = foundLot ? foundLot.code : null;
