@@ -5,7 +5,8 @@ import { checkSessionUser, loginUser, logoutUser, getStoredUser } from '../servi
 interface AuthContextType {
   user: UserProfile | null;
   isLoading: boolean;
-  login: (userOrEmail: string, pass: string) => Promise<{ success: boolean; message?: string }>;
+  login: (userOrEmail: string, pass: string) => Promise<{ success: boolean; message?: string; isOffline?: boolean }>;
+  loginOffline: () => Promise<boolean>;
   logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
 }
@@ -23,16 +24,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   async function initAuth() {
     setIsLoading(true);
     try {
-      // First quick load from AsyncStorage for instant UI responsiveness
+      // 1. Nạp ngay tài khoản đã lưu trong máy để vào thẳng app không cần mạng
       const stored = await getStoredUser();
       if (stored) {
         setUser(stored);
       }
-      // Then check cloud session
+
+      // 2. Kiểm tra cập nhật ngầm nếu có kết nối mạng
       const freshUser = await checkSessionUser();
-      setUser(freshUser);
+      if (freshUser) {
+        setUser(freshUser);
+      } else if (stored) {
+        // Nếu không có mạng hoặc kiểm tra cloud thất bại, vẫn giữ nguyên tài khoản đã lưu
+        setUser(stored);
+      }
     } catch (e) {
       console.warn('Lỗi khởi tạo Auth:', e);
+      const stored = await getStoredUser();
+      if (stored) setUser(stored);
     } finally {
       setIsLoading(false);
     }
@@ -44,12 +53,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const res = await loginUser(userOrEmail, pass);
       if (res.success && res.user) {
         setUser(res.user);
-        return { success: true };
+        return { success: true, isOffline: res.isOffline };
       }
       return { success: false, message: res.message || 'Đăng nhập không thành công' };
     } finally {
       setIsLoading(false);
     }
+  }
+
+  async function handleLoginOffline(): Promise<boolean> {
+    const stored = await getStoredUser();
+    if (stored) {
+      setUser(stored);
+      return true;
+    }
+    return false;
   }
 
   async function handleLogout() {
@@ -64,7 +82,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   async function refreshUser() {
     const freshUser = await checkSessionUser();
-    setUser(freshUser);
+    if (freshUser) {
+      setUser(freshUser);
+    }
   }
 
   return (
@@ -73,6 +93,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         user,
         isLoading,
         login: handleLogin,
+        loginOffline: handleLoginOffline,
         logout: handleLogout,
         refreshUser,
       }}

@@ -1,8 +1,49 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { getSupabaseClient, resetSupabaseClient } from './supabase';
+import { getSupabaseClient, resetSupabaseClient, withTimeout } from './supabase';
 import { UserProfile, CompanyInfo } from '../types/auth';
 
 const STORAGE_KEY_PROFILE = 'auth_user_profile';
+const STORAGE_KEY_OFFLINE_CREDENTIALS = 'auth_offline_credentials';
+
+export interface OfflineCredentials {
+  inputIdentifier: string;
+  email: string;
+  username?: string;
+  fullName: string;
+  lastLoginAt: string;
+}
+
+export async function getOfflineCredentials(): Promise<OfflineCredentials | null> {
+  try {
+    const raw = await AsyncStorage.getItem(STORAGE_KEY_OFFLINE_CREDENTIALS);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+export async function saveOfflineCredentials(creds: OfflineCredentials): Promise<void> {
+  try {
+    await AsyncStorage.setItem(STORAGE_KEY_OFFLINE_CREDENTIALS, JSON.stringify(creds));
+  } catch {}
+}
+
+export async function getStoredUser(): Promise<UserProfile | null> {
+  try {
+    const raw = await AsyncStorage.getItem(STORAGE_KEY_PROFILE);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+export async function saveStoredUser(profile: UserProfile): Promise<void> {
+  try {
+    await AsyncStorage.setItem(STORAGE_KEY_PROFILE, JSON.stringify(profile));
+  } catch {}
+}
 
 export async function resolveEmailFromInput(input: string, client: any): Promise<string> {
   const cleanInput = input.trim();
@@ -23,7 +64,7 @@ export async function resolveEmailFromInput(input: string, client: any): Promise
     if (!error && userEmail) {
       return userEmail;
     }
-  } catch (err) {
+  } catch {
     // Fallback if RPC fails
   }
 
@@ -38,7 +79,7 @@ export async function resolveEmailFromInput(input: string, client: any): Promise
     if (found?.email) {
       return found.email;
     }
-  } catch (err) {
+  } catch {
     // ignore
   }
 
@@ -105,7 +146,7 @@ export async function fetchUserProfile(userId: string, client: any): Promise<Use
       allowed_systems: data.allowed_systems
     };
 
-    await AsyncStorage.setItem(STORAGE_KEY_PROFILE, JSON.stringify(profile));
+    await saveStoredUser(profile);
     return profile;
   } catch (err) {
     console.error('Lỗi lấy thông tin người dùng:', err);
@@ -116,86 +157,132 @@ export async function fetchUserProfile(userId: string, client: any): Promise<Use
 export async function loginUser(
   usernameOrEmail: string,
   pass: string
-): Promise<{ success: boolean; user?: UserProfile; message?: string }> {
+): Promise<{ success: boolean; user?: UserProfile; message?: string; isOffline?: boolean }> {
+  const cleanInput = usernameOrEmail.trim().toLowerCase();
+  const storedUser = await getStoredUser();
+  const offlineCreds = await getOfflineCredentials();
+
   try {
     const client = await getSupabaseClient();
-    const resolvedEmail = await resolveEmailFromInput(usernameOrEmail, client);
+    const resolvedEmail = await withTimeout(
+      resolveEmailFromInput(usernameOrEmail, client),
+      6000,
+      'Timeout phân giải email'
+    );
 
-    const { data: authData, error: authErr } = await client.auth.signInWithPassword({
-      email: resolvedEmail,
-      password: pass
-    });
+    const { data: authData, error: authErr } = await withTimeout(
+      client.auth.signInWithPassword({
+        email: resolvedEmail,
+        password: pass
+      }),
+      8000,
+      'Quá thời gian xác thực tài khoản'
+    );
 
     if (authErr) {
       if (authErr.message.includes('Invalid login credentials')) {
         return { success: false, message: 'Sai tên đăng nhập hoặc mật khẩu' };
       }
-      return { success: false, message: authErr.message };
+      throw authErr;
     }
 
-    if (!authData.user) {
+    if (!authData?.user) {
       return { success: false, message: 'Không thể xác thực tài khoản' };
     }
 
-    const profile = await fetchUserProfile(authData.user.id, client);
+    let profile = await fetchUserProfile(authData.user.id, client);
     if (!profile) {
       // Fallback profile if user_profiles row isn't yet created
-      const fallback: UserProfile = {
+      profile = {
         id: authData.user.id,
         email: authData.user.email || resolvedEmail,
         full_name: authData.user.user_metadata?.full_name || authData.user.email || 'Nhân viên',
       };
-      await AsyncStorage.setItem(STORAGE_KEY_PROFILE, JSON.stringify(fallback));
-      return { success: true, user: fallback };
     }
+
+    // Lưu hẳn tài khoản vào máy vĩnh viễn (lần 2 vào app không cần mạng)
+    await saveStoredUser(profile);
+    await saveOfflineCredentials({
+      inputIdentifier: cleanInput,
+      email: (profile.email || resolvedEmail).toLowerCase(),
+      username: (profile.username || '').toLowerCase(),
+      fullName: profile.full_name,
+      lastLoginAt: new Date().toISOString()
+    });
 
     return { success: true, user: profile };
   } catch (err: any) {
-    return { success: false, message: err.message || 'Lỗi kết nối máy chủ' };
+    const errMsg = err?.message || '';
+    const isNetworkError =
+      errMsg.includes('Network') ||
+      errMsg.includes('timeout') ||
+      errMsg.includes('Failed to fetch') ||
+      errMsg.includes('Quá thời gian') ||
+      errMsg.includes('offline');
+
+    // NẾU KHÔNG CÓ MẠNG: Cho phép đăng nhập ngoại tuyến nếu thông tin khớp với tài khoản đã lưu
+    if (isNetworkError && storedUser) {
+      const matchEmail = storedUser.email?.toLowerCase() === cleanInput;
+      const matchUsername = storedUser.username?.toLowerCase() === cleanInput;
+      const matchIdentifier = offlineCreds?.inputIdentifier === cleanInput;
+      const matchResolved = offlineCreds?.email === cleanInput;
+
+      if (matchEmail || matchUsername || matchIdentifier || matchResolved) {
+        return {
+          success: true,
+          user: storedUser,
+          isOffline: true,
+          message: 'Đăng nhập ngoại tuyến thành công'
+        };
+      }
+    }
+
+    return {
+      success: false,
+      message: isNetworkError
+        ? 'Không có kết nối mạng tới máy chủ. Vui lòng kết nối Internet lần đầu hoặc sử dụng tài khoản đã lưu trên máy.'
+        : errMsg || 'Lỗi kết nối máy chủ'
+    };
   }
 }
 
 export async function logoutUser(): Promise<void> {
   try {
     const client = await getSupabaseClient();
-    await client.auth.signOut();
+    await withTimeout(client.auth.signOut(), 3000, 'Signout timeout');
   } catch (err) {
     console.warn('Lỗi đăng xuất:', err);
   } finally {
+    // Chỉ xóa tài khoản khỏi máy khi người dùng chủ động bấm Đăng Xuất!
     await AsyncStorage.removeItem(STORAGE_KEY_PROFILE);
+    await AsyncStorage.removeItem(STORAGE_KEY_OFFLINE_CREDENTIALS);
     resetSupabaseClient();
   }
 }
 
-export async function getStoredUser(): Promise<UserProfile | null> {
-  try {
-    const raw = await AsyncStorage.getItem(STORAGE_KEY_PROFILE);
-    if (!raw) return null;
-    return JSON.parse(raw);
-  } catch {
-    return null;
-  }
-}
-
 export async function checkSessionUser(): Promise<UserProfile | null> {
+  const stored = await getStoredUser();
+
   try {
     const client = await getSupabaseClient();
-    const { data: { session } } = await client.auth.getSession();
+    // Bọc timeout 4s để nếu thiết bị không có mạng thì không làm đơ app
+    const sessionRes = await withTimeout(client.auth.getSession(), 4000, 'Offline timeout');
+    const session = sessionRes?.data?.session;
 
-    if (!session?.user) {
-      // If no valid cloud session, also clear stored profile
-      await AsyncStorage.removeItem(STORAGE_KEY_PROFILE);
-      return null;
+    if (session?.user) {
+      // Có mạng và session còn hiệu lực: cập nhật profile mới nhất từ cloud
+      const freshProfile = await fetchUserProfile(session.user.id, client);
+      if (freshProfile) {
+        await saveStoredUser(freshProfile);
+        return freshProfile;
+      }
     }
 
-    // Try to get fresh profile from cloud
-    const profile = await fetchUserProfile(session.user.id, client);
-    if (profile) return profile;
-
-    // Fallback to locally stored profile
-    return await getStoredUser();
-  } catch (err) {
-    // Offline mode: allow using cached profile if session was previously established
-    return await getStoredUser();
+    // Nếu không lấy được session cloud (do offline / token refresh chậm):
+    // TUYỆT ĐỐI KHÔNG XÓA PROFILE ĐÃ LƯU, GIỮ NGUYÊN TÀI KHOẢN CHO NGƯỜI DÙNG!
+    return stored;
+  } catch {
+    // Hoàn toàn ngoại tuyến: giữ nguyên tài khoản đã lưu trên máy
+    return stored;
   }
 }
