@@ -478,7 +478,7 @@ export async function syncStampDictionariesFromSupabase(): Promise<{ success: bo
       message: `Đã đồng bộ thành công ${savedCount} quy tắc và mẫu định dạng từ máy chủ!`
     };
   } catch (err: any) {
-    console.error('Lỗi syncStampDictionariesFromSupabase:', err);
+    console.warn('Lỗi syncStampDictionariesFromSupabase:', err);
     return {
       success: false,
       count: 0,
@@ -522,14 +522,14 @@ async function fetchAllPaginated<T>(
     if (applyFilter) q = applyFilter(q);
     const { data, error } = await withTimeout(
       q,
-      10000,
+      20000,
       `Quá thời gian tải dữ liệu trang từ bảng ${table}`
     ).catch(e => {
       console.warn(`Timeout/lỗi fetchAllPaginated cho ${table}:`, e);
       return { data: null, error: e };
     });
     if (error) {
-      console.error(`Error in fetchAllPaginated for ${table}:`, error);
+      console.warn(`Warning in fetchAllPaginated for ${table}:`, error);
       break;
     }
     if (!data || data.length === 0) break;
@@ -1130,12 +1130,19 @@ export async function syncWarehouseMapOffline(): Promise<{
       zpMap.set(item.position_id, list);
     });
 
-    // 3. Fetch Lots info for occupied positions in chunks of 100 (avoids HTTP 414 Request-URI Too Long)
+    // 3. Fetch Lots info for occupied positions in chunks of 80 (avoids HTTP 414 Request-URI Too Long)
     const occupiedLotIds = Array.from(new Set(rawPositions.map((p: any) => p.lot_id).filter(Boolean)));
     const lotMap = new Map<string, any>();
 
     if (occupiedLotIds.length > 0) {
-      const CHUNK_SIZE = 250;
+      // Load cached products as fallback if RLS / offline prevents joining products table
+      const cachedProds = await getProductsFromCache().catch(() => []);
+      const prodCacheMap = new Map<string, any>();
+      (cachedProds || []).forEach((cp: any) => {
+        if (cp?.id) prodCacheMap.set(cp.id, cp);
+      });
+
+      const CHUNK_SIZE = 80;
       const chunkPromises: Promise<any>[] = [];
       for (let i = 0; i < occupiedLotIds.length; i += CHUNK_SIZE) {
         const chunk = occupiedLotIds.slice(i, i + CHUNK_SIZE);
@@ -1146,6 +1153,7 @@ export async function syncWarehouseMapOffline(): Promise<{
               id,
               code,
               daily_seq,
+              product_id,
               packaging_date,
               peeling_date,
               raw_material_date,
@@ -1156,7 +1164,7 @@ export async function syncWarehouseMapOffline(): Promise<{
               metadata,
               quantity,
               products ( name, sku, unit, aliases ),
-              lot_items ( quantity, unit, products ( name, sku, unit, aliases ) ),
+              lot_items ( product_id, quantity, unit, products ( name, sku, unit, aliases ) ),
               lot_tags ( tag )
             `)
             .in('id', chunk)
@@ -1178,23 +1186,25 @@ export async function syncWarehouseMapOffline(): Promise<{
             const tagsStr = tags.length > 0 ? tags.join(', ') : '';
 
             const allItems = l.lot_items || [];
+            const fallbackLotProd = l.product_id ? prodCacheMap.get(l.product_id) : null;
             const allProdNames = Array.from(new Set([
-              l.products?.name,
-              ...allItems.map((it: any) => it.products?.name)
+              l.products?.name || fallbackLotProd?.name,
+              ...allItems.map((it: any) => it.products?.name || (it.product_id ? prodCacheMap.get(it.product_id)?.name : null)),
+              l.metadata?.product_name
             ].filter(Boolean))) as string[];
             const prodName = allProdNames.length > 0
               ? allProdNames.join(', ')
               : (tagsStr ? `Hàng ${tagsStr}` : 'Hàng đông lạnh');
 
             const allSkus = Array.from(new Set([
-              l.products?.sku,
-              ...allItems.map((it: any) => it.products?.sku)
+              l.products?.sku || fallbackLotProd?.sku,
+              ...allItems.map((it: any) => it.products?.sku || (it.product_id ? prodCacheMap.get(it.product_id)?.sku : null))
             ].filter(Boolean))) as string[];
             const sku = allSkus.length > 0 ? allSkus.join(', ') : (tags.length > 0 ? tags[0] : '---');
 
             const allAliases = Array.from(new Set([
-              l.products?.aliases,
-              ...allItems.map((it: any) => it.products?.aliases)
+              l.products?.aliases || fallbackLotProd?.aliases,
+              ...allItems.map((it: any) => it.products?.aliases || (it.product_id ? prodCacheMap.get(it.product_id)?.aliases : null))
             ].filter(Boolean))) as string[];
             const aliases = allAliases.length > 0 ? allAliases.join(', ') : null;
 

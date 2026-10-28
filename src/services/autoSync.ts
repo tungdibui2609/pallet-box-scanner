@@ -1,20 +1,21 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { syncCloudPalletsOffline, syncStampDictionariesFromSupabase, syncWarehouseMapOffline, testConnection } from './supabase';
 
-const AUTO_SYNC_STORAGE_KEY = 'config_auto_sync_offline';
+const AUTO_SYNC_STORAGE_KEY = 'config_auto_sync_offline_v2';
 const LAST_AUTO_SYNC_KEY = 'last_auto_sync_timestamp';
 
 let isAutoSyncing = false;
 
 /**
- * Kiểm tra người dùng có bật chế độ Tự động tải ngầm hay không (Mặc định: true)
+ * Kiểm tra người dùng có bật chế độ Tự động tải ngầm hay không
+ * Mặc định: FALSE (Tắt tải ngầm để ưu tiên người dùng chủ động bấm tải trước mỗi ca làm việc, tránh lag & timeout trong kho đông)
  */
 export async function isAutoSyncEnabled(): Promise<boolean> {
   try {
     const val = await AsyncStorage.getItem(AUTO_SYNC_STORAGE_KEY);
-    return val === null ? true : val === 'true';
+    return val === 'true';
   } catch {
-    return true;
+    return false;
   }
 }
 
@@ -43,30 +44,29 @@ export async function triggerBackgroundAutoSync(options?: {
     return { executed: false, message: 'Đang có tiến trình đồng bộ ngầm khác' };
   }
 
-  const enabled = await isAutoSyncEnabled();
-  if (!enabled && !options?.force) {
-    return { executed: false, message: 'Chế độ tự động tải ngầm đang tắt' };
-  }
-
-  const minInterval = (options?.minIntervalMinutes ?? 10) * 60 * 1000;
-  if (!options?.force) {
-    try {
-      const lastStr = await AsyncStorage.getItem(LAST_AUTO_SYNC_KEY);
-      if (lastStr) {
-        const last = parseInt(lastStr, 10);
-        if (Date.now() - last < minInterval) {
-          return { executed: false, message: 'Dữ liệu còn mới, bỏ qua tự động tải' };
-        }
-      }
-    } catch {}
-  }
-
   isAutoSyncing = true;
   try {
+    const enabled = await isAutoSyncEnabled();
+    if (!enabled && !options?.force) {
+      return { executed: false, message: 'Chế độ tự động tải ngầm đang tắt' };
+    }
+
+    const minInterval = (options?.minIntervalMinutes ?? 10) * 60 * 1000;
+    if (!options?.force) {
+      try {
+        const lastStr = await AsyncStorage.getItem(LAST_AUTO_SYNC_KEY);
+        if (lastStr) {
+          const last = parseInt(lastStr, 10);
+          if (Date.now() - last < minInterval) {
+            return { executed: false, message: 'Dữ liệu còn mới, bỏ qua tự động tải' };
+          }
+        }
+      } catch {}
+    }
+
     // 1. Kiểm tra kết nối máy chủ thật
     const conn = await testConnection();
     if (!conn.success) {
-      isAutoSyncing = false;
       return { executed: false, message: 'Không thể kết nối máy chủ' };
     }
 

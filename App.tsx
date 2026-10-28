@@ -29,28 +29,12 @@ function AppContent() {
     }
   }, [currentTab]);
 
-  useEffect(() => {
-    if (!user) return;
-
-    // Tự động tải ngầm khi mở app
-    triggerBackgroundAutoSync({ reason: 'Khởi động ứng dụng', minIntervalMinutes: 5 });
-
-    // Lắng nghe khi ứng dụng từ trạng thái nền quay lại màn hình chính
-    const subscription = AppState.addEventListener('change', (nextAppState: AppStateStatus) => {
-      if (nextAppState === 'active') {
-        triggerBackgroundAutoSync({ reason: 'Quay lại ứng dụng', minIntervalMinutes: 15 });
-      }
-    });
-
-    return () => {
-      subscription.remove();
-    };
-  }, [user]);
+  // Đã bỏ cơ chế tự động tải ngầm khi mở app / chuyển app để người dùng chủ động bấm tải trước mỗi ca làm việc (0ms lag)
 
   if (isLoading) {
     return (
       <View style={[styles.root, styles.loadingScreen]}>
-        <StatusBar barStyle="light-content" backgroundColor="#0f172a" translucent />
+        <StatusBar barStyle="light-content" />
         <View style={styles.loadingLogoCircle}>
           <Ionicons name="cube" size={50} color="#38bdf8" />
         </View>
@@ -71,7 +55,7 @@ function AppContent() {
           paddingTop: Math.max(insets.top, Platform.OS === 'android' ? (StatusBar.currentHeight || 28) : 20),
         }
       ]}>
-        <StatusBar barStyle="light-content" backgroundColor="#0f172a" translucent />
+        <StatusBar barStyle="light-content" />
         {currentTab === 'settings' ? (
           <SettingsScreen onBack={() => setCurrentTab('scanner')} />
         ) : (
@@ -89,7 +73,7 @@ function AppContent() {
         paddingTop: Math.max(insets.top, Platform.OS === 'android' ? (StatusBar.currentHeight || 28) : 20),
       }
     ]}>
-      <StatusBar barStyle="light-content" backgroundColor="#0f172a" translucent />
+      <StatusBar barStyle="light-content" />
 
       {/* ── TOP USER & COMPANY HEADER ──────────────── */}
       <View style={styles.topUserBar}>

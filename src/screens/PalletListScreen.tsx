@@ -78,11 +78,17 @@ export default function PalletListScreen({
   const [isLoadingBoxes, setIsLoadingBoxes] = useState(false);
 
   useEffect(() => {
-    loadCacheFirst();
-    loadLocalPallets();
-    loadCloudPallets();
-    checkNetwork();
-    refreshSyncInfo();
+    (async () => {
+      const hasCachedCloud = await loadCacheFirst();
+      loadLocalPallets();
+      // Chỉ tự tải từ máy chủ nếu máy chưa từng có dữ liệu lưu sẵn (lần đầu cài app).
+      // Nếu đã có dữ liệu trong máy, mở tức thì 0ms và để người dùng chủ động bấm nút "Tải dữ liệu" mỗi ca làm việc.
+      if (!hasCachedCloud) {
+        loadCloudPallets();
+      }
+      checkNetwork();
+      refreshSyncInfo();
+    })();
   }, []);
 
   // Tự động làm mới danh sách Pallet từ SQLite ngay lập tức khi người dùng chuyển sang tab Pallet Kho
@@ -105,11 +111,13 @@ export default function PalletListScreen({
     } catch {}
   }
 
-  async function loadCacheFirst() {
+  async function loadCacheFirst(): Promise<boolean> {
+    let hasCached = false;
     try {
       const cached = await getCloudPalletsFromCache();
       if (cached && cached.length > 0) {
         setCloudPallets(cached);
+        hasCached = true;
       }
       const cachedProds = await getProductsFromCache();
       if (cachedProds && cachedProds.length > 0) {
@@ -118,6 +126,7 @@ export default function PalletListScreen({
     } catch (e) {
       console.warn('loadCacheFirst error:', e);
     }
+    return hasCached;
   }
 
   async function checkNetwork() {
@@ -570,10 +579,59 @@ export default function PalletListScreen({
       .slice(0, 8);
   }
 
-  // Gợi ý cho ô tìm kiếm chính (theo thuật toán Web mẹ)
+  // Gợi ý cho ô tìm kiếm chính (kết hợp STT của LOT + Sản phẩm theo thuật toán Web mẹ)
   const searchProductSuggestions = useMemo(() => {
-    return getProductSuggestions(cloudSearchQuery, allProductSuggestions);
-  }, [allProductSuggestions, cloudSearchQuery]);
+    const cleanTerm = cloudSearchQuery.trim();
+    if (!cleanTerm) return [];
+
+    const sttResults: ProductSuggestionItem[] = [];
+    const cleanSttQ = normalizeText(cleanTerm).replace(/^(#|stt[:\s-#]*)/i, '').trim();
+    const isExplicitStt = /^(#|stt[:\s-#]+)/i.test(cleanTerm);
+
+    if (cleanSttQ) {
+      const seenStts = new Set<string>();
+      for (const cp of cloudPallets) {
+        if (!cp.stt) continue;
+        const sttKey = cp.stt.trim().toUpperCase();
+        if (seenStts.has(sttKey)) continue;
+        const normStt = normalizeText(cp.stt);
+        let sttScore = 0;
+        if (normStt === cleanSttQ) sttScore = 5000;
+        else if (normStt.startsWith(cleanSttQ)) sttScore = 4000 - normStt.length;
+        else if (normStt.includes(cleanSttQ)) sttScore = 3000 - normStt.length;
+
+        if (sttScore > 0) {
+          seenStts.add(sttKey);
+          sttResults.push({
+            product: {
+              id: 'stt_' + cp.id,
+              name: cp.product_name || 'Hàng đông lạnh',
+              sku: cp.sku || '',
+              aliases: cp.product_aliases || null
+            },
+            score: sttScore,
+            fillValue: `#${cp.stt}`,
+            displayTitle: cp.product_name || 'Hàng đông lạnh',
+            displaySubtitle: [
+              cp.location_code ? `📍 ${cp.location_code}` : null,
+              cp.boxes_count ? `📦 ${cp.boxes_count} thùng` : null,
+              cp.lot_code ? `LOT: ${cp.lot_code}` : null
+            ].filter(Boolean).join('  ·  '),
+            badgeType: 'alias',
+            badgeText: `STT: #${cp.stt}`
+          });
+        }
+      }
+      sttResults.sort((a, b) => b.score - a.score);
+    }
+
+    if (isExplicitStt) {
+      return sttResults.slice(0, 8);
+    }
+
+    const prodResults = getProductSuggestions(cloudSearchQuery, allProductSuggestions);
+    return [...sttResults.slice(0, 5), ...prodResults.slice(0, 5)].slice(0, 8);
+  }, [allProductSuggestions, cloudPallets, cloudSearchQuery]);
 
   // Gợi ý cho ô Tên sản phẩm trong Modal Bộ lọc (theo thuật toán Web mẹ)
   const modalProductSuggestions = useMemo(() => {
@@ -706,19 +764,25 @@ export default function PalletListScreen({
     return cloudPallets.filter(cp => {
       // 1. Text Search đa năng (quét qua tất cả: STT, Mã LOT, Sản phẩm, Tên gõ tắt, SKU, Nơi SX, Vùng NL, Vị trí kho, Ngày đóng gói, NSX...)
       if (cloudSearchQuery.trim()) {
-        const q = normalizeText(cloudSearchQuery);
-        const matchProduct = matchProductSearch(cp, cloudSearchQuery);
-        const matchSearch =
-          matchProduct ||
-          normalizeText(cp.stt).includes(q) ||
-          (cp.lot_code && normalizeText(cp.lot_code).includes(q)) ||
-          (cp.tag && normalizeText(cp.tag).includes(q)) ||
-          (cp.production_place && normalizeText(cp.production_place).includes(q)) ||
-          (cp.material_zone && normalizeText(cp.material_zone).includes(q)) ||
-          matchDate(cp.packaging_date, cloudSearchQuery) ||
-          matchDate(cp.production_date, cloudSearchQuery) ||
-          (cp.location_code && normalizeText(cp.location_code).includes(q));
-        if (!matchSearch) return false;
+        const rawQ = cloudSearchQuery.trim();
+        const q = normalizeText(rawQ);
+        const cleanSttQ = q.replace(/^(#|stt[:\s-#]*)/i, '').trim();
+        if (/^(#|stt[:\s-#]+)/i.test(rawQ)) {
+          if (!cp.stt || !cleanSttQ || !normalizeText(cp.stt).includes(cleanSttQ)) return false;
+        } else {
+          const matchProduct = matchProductSearch(cp, cloudSearchQuery);
+          const matchSearch =
+            matchProduct ||
+            (cleanSttQ && normalizeText(cp.stt).includes(cleanSttQ)) ||
+            (cp.lot_code && normalizeText(cp.lot_code).includes(q)) ||
+            (cp.tag && normalizeText(cp.tag).includes(q)) ||
+            (cp.production_place && normalizeText(cp.production_place).includes(q)) ||
+            (cp.material_zone && normalizeText(cp.material_zone).includes(q)) ||
+            matchDate(cp.packaging_date, cloudSearchQuery) ||
+            matchDate(cp.production_date, cloudSearchQuery) ||
+            (cp.location_code && normalizeText(cp.location_code).includes(q));
+          if (!matchSearch) return false;
+        }
       }
 
       // 2. Bộ lọc chi tiết theo trường

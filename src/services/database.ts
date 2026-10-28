@@ -820,24 +820,26 @@ export async function saveStampDictionaries(items: StampDictionaryItem[]): Promi
   const db = await getDb();
   let count = 0;
 
-  // Xóa sạch các quy tắc cũ trong máy để khớp chính xác 100% với Web mẹ
-  await db.runAsync('DELETE FROM stamp_dictionaries');
+  await db.withExclusiveTransactionAsync(async () => {
+    // Xóa sạch các quy tắc cũ trong máy để khớp chính xác 100% với Web mẹ
+    await db.runAsync('DELETE FROM stamp_dictionaries');
 
-  for (const item of items) {
-    if (!item.category || !item.code || !item.name) continue;
-    await db.runAsync(
-      `INSERT INTO stamp_dictionaries (category, code, name, description, sort_order)
-       VALUES (?, ?, ?, ?, ?)`,
-      [
-        item.category.trim(),
-        item.code.trim().toUpperCase(),
-        item.name.trim(),
-        item.description || null,
-        item.sort_order || 0
-      ]
-    );
-    count++;
-  }
+    for (const item of items) {
+      if (!item.category || !item.code || !item.name) continue;
+      await db.runAsync(
+        `INSERT OR REPLACE INTO stamp_dictionaries (category, code, name, description, sort_order)
+         VALUES (?, ?, ?, ?, ?)`,
+        [
+          item.category.trim(),
+          item.code.trim().toUpperCase(),
+          item.name.trim(),
+          item.description || null,
+          item.sort_order || 0
+        ]
+      );
+      count++;
+    }
+  });
 
   return count;
 }
@@ -886,25 +888,27 @@ export async function getStampDictionariesCount(): Promise<number> {
 export async function saveStampFormats(formats: StampFormat[]): Promise<void> {
   if (!formats || formats.length === 0) return;
   const db = await getDb();
-  await db.runAsync('DELETE FROM stamp_formats');
+  await db.withExclusiveTransactionAsync(async () => {
+    await db.runAsync('DELETE FROM stamp_formats');
 
-  for (const f of formats) {
-    await db.runAsync(
-      `INSERT INTO stamp_formats (id, code, name, description, is_default, is_active, line1_config, line2_config, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        f.id || f.code,
-        f.code,
-        f.name,
-        f.description || null,
-        f.is_default ? 1 : 0,
-        f.is_active !== false ? 1 : 0,
-        typeof f.line1_config === 'string' ? f.line1_config : JSON.stringify(f.line1_config),
-        typeof f.line2_config === 'string' ? f.line2_config : JSON.stringify(f.line2_config),
-        f.updated_at || new Date().toISOString()
-      ]
-    );
-  }
+    for (const f of formats) {
+      await db.runAsync(
+        `INSERT OR REPLACE INTO stamp_formats (id, code, name, description, is_default, is_active, line1_config, line2_config, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          f.id || f.code,
+          f.code,
+          f.name,
+          f.description || null,
+          f.is_default ? 1 : 0,
+          f.is_active !== false ? 1 : 0,
+          typeof f.line1_config === 'string' ? f.line1_config : JSON.stringify(f.line1_config),
+          typeof f.line2_config === 'string' ? f.line2_config : JSON.stringify(f.line2_config),
+          f.updated_at || new Date().toISOString()
+        ]
+      );
+    }
+  });
 }
 
 export async function getActiveStampFormat(): Promise<StampFormat | null> {
