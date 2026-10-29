@@ -66,7 +66,7 @@ export interface UniqueSttItem {
   unit: string;
 }
 
-interface ZoneItem {
+export interface ZoneItem {
   id: string;
   name: string;
   code?: string;
@@ -89,7 +89,7 @@ export const isHallZone = (z: ZoneItem | null | undefined): boolean => {
   );
 };
 
-interface PositionItem {
+export interface PositionItem {
   id: string;
   code: string;
   lot_id: string | null;
@@ -164,6 +164,41 @@ export const formatPositionQtyUnit = (qty?: number | null, unit?: string | null)
     : Number(qty.toFixed(2)).toLocaleString('vi-VN');
   return `${numStr} ${shortU}`;
 };
+
+/**
+ * Sắp xếp các vị trí trong cùng 1 Ô / Tầng theo quy chuẩn thực tế kho:
+ * 1. 2 số cuối cùng của mã vị trí: Nhóm 02 trước, nhóm 01 sau (xếp giảm dần 02 -> 01)
+ * 2. Cùng số cuối: Xếp theo chữ cái kệ A -> B -> C
+ * Kết quả: A02, B02, C02 rồi đến A01, B01, C01
+ */
+export function sortPositionsByDepthAndCol<T extends { code?: string | null }>(list: T[]): T[] {
+  return [...list].sort((pa, pb) => {
+    const codeA = (pa.code || '').trim().toUpperCase();
+    const codeB = (pb.code || '').trim().toUpperCase();
+
+    // 1. Lấy 2 số cuối cùng (ví dụ K1D1A08T502 -> 2, K1D1B08T501 -> 1)
+    const matchA = codeA.match(/(\d{2})$/);
+    const matchB = codeB.match(/(\d{2})$/);
+    const depthA = matchA ? parseInt(matchA[1], 10) : 0;
+    const depthB = matchB ? parseInt(matchB[1], 10) : 0;
+
+    if (depthA !== depthB) {
+      return depthB - depthA;
+    }
+
+    // 2. Nếu cùng số cuối (cùng là 02 hoặc cùng là 01): xếp theo chữ cái kệ A -> B -> C
+    const colMatchA = codeA.match(/D\d+([A-Z])/i) || codeA.match(/([A-Z])\d{2}T/i) || codeA.match(/([A-Z])\d+/i);
+    const colMatchB = codeB.match(/D\d+([A-Z])/i) || codeB.match(/([A-Z])\d{2}T/i) || codeB.match(/([A-Z])\d+/i);
+    const colA = colMatchA ? colMatchA[1].toUpperCase() : '';
+    const colB = colMatchB ? colMatchB[1].toUpperCase() : '';
+
+    if (colA && colB && colA !== colB) {
+      return colA.localeCompare(colB);
+    }
+
+    return codeA.localeCompare(codeB, undefined, { numeric: true });
+  });
+}
 
 export const formatDateVN = (d?: string | null): string => {
   if (!d) return '--/--/----';
@@ -867,7 +902,13 @@ const MobileWarehouseSearchBar = React.memo(function MobileWarehouseSearchBar({
   );
 });
 
-export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanner: () => void }) {
+export default function WarehouseMapScreen({
+  onBackToScanner,
+  isActive
+}: {
+  onBackToScanner: () => void;
+  isActive?: boolean;
+}) {
   const initialMemory = getMemoryWarehouseMapCache();
   const hasMemoryCache = Boolean(initialMemory && initialMemory.positions && initialMemory.positions.length > 0);
 
@@ -1044,6 +1085,24 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
   useEffect(() => {
     loadMapData();
   }, []);
+
+  // Khi người dùng chuyển sang tab Sơ Đồ Kho (isActive = true), tự động cập nhật dữ liệu mới nhất nếu vừa tải ở Cài Đặt
+  useEffect(() => {
+    if (isActive) {
+      const mem = getMemoryWarehouseMapCache();
+      if (mem && mem.positions && mem.positions.length > 0) {
+        if (positions.length === 0 || (mem.cachedAt && mem.cachedAt !== cachedAt)) {
+          setZones(mem.zones);
+          setPositions(mem.positions);
+          setCachedAt(mem.cachedAt);
+          setLoading(false);
+          setIsOffline(false);
+        }
+      } else if (positions.length === 0) {
+        loadMapData(true, false);
+      }
+    }
+  }, [isActive]);
 
   // ── Hierarchy Filtering ────────────────────────────────────────
   const sortZones = (list: ZoneItem[]) =>
@@ -1646,18 +1705,14 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
                   })
                   .map(tierAcc => ({
                     ...tierAcc,
-                    positions: [...tierAcc.positions].sort((pa, pb) =>
-                      (pa.code || '').localeCompare(pb.code || '', undefined, { numeric: true })
-                    )
+                    positions: sortPositionsByDepthAndCol(tierAcc.positions)
                   }));
 
                 return {
                   slot: slotAcc.slot,
                   unitsMap: slotAcc.unitsMap,
                   positionCount: slotAcc.positionCount,
-                  positions: [...slotAcc.positions].sort((pa, pb) =>
-                    (pa.code || '').localeCompare(pb.code || '', undefined, { numeric: true })
-                  ),
+                  positions: sortPositionsByDepthAndCol(slotAcc.positions),
                   tiers: sortedTiers
                 };
               });
@@ -1686,13 +1741,11 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
     };
   }, [isSearchActive, matchingPositions, zoneHierarchyMap]);
 
-  // Tự động mở rộng các kho có hàng khi tìm kiếm
+  // Mặc định THU GỌN HẾT các kho khi tìm kiếm (gọn gàng, dễ nhìn theo từng thẻ Kho)
   useEffect(() => {
     if (breakdownReport?.warehouses) {
-      setExpandedWhIds(new Set(breakdownReport.warehouses.map(w => w.warehouse.id)));
-      const allAisles = new Set<string>();
-      breakdownReport.warehouses.forEach(w => w.aisles.forEach(a => allAisles.add(a.aisle.id)));
-      setExpandedAisleIds(allAisles);
+      setExpandedWhIds(new Set());
+      setExpandedAisleIds(new Set());
       setExpandedSlotIds(new Set());
       setExpandedBreakdownTierIds(new Set());
     }
@@ -2816,7 +2869,7 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
                                                       {/* Bấm vào Tầng mới hiện chi tiết từng Mã vị trí + Số lượng */}
                                                       {isTierExpanded && (
                                                         <View style={styles.breakdownTierPositionsList}>
-                                                          {tierAcc.positions.map(pos => (
+                                                          {sortPositionsByDepthAndCol(tierAcc.positions).map(pos => (
                                                             <TouchableOpacity
                                                               key={pos.id}
                                                               style={styles.breakdownPosRow}
@@ -2862,7 +2915,7 @@ export default function WarehouseMapScreen({ onBackToScanner }: { onBackToScanne
                                               ) : (
                                                 /* Trường hợp Sảnh không chia tầng: hiện danh sách các vị trí trong Sảnh */
                                                 <View style={styles.breakdownTierPositionsList}>
-                                                  {slotAcc.positions.map(pos => (
+                                                  {sortPositionsByDepthAndCol(slotAcc.positions).map(pos => (
                                                     <TouchableOpacity
                                                       key={pos.id}
                                                       style={styles.breakdownPosRow}

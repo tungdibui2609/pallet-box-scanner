@@ -1514,3 +1514,6 @@ export async function getLastWarehouseMapOfflineSyncInfo(): Promise<{
     return { lastSyncedAt: null, count: 0, warehousesCount: 0 };
   }
 }
+
+export type { ZoneItem, PositionItem } from '../screens/WarehouseMapScreen';
+

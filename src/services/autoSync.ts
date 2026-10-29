@@ -94,3 +94,50 @@ export async function triggerBackgroundAutoSync(options?: {
     isAutoSyncing = false;
   }
 }
+
+/**
+ * Đồng bộ toàn bộ dữ liệu kho All-in-One (Người dùng chủ động bấm):
+ * 1. Sơ đồ kho (7.820 vị trí + Pallet có hàng)
+ * 2. Dữ liệu LOT & Tem thùng
+ * 3. Quy tắc dấu đóng & từ điển tem
+ */
+export async function syncAllWarehouseDataMaster(): Promise<{
+  success: boolean;
+  totalPositions: number;
+  totalWarehouses: number;
+  totalLots: number;
+  message: string;
+}> {
+  try {
+    const [whMapRes, palletRes, stampRes] = await Promise.all([
+      syncWarehouseMapOffline().catch(e => ({ success: false, totalPositions: 0, totalWarehouses: 0, message: e.message })),
+      syncCloudPalletsOffline().catch(e => ({ success: false, count: 0, message: e.message })),
+      syncStampDictionariesFromSupabase().catch(e => ({ success: false, count: 0, message: e.message }))
+    ]);
+
+    const posCount = (whMapRes as any).success ? (whMapRes as any).totalPositions : 0;
+    const whCount = (whMapRes as any).success ? (whMapRes as any).totalWarehouses : 0;
+    const lotCount = palletRes.success ? palletRes.count : 0;
+
+    const ok = (whMapRes as any).success || palletRes.success;
+
+    return {
+      success: ok,
+      totalPositions: posCount,
+      totalWarehouses: whCount,
+      totalLots: lotCount,
+      message: ok
+        ? `Đã tải thành công ${posCount} vị trí (${whCount} kho) và ${lotCount} LOT sản phẩm. Dữ liệu đã sẵn sàng cho tất cả các tính năng!`
+        : `Lỗi: ${(whMapRes as any).message || palletRes.message || 'Không thể kết nối máy chủ'}`
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      totalPositions: 0,
+      totalWarehouses: 0,
+      totalLots: 0,
+      message: err.message || 'Lỗi không xác định'
+    };
+  }
+}
+

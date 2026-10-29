@@ -13,7 +13,7 @@ import {
 } from '../services/supabase';
 import { getStampDictionariesCount } from '../services/database';
 import { useAuth } from '../contexts/AuthContext';
-import { isAutoSyncEnabled, setAutoSyncEnabled } from '../services/autoSync';
+import { isAutoSyncEnabled, setAutoSyncEnabled, syncAllWarehouseDataMaster } from '../services/autoSync';
 
 export default function SettingsScreen({ onBack }: { onBack: () => void }) {
   const { user, logout } = useAuth();
@@ -22,6 +22,9 @@ export default function SettingsScreen({ onBack }: { onBack: () => void }) {
   const [systemCode, setSystemCode] = useState('KHO_DONG_LANH');
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<string | null>(null);
+
+  // Master All-in-One Sync
+  const [syncingAllMaster, setSyncingAllMaster] = useState(false);
 
   // Stamp Rules Sync
   const [stampRulesCount, setStampRulesCount] = useState(0);
@@ -136,6 +139,28 @@ export default function SettingsScreen({ onBack }: { onBack: () => void }) {
       Alert.alert('Lỗi', err.message);
     } finally {
       setSyncingStamp(false);
+    }
+  }
+
+  async function handleSyncAllMaster() {
+    setSyncingAllMaster(true);
+    try {
+      const res = await syncAllWarehouseDataMaster();
+      if (res.success) {
+        setWarehouseMapCount(res.totalPositions);
+        setWarehouseMapWarehouses(res.totalWarehouses);
+        setOfflinePalletsCount(res.totalLots);
+        const now = new Date().toISOString();
+        setLastWarehouseMapSync(now);
+        setLastOfflineSync(now);
+        Alert.alert('Đồng Bộ Hoàn Tất', res.message);
+      } else {
+        Alert.alert('Không thể tải toàn bộ', res.message);
+      }
+    } catch (err: any) {
+      Alert.alert('Lỗi', err.message);
+    } finally {
+      setSyncingAllMaster(false);
     }
   }
 
@@ -285,6 +310,48 @@ export default function SettingsScreen({ onBack }: { onBack: () => void }) {
           )}
           <Text style={{ color: '#fff', fontWeight: '700', fontSize: 13 }}>
             {syncingStamp ? 'Đang tải từ máy chủ web...' : 'Tải / Cập nhật quy tắc từ Web mẹ'}
+          </Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* ── NÚT TỔNG HỢP: TẢI TOÀN BỘ DỮ LIỆU KHO (ALL-IN-ONE) ───────── */}
+      <View style={[styles.card, { borderColor: '#38bdf8', borderWidth: 1.5, backgroundColor: '#071626' }]}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+          <Ionicons name="flash" size={20} color="#38bdf8" />
+          <Text style={[styles.sectionTitle, { color: '#38bdf8', marginBottom: 0, fontSize: 14 }]}>
+            TẢI TOÀN BỘ DỮ LIỆU KHO (ALL-IN-ONE)
+          </Text>
+        </View>
+
+        <Text style={{ color: '#94a3b8', fontSize: 12, lineHeight: 18, marginBottom: 14 }}>
+          Tải đồng bộ đầy đủ 100% dữ liệu: <Text style={{ color: '#10b981', fontWeight: '700' }}>Sơ Đồ 6 Kho (7.820 vị trí)</Text>, <Text style={{ color: '#38bdf8', fontWeight: '700' }}>Danh sách LOT Pallet</Text>, và <Text style={{ color: '#fbbf24', fontWeight: '700' }}>Quy tắc dấu đóng</Text> để sẵn sàng sử dụng ngoại tuyến cho tất cả tính năng (Quét tem, Sơ đồ kho, Kiểm kê).
+        </Text>
+
+        <TouchableOpacity 
+          style={{
+            backgroundColor: '#0284c7',
+            flexDirection: 'row',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 10,
+            paddingVertical: 14,
+            borderRadius: 12,
+            shadowColor: '#0284c7',
+            shadowOffset: { width: 0, height: 4 },
+            shadowOpacity: 0.3,
+            shadowRadius: 8,
+            elevation: 4
+          }}
+          onPress={handleSyncAllMaster}
+          disabled={syncingAllMaster}
+        >
+          {syncingAllMaster ? (
+            <ActivityIndicator color="#fff" size="small" />
+          ) : (
+            <Ionicons name="cloud-download" size={20} color="#fff" />
+          )}
+          <Text style={{ color: '#fff', fontWeight: '800', fontSize: 14, letterSpacing: 0.5 }}>
+            {syncingAllMaster ? 'Đang tải toàn bộ dữ liệu kho...' : '⚡ TẢI TOÀN BỘ DỮ LIỆU LÀM VIỆC'}
           </Text>
         </TouchableOpacity>
       </View>

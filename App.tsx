@@ -6,12 +6,13 @@ import ScannerScreen from './src/screens/ScannerScreen';
 import StampScannerScreen from './src/screens/StampScannerScreen';
 import PalletListScreen from './src/screens/PalletListScreen';
 import WarehouseMapScreen from './src/screens/WarehouseMapScreen';
+import InventoryScreen from './src/screens/InventoryScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
 import LoginScreen from './src/screens/LoginScreen';
 import { AuthProvider, useAuth } from './src/contexts/AuthContext';
 import { triggerBackgroundAutoSync } from './src/services/autoSync';
 
-type AppTab = 'scanner' | 'stamp_scanner' | 'warehouse_map' | 'pallets' | 'settings';
+type AppTab = 'scanner' | 'stamp_scanner' | 'inventory' | 'warehouse_map' | 'pallets' | 'settings';
 
 function AppContent() {
   const insets = useSafeAreaInsets();
@@ -20,6 +21,7 @@ function AppContent() {
   const [visitedTabs, setVisitedTabs] = useState<Record<string, boolean>>({
     scanner: true,
     warehouse_map: false,
+    inventory: false,
     pallets: false,
   });
 
@@ -107,7 +109,18 @@ function AppContent() {
         {/* Keep-Alive cho Sơ Đồ Kho: Sau khi vào 1 lần, giữ trong RAM, hiển thị 0ms khi quay lại */}
         <View style={[styles.tabKeepAlive, currentTab !== 'warehouse_map' && styles.tabHidden]}>
           {visitedTabs.warehouse_map && (
-            <WarehouseMapScreen onBackToScanner={() => setCurrentTab('scanner')} />
+            <WarehouseMapScreen
+              onBackToScanner={() => setCurrentTab('scanner')}
+              isActive={currentTab === 'warehouse_map'}
+            />
+          )}
+        </View>
+        {/* Keep-Alive cho Kiểm Kê Kho */}
+        <View style={[styles.tabKeepAlive, currentTab !== 'inventory' && styles.tabHidden]}>
+          {visitedTabs.inventory && (
+            <InventoryScreen
+              isActive={currentTab === 'inventory'}
+            />
           )}
         </View>
         {/* Keep-Alive cho Pallet Kho */}
@@ -185,6 +198,20 @@ function AppContent() {
           />
           <Text style={[styles.navText, currentTab === 'warehouse_map' && { color: '#06b6d4' }]}>
             Sơ Đồ Kho
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.navItem}
+          onPress={() => setCurrentTab('inventory')}
+        >
+          <Ionicons
+            name={currentTab === 'inventory' ? 'clipboard' : 'clipboard-outline'}
+            size={22}
+            color={currentTab === 'inventory' ? '#10b981' : '#94a3b8'}
+          />
+          <Text style={[styles.navText, currentTab === 'inventory' && { color: '#10b981' }]}>
+            Kiểm Kê
           </Text>
         </TouchableOpacity>
 
