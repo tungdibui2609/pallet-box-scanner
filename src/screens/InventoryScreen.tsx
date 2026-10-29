@@ -36,6 +36,37 @@ const isUUID = (str: string) =>
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(str || ''));
 
 /**
+ * Bảng màu đa sắc cho các sản phẩm khác nhau khi trong 1 Ô kệ có từ 2 sản phẩm trở lên:
+ * - Sản phẩm 1: Vàng cam (#f59e0b)
+ * - Sản phẩm 2: Xanh cyan ngọc (#06b6d4)
+ * - Sản phẩm 3: Hồng cánh sen dạ quang (#d946ef)
+ * - Sản phẩm 4: Tím thạch anh (#a855f7)
+ * - Sản phẩm 5: Xanh cốm chuối (#84cc16)
+ * - Sản phẩm 6: Cam tươi (#f97316)
+ * - Sản phẩm 7: Xanh da trời sáng (#38bdf8)
+ * - Sản phẩm 8: Đỏ hoa hồng (#ec4899)
+ */
+export const PRODUCT_DOT_PALETTE = [
+  '#f59e0b',
+  '#06b6d4',
+  '#d946ef',
+  '#a855f7',
+  '#84cc16',
+  '#f97316',
+  '#38bdf8',
+  '#ec4899',
+];
+
+export function getProductKey(slot: any): string {
+  if (!slot || !slot.lot_id) return '';
+  const sku = (slot.sku || '').trim();
+  if (sku) return sku;
+  const name = (slot.product_name || '').trim();
+  if (name) return name;
+  return 'PRODUCT_DEFAULT';
+}
+
+/**
  * Sắp xếp các vị trí trong cùng 1 Ô / Tầng theo quy chuẩn thực tế kho:
  * 1. 2 số cuối cùng của mã vị trí: Nhóm 02 trước, nhóm 01 sau (xếp giảm dần 02 -> 01)
  * 2. Cùng số cuối: Xếp theo chữ cái kệ A -> B -> C
@@ -259,6 +290,11 @@ const LevelInventoryModal = ({
                 const isOccupied = Boolean(slot.lot_id);
                 const posCode = slot.code || 'N/A';
                 const suffix = posCode ? `-${posCode.slice(-2)}` : '';
+                const prodKey = getProductKey(slot);
+                const hasMixed = Boolean(level?.hasMixedProducts);
+                const prodColor = hasMixed && level?.productColorsMap?.[prodKey]
+                  ? level.productColorsMap[prodKey]
+                  : '#f59e0b';
 
                 return (
                   <View key={`slot-${posKey || idx}`} style={styles.slotCheckCard}>
@@ -300,13 +336,32 @@ const LevelInventoryModal = ({
                         {/* Hàng 2: Thông tin sản phẩm + Số lượng */}
                         {isOccupied ? (
                           <View style={{ gap: 3, marginTop: 2 }}>
-                            <View style={{ borderLeftWidth: 2, borderLeftColor: '#334155', paddingLeft: 8, paddingVertical: 2 }}>
+                            <View
+                              style={{
+                                borderLeftWidth: 3,
+                                borderLeftColor: hasMixed ? prodColor : '#334155',
+                                paddingLeft: 8,
+                                paddingVertical: 2,
+                              }}
+                            >
                               {slot.sku ? (
                                 <Text style={styles.slotSkuText}>{slot.sku}</Text>
                               ) : null}
-                              <Text style={styles.slotProdName}>
-                                {slot.product_name || 'Hàng đông lạnh'}
-                              </Text>
+                              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                                {hasMixed && (
+                                  <View
+                                    style={{
+                                      width: 8,
+                                      height: 8,
+                                      borderRadius: 4,
+                                      backgroundColor: prodColor,
+                                    }}
+                                  />
+                                )}
+                                <Text style={styles.slotProdName}>
+                                  {slot.product_name || 'Hàng đông lạnh'}
+                                </Text>
+                              </View>
                               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 3 }}>
                                 <Text style={styles.slotQtyLabel}>
                                   SL:{' '}
@@ -429,6 +484,20 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
   const [newSessionWhId, setNewSessionWhId] = useState<string | null>(null);
   const [showHallSummary, setShowHallSummary] = useState(false);
   const [selectedSummaryGroup, setSelectedSummaryGroup] = useState<any>(null);
+  const [expandedRowKeys, setExpandedRowKeys] = useState<Set<string>>(new Set());
+
+  const toggleRowExpanded = useCallback((rowKey: string) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setExpandedRowKeys(prev => {
+      const next = new Set(prev);
+      if (next.has(rowKey)) {
+        next.delete(rowKey);
+      } else {
+        next.add(rowKey);
+      }
+      return next;
+    });
+  }, []);
 
   const showToast = useCallback((text: string, type: 'success' | 'error' | 'warning' | 'info' = 'info') => {
     setToastMsg({ text, type });
@@ -1931,117 +2000,240 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
                   )}
 
                   <View style={{ gap: 12 }}>
-                    {section.rows.map((row: any, ridx: number) => (
-                      <View key={`row-${row.id || ridx}`} style={styles.rackRowCard}>
-                        {!detailZone?.is_hall && (
-                          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-                            <Text style={styles.rackRowTitle}>{row.name}</Text>
-                            <Text style={{ color: '#64748b', fontSize: 10, fontWeight: '700' }}>
-                              Chạm xem chi tiết · Nhấn giữ để tích cả tầng
-                            </Text>
-                          </View>
-                        )}
+                    {section.rows.map((row: any, ridx: number) => {
+                      const occupiedSlotsInRow = (row.levels || [])
+                        .flatMap((lvl: any) => lvl.slots || [])
+                        .filter((s: any) => Boolean(s.lot_id));
 
-                        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
-                          {row.levels.map((lvl: any, lidx: number) => {
-                            const totalLvl = lvl.slots.length;
-                            const occupiedLvl = lvl.slots.filter((s: any) => Boolean(s.lot_id)).length;
-                            const checkedLvl = lvl.slots.filter((s: any) => inventoryResults[s.id]?.checked).length;
-                            const hasNote = lvl.slots.some((s: any) => Boolean(inventoryResults[s.id]?.note));
-                            const isFull = totalLvl > 0 && checkedLvl === totalLvl;
+                      const productMap = new Map<
+                        string,
+                        {
+                          key: string;
+                          sku: string;
+                          name: string;
+                          color: string;
+                          count: number;
+                          totalQty: number;
+                          unit: string;
+                        }
+                      >();
 
-                            return (
-                              <TouchableOpacity
-                                key={`lvl-${lvl.id || lidx}`}
-                                style={[
-                                  styles.levelCellBtn,
-                                  detailZone?.is_hall ? { flex: 1, minWidth: '45%', paddingVertical: 12 } : { width: '18.5%' },
-                                  isFull
-                                    ? styles.levelCellBtnFull
-                                    : hasNote
-                                    ? styles.levelCellBtnNote
-                                    : checkedLvl > 0
-                                    ? styles.levelCellBtnPartial
-                                    : null,
-                                ]}
-                                onPress={() => {
-                                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                                  setSelectedLevelInfo({
-                                    ...lvl,
-                                    name: detailZone?.is_hall ? lvl.name : `${row.name} - ${lvl.name}`,
-                                  });
-                                }}
-                                onLongPress={() => {
-                                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
-                                  Alert.alert(
-                                    'Tích nhanh cả tầng',
-                                    `Xác nhận đã kiểm toàn bộ ${totalLvl} vị trí ở ${row.name} - ${lvl.name}?`,
-                                    [
-                                      { text: 'Hủy', style: 'cancel' },
-                                      {
-                                        text: 'Xác nhận',
-                                        onPress: () =>
-                                          bulkCheckPositions(
-                                            lvl.slots.map((s: any) => s.id),
-                                            true
-                                          ),
-                                      },
-                                    ]
-                                  );
-                                }}
-                              >
-                                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                                  <Text style={styles.levelCellTitle}>
-                                    {detailZone?.is_hall ? lvl.name : `T${lvl.num}`}
-                                  </Text>
-                                  <View
+                      occupiedSlotsInRow.forEach((s: any) => {
+                        const pKey = getProductKey(s);
+                        if (!pKey) return;
+                        if (!productMap.has(pKey)) {
+                          const pIdx = productMap.size;
+                          const color = PRODUCT_DOT_PALETTE[pIdx % PRODUCT_DOT_PALETTE.length];
+                          productMap.set(pKey, {
+                            key: pKey,
+                            sku: (s.sku || '').trim(),
+                            name: (s.product_name || 'Hàng đông lạnh').trim(),
+                            color,
+                            count: 1,
+                            totalQty: Number(s.quantity) || 0,
+                            unit: s.unit || 'Thùng',
+                          });
+                        } else {
+                          const item = productMap.get(pKey)!;
+                          item.count += 1;
+                          item.totalQty += Number(s.quantity) || 0;
+                        }
+                      });
+
+                      const productsInRow = Array.from(productMap.values());
+                      const isMixedInRow = productsInRow.length > 1;
+                      const rowProductColorsMap: Record<string, string> = {};
+                      productsInRow.forEach(p => {
+                        rowProductColorsMap[p.key] = p.color;
+                      });
+
+                      const rowKey = `row-${section.id || idx}-${row.id || ridx}`;
+                      const isRowExpanded = expandedRowKeys.has(rowKey);
+
+                      return (
+                        <View key={rowKey} style={styles.rackRowCard}>
+                          {!detailZone?.is_hall && (
+                            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                                <Text style={styles.rackRowTitle}>{row.name}</Text>
+                                {productsInRow.length > 0 && (
+                                  <TouchableOpacity
+                                    activeOpacity={0.7}
+                                    onPress={() => toggleRowExpanded(rowKey)}
                                     style={[
-                                      styles.levelCountBadge,
-                                      isFull && { backgroundColor: '#10b981' },
+                                      styles.mixedRowBadge,
+                                      !isMixedInRow && { backgroundColor: '#1e293b', borderColor: '#f59e0b44' },
+                                      isRowExpanded && (isMixedInRow ? styles.mixedRowBadgeExpanded : { borderColor: '#f59e0b' }),
                                     ]}
                                   >
+                                    <View style={{ flexDirection: 'row', gap: 2.5, alignItems: 'center' }}>
+                                      {productsInRow.slice(0, 4).map((prod, pidx) => (
+                                        <View
+                                          key={`mix-dot-${pidx}`}
+                                          style={{
+                                            width: 6,
+                                            height: 6,
+                                            borderRadius: 3,
+                                            backgroundColor: prod.color,
+                                          }}
+                                        />
+                                      ))}
+                                    </View>
                                     <Text
                                       style={[
-                                        styles.levelCountText,
-                                        isFull && { color: '#022c22', fontWeight: '900' },
+                                        styles.mixedRowBadgeText,
+                                        !isMixedInRow && { color: '#fcd34d' },
                                       ]}
                                     >
-                                      {checkedLvl}/{totalLvl}
+                                      {productsInRow.length} loại SP
                                     </Text>
+                                    <Feather
+                                      name={isRowExpanded ? 'chevron-up' : 'chevron-down'}
+                                      size={11}
+                                      color={isMixedInRow ? '#c7d2fe' : '#fcd34d'}
+                                    />
+                                  </TouchableOpacity>
+                                )}
+                              </View>
+                              <Text style={{ color: '#64748b', fontSize: 10, fontWeight: '700' }}>
+                                Chạm xem chi tiết · Nhấn giữ để tích cả tầng
+                              </Text>
+                            </View>
+                          )}
+
+                          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
+                            {row.levels.map((lvl: any, lidx: number) => {
+                              const totalLvl = lvl.slots.length;
+                              const occupiedLvl = lvl.slots.filter((s: any) => Boolean(s.lot_id)).length;
+                              const checkedLvl = lvl.slots.filter((s: any) => inventoryResults[s.id]?.checked).length;
+                              const hasNote = lvl.slots.some((s: any) => Boolean(inventoryResults[s.id]?.note));
+                              const isFull = totalLvl > 0 && checkedLvl === totalLvl;
+
+                              return (
+                                <TouchableOpacity
+                                  key={`lvl-${lvl.id || lidx}`}
+                                  style={[
+                                    styles.levelCellBtn,
+                                    detailZone?.is_hall ? { flex: 1, minWidth: '45%', paddingVertical: 12 } : { width: '18.5%' },
+                                    isFull
+                                      ? styles.levelCellBtnFull
+                                      : hasNote
+                                      ? styles.levelCellBtnNote
+                                      : checkedLvl > 0
+                                      ? styles.levelCellBtnPartial
+                                      : null,
+                                  ]}
+                                  onPress={() => {
+                                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                                    setSelectedLevelInfo({
+                                      ...lvl,
+                                      name: detailZone?.is_hall ? lvl.name : `${row.name} - ${lvl.name}`,
+                                      hasMixedProducts: isMixedInRow,
+                                      productColorsMap: rowProductColorsMap,
+                                    });
+                                  }}
+                                  onLongPress={() => {
+                                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+                                    Alert.alert(
+                                      'Tích nhanh cả tầng',
+                                      `Xác nhận đã kiểm toàn bộ ${totalLvl} vị trí ở ${row.name} - ${lvl.name}?`,
+                                      [
+                                        { text: 'Hủy', style: 'cancel' },
+                                        {
+                                          text: 'Xác nhận',
+                                          onPress: () =>
+                                            bulkCheckPositions(
+                                              lvl.slots.map((s: any) => s.id),
+                                              true
+                                            ),
+                                        },
+                                      ]
+                                    );
+                                  }}
+                                >
+                                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                                    <Text style={styles.levelCellTitle}>
+                                      {detailZone?.is_hall ? lvl.name : `T${lvl.num}`}
+                                    </Text>
+                                    <View
+                                      style={[
+                                        styles.levelCountBadge,
+                                        isFull && { backgroundColor: '#10b981' },
+                                      ]}
+                                    >
+                                      <Text
+                                        style={[
+                                          styles.levelCountText,
+                                          isFull && { color: '#022c22', fontWeight: '900' },
+                                        ]}
+                                      >
+                                        {checkedLvl}/{totalLvl}
+                                      </Text>
+                                    </View>
+                                  </View>
+
+                                  {/* Thanh chấm hiển thị vị trí có hàng vs đã kiểm */}
+                                  <View style={{ flexDirection: 'row', gap: 2, height: 5, width: '100%' }}>
+                                    {lvl.slots.map((s: any, sid: number) => {
+                                      const isSlotChecked = Boolean(inventoryResults[s.id]?.checked);
+                                      const isSlotNote = Boolean(inventoryResults[s.id]?.note);
+                                      const isSlotOcc = Boolean(s.lot_id);
+                                      const prodKey = getProductKey(s);
+                                      const occColor = isMixedInRow && rowProductColorsMap[prodKey]
+                                        ? rowProductColorsMap[prodKey]
+                                        : '#f59e0b';
+
+                                      const dotColor = isSlotNote
+                                        ? '#f43f5e'
+                                        : isSlotChecked
+                                        ? '#10b981'
+                                        : isSlotOcc
+                                        ? occColor
+                                        : '#334155';
+                                      return (
+                                        <View
+                                          key={`dot-${s.id || sid}`}
+                                          style={{ flex: 1, borderRadius: 2, backgroundColor: dotColor }}
+                                        />
+                                      );
+                                    })}
+                                  </View>
+
+                                  <Text style={styles.levelSubOccText}>
+                                    {occupiedLvl} có hàng
+                                  </Text>
+                                </TouchableOpacity>
+                              );
+                            })}
+                          </View>
+
+                          {/* Chú thích thông tin sản phẩm trong Ô (mặc định thu gọn, bấm vào chữ sản phẩm để mở ra) */}
+                          {isRowExpanded && productsInRow.length > 0 && (
+                            <View style={styles.rackRowLegendBox}>
+                              {productsInRow.map((prod) => (
+                                <View key={`legend-${prod.key}`} style={styles.rackRowLegendItem}>
+                                  <View style={[styles.legendDot, { backgroundColor: prod.color, marginTop: 4 }]} />
+                                  <View style={{ flex: 1 }}>
+                                    <Text style={styles.legendProdName}>
+                                      {prod.name}
+                                    </Text>
+                                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 3 }}>
+                                      <Text style={[styles.legendCountText, { color: prod.color }]}>
+                                        {prod.count} vị trí
+                                      </Text>
+                                      <Text style={{ color: '#475569', fontSize: 10 }}>•</Text>
+                                      <Text style={[styles.legendCountText, { color: '#94a3b8' }]}>
+                                        Tổng: <Text style={{ color: prod.color }}>{prod.totalQty} {prod.unit}</Text>
+                                      </Text>
+                                    </View>
                                   </View>
                                 </View>
-
-                                {/* Thanh chấm hiển thị vị trí có hàng vs đã kiểm */}
-                                <View style={{ flexDirection: 'row', gap: 2, height: 5, width: '100%' }}>
-                                  {lvl.slots.map((s: any, sid: number) => {
-                                    const isSlotChecked = Boolean(inventoryResults[s.id]?.checked);
-                                    const isSlotNote = Boolean(inventoryResults[s.id]?.note);
-                                    const isSlotOcc = Boolean(s.lot_id);
-                                    const dotColor = isSlotNote
-                                      ? '#f43f5e'
-                                      : isSlotChecked
-                                      ? '#10b981'
-                                      : isSlotOcc
-                                      ? '#f59e0b'
-                                      : '#334155';
-                                    return (
-                                      <View
-                                        key={`dot-${s.id || sid}`}
-                                        style={{ flex: 1, borderRadius: 2, backgroundColor: dotColor }}
-                                      />
-                                    );
-                                  })}
-                                </View>
-
-                                <Text style={styles.levelSubOccText}>
-                                  {occupiedLvl} có hàng
-                                </Text>
-                              </TouchableOpacity>
-                            );
-                          })}
+                              ))}
+                            </View>
+                          )}
                         </View>
-                      </View>
-                    ))}
+                      );
+                    })}
                   </View>
                 </View>
               ))
@@ -2440,6 +2632,60 @@ const styles = StyleSheet.create({
     color: '#38bdf8',
     fontSize: 13,
     fontWeight: '900',
+  },
+  mixedRowBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4.5,
+    backgroundColor: '#1e1b4b',
+    borderWidth: 1,
+    borderColor: '#6366f166',
+    paddingHorizontal: 6,
+    paddingVertical: 1.5,
+    borderRadius: 6,
+  },
+  mixedRowBadgeText: {
+    color: '#c7d2fe',
+    fontSize: 9.5,
+    fontWeight: '800',
+  },
+  mixedRowBadgeExpanded: {
+    backgroundColor: '#312e81',
+    borderColor: '#818cf8',
+  },
+  rackRowLegendBox: {
+    marginTop: 10,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: '#1e293b',
+    gap: 5,
+  },
+  rackRowLegendItem: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+    backgroundColor: '#0b1324',
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#1e293b',
+  },
+  legendDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  legendProdName: {
+    color: '#e2e8f0',
+    fontSize: 11,
+    fontWeight: '700',
+    lineHeight: 16,
+  },
+  legendCountText: {
+    fontSize: 10,
+    fontWeight: '800',
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
   },
   levelCellBtn: {
     backgroundColor: '#0f172a',
