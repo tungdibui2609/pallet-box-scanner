@@ -11,7 +11,9 @@ import {
   KeyboardAvoidingView,
   Platform,
   StyleSheet,
+  StatusBar,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons, Feather } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Haptics from 'expo-haptics';
@@ -20,6 +22,8 @@ import {
   getWarehouseMapOfflineData,
   getMemoryWarehouseMapCache,
   syncWarehouseMapOffline,
+  submitHallLotUpdate,
+  syncOfflineHallLotUpdates,
   ZoneItem,
   PositionItem,
 } from '../services/supabase';
@@ -450,8 +454,389 @@ const LevelInventoryModal = ({
   );
 };
 
+// ── MODAL NHẬP NHANH STT CÁC LOT Ở SẢNH (GỬI LÊN WEB) ───────────────────
+interface HallLotInputModalProps {
+  visible: boolean;
+  onClose: () => void;
+  initialHall?: { id?: string | null; name: string } | null;
+  availableHalls: { id: string; name: string }[];
+  onSuccessToast?: (msg: string) => void;
+}
+
+function HallLotInputModal({
+  visible,
+  onClose,
+  initialHall,
+  availableHalls,
+  onSuccessToast,
+}: HallLotInputModalProps) {
+  const [selectedHall, setSelectedHall] = useState<{ id?: string | null; name: string } | null>(null);
+  const [isCustomHall, setIsCustomHall] = useState(false);
+  const [customHallName, setCustomHallName] = useState('');
+  const [inputText, setInputText] = useState('');
+  const [lotSeqs, setLotSeqs] = useState<number[]>([]);
+  const [notes, setNotes] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (visible) {
+      if (initialHall) {
+        setSelectedHall(initialHall);
+        setIsCustomHall(false);
+      } else if (availableHalls.length > 0) {
+        setSelectedHall(availableHalls[0]);
+        setIsCustomHall(false);
+      } else {
+        setIsCustomHall(true);
+      }
+      setLotSeqs([]);
+      setInputText('');
+      setNotes('');
+      setCustomHallName('');
+
+      // Tự động đẩy dữ liệu ngoại tuyến còn tồn đọng (nếu có mạng)
+      syncOfflineHallLotUpdates().catch(() => {});
+    }
+  }, [visible, initialHall, availableHalls]);
+
+  const handleAddSeqs = (text: string) => {
+    if (!text.trim()) return;
+    const rawTokens = text.split(/[\s,;|\n\r]+/);
+    const newNums: number[] = [];
+
+    rawTokens.forEach(t => {
+      const cleaned = t.trim().replace(/^#/, '');
+      const num = parseInt(cleaned, 10);
+      if (!isNaN(num) && num > 0) {
+        newNums.push(num);
+      }
+    });
+
+    if (newNums.length > 0) {
+      setLotSeqs(prev => {
+        const set = new Set(prev);
+        newNums.forEach(n => set.add(n));
+        return Array.from(set).sort((a, b) => a - b);
+      });
+      setInputText('');
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    }
+  };
+
+  const handleRemoveSeq = (seq: number) => {
+    setLotSeqs(prev => prev.filter(s => s !== seq));
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+  };
+
+  const handleSubmit = async () => {
+    const finalHallName = (isCustomHall ? customHallName : selectedHall?.name || '').trim();
+    if (!finalHallName) {
+      Alert.alert('Thông báo', 'Vui lòng chọn hoặc nhập Tên Sảnh!');
+      return;
+    }
+    if (lotSeqs.length === 0) {
+      Alert.alert('Thông báo', 'Vui lòng nhập ít nhất 1 STT LOT!');
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      const systemCode = (await AsyncStorage.getItem('config_system_code')) || 'KHO_DONG_LANH';
+      const res = await submitHallLotUpdate({
+        system_code: systemCode,
+        hall_id: isCustomHall ? null : selectedHall?.id || null,
+        hall_name: finalHallName,
+        lot_seqs: lotSeqs,
+        notes: notes.trim() || undefined,
+      });
+
+      if (res.success) {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        const successMsg = res.isOffline
+          ? `Đã lưu ${lotSeqs.length} LOT ngoại tuyến (tự gửi khi có mạng)!`
+          : `Đã gửi ${lotSeqs.length} LOT tại ${finalHallName} lên Web!`;
+        if (onSuccessToast) {
+          onSuccessToast(successMsg);
+        } else {
+          Alert.alert('Thành công', successMsg);
+        }
+        onClose();
+      } else {
+        Alert.alert('Lỗi', res.message);
+      }
+    } catch (e: any) {
+      Alert.alert('Lỗi', e.message || 'Không thể gửi dữ liệu');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  if (!visible) return null;
+
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
+        <View style={styles.levelModalOverlay}>
+          <View style={[styles.levelModalCard, { maxHeight: '90%' }]}>
+            {/* Header */}
+            <View style={styles.levelModalHeader}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 }}>
+                <View style={{ width: 36, height: 36, borderRadius: 12, backgroundColor: '#0284c7', alignItems: 'center', justifyContent: 'center' }}>
+                  <Feather name="truck" size={18} color="#ffffff" />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.levelModalTitle} numberOfLines={1}>
+                    CẬP NHẬT LOT Ở SẢNH
+                  </Text>
+                  <Text style={{ color: '#94a3b8', fontSize: 11, fontWeight: '600' }}>
+                    Nhập nhanh STT (không cần quét QR)
+                  </Text>
+                </View>
+              </View>
+
+              <TouchableOpacity onPress={onClose} style={styles.closeCircleBtn}>
+                <Feather name="x" size={18} color="#94a3b8" />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView style={{ padding: 14 }} keyboardShouldPersistTaps="handled">
+              {/* Chọn Sảnh */}
+              <View style={{ marginBottom: 14 }}>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                  <Text style={{ color: '#94a3b8', fontSize: 11, fontWeight: '700', textTransform: 'uppercase' }}>
+                    Sảnh đang kiểm đếm:
+                  </Text>
+                  {availableHalls.length > 0 && (
+                    <TouchableOpacity onPress={() => setIsCustomHall(!isCustomHall)}>
+                      <Text style={{ color: '#38bdf8', fontSize: 11, fontWeight: '700' }}>
+                        {isCustomHall ? 'Chọn từ danh sách' : 'Tự nhập tên khác'}
+                      </Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+
+                {isCustomHall || availableHalls.length === 0 ? (
+                  <TextInput
+                    value={customHallName}
+                    onChangeText={setCustomHallName}
+                    placeholder="Nhập tên sảnh (VD: SẢNH 1, SẢNH ĐỆM...)"
+                    placeholderTextColor="#64748b"
+                    style={{
+                      backgroundColor: '#1e293b',
+                      borderRadius: 14,
+                      paddingHorizontal: 14,
+                      paddingVertical: 10,
+                      color: '#ffffff',
+                      fontSize: 14,
+                      fontWeight: '700',
+                      borderWidth: 1,
+                      borderColor: '#334155',
+                    }}
+                  />
+                ) : (
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6 }}>
+                    {availableHalls.map(hall => {
+                      const isSelected = selectedHall?.name === hall.name;
+                      return (
+                        <TouchableOpacity
+                          key={hall.id || hall.name}
+                          onPress={() => setSelectedHall(hall)}
+                          style={[
+                            styles.whTabPill,
+                            isSelected && { backgroundColor: '#0284c7', borderColor: '#38bdf8' },
+                          ]}
+                        >
+                          <Text style={[styles.whTabPillText, isSelected && { color: '#ffffff', fontWeight: '800' }]}>
+                            {hall.name}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </ScrollView>
+                )}
+              </View>
+
+              {/* Ô Nhập STT */}
+              <View style={{ marginBottom: 14 }}>
+                <Text style={{ color: '#94a3b8', fontSize: 11, fontWeight: '700', textTransform: 'uppercase', marginBottom: 6 }}>
+                  Nhập STT của các LOT có ở sảnh:
+                </Text>
+                <View style={{ flexDirection: 'row', gap: 8 }}>
+                  <TextInput
+                    value={inputText}
+                    onChangeText={setInputText}
+                    onSubmitEditing={() => handleAddSeqs(inputText)}
+                    placeholder="VD: 1, 2, 5 hoặc 1 2 5..."
+                    placeholderTextColor="#64748b"
+                    keyboardType="numeric"
+                    returnKeyType="done"
+                    style={{
+                      flex: 1,
+                      backgroundColor: '#1e293b',
+                      borderRadius: 14,
+                      paddingHorizontal: 14,
+                      paddingVertical: 10,
+                      color: '#ffffff',
+                      fontSize: 15,
+                      fontWeight: '700',
+                      borderWidth: 1,
+                      borderColor: '#334155',
+                    }}
+                  />
+                  <TouchableOpacity
+                    onPress={() => handleAddSeqs(inputText)}
+                    style={{
+                      backgroundColor: '#0284c7',
+                      paddingHorizontal: 16,
+                      borderRadius: 14,
+                      justifyContent: 'center',
+                      alignItems: 'center',
+                    }}
+                  >
+                    <Text style={{ color: '#ffffff', fontWeight: '900', fontSize: 14 }}>THÊM</Text>
+                  </TouchableOpacity>
+                </View>
+                <Text style={{ color: '#64748b', fontSize: 10, marginTop: 4 }}>
+                  💡 Mẹo: Có thể gõ 1 số hoặc dán một chuỗi số cách nhau bởi dấu cách/phẩy
+                </Text>
+              </View>
+
+              {/* Danh sách STT đã nhập */}
+              <View style={{ marginBottom: 14 }}>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <Text style={{ color: '#e2e8f0', fontSize: 12, fontWeight: '800' }}>
+                      DANH SÁCH LOT ĐÃ NHẬP
+                    </Text>
+                    <View style={{ backgroundColor: '#0284c7', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 10 }}>
+                      <Text style={{ color: '#ffffff', fontSize: 11, fontWeight: '900' }}>
+                        {lotSeqs.length} LOT
+                      </Text>
+                    </View>
+                  </View>
+
+                  {lotSeqs.length > 0 && (
+                    <TouchableOpacity onPress={() => setLotSeqs([])}>
+                      <Text style={{ color: '#f43f5e', fontSize: 11, fontWeight: '700' }}>Xóa hết</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+
+                {lotSeqs.length === 0 ? (
+                  <View style={{ padding: 24, backgroundColor: '#0b1324', borderRadius: 16, alignItems: 'center', borderWidth: 1, borderColor: '#1e293b' }}>
+                    <Feather name="inbox" size={28} color="#475569" style={{ marginBottom: 6 }} />
+                    <Text style={{ color: '#64748b', fontSize: 12, fontWeight: '600', textAlign: 'center' }}>
+                      Chưa có STT nào. Hãy nhập STT vào ô phía trên.
+                    </Text>
+                  </View>
+                ) : (
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, maxHeight: 180, padding: 4 }}>
+                    {lotSeqs.map(seq => (
+                      <View
+                        key={seq}
+                        style={{
+                          flexDirection: 'row',
+                          alignItems: 'center',
+                          backgroundColor: '#0f172a',
+                          paddingLeft: 10,
+                          paddingRight: 6,
+                          paddingVertical: 6,
+                          borderRadius: 12,
+                          borderWidth: 1,
+                          borderColor: '#38bdf8',
+                          gap: 6,
+                        }}
+                      >
+                        <Text style={{ color: '#38bdf8', fontSize: 13, fontWeight: '900', fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' }}>
+                          #{seq}
+                        </Text>
+                        <TouchableOpacity onPress={() => handleRemoveSeq(seq)} style={{ padding: 2 }}>
+                          <Feather name="x" size={14} color="#94a3b8" />
+                        </TouchableOpacity>
+                      </View>
+                    ))}
+                  </View>
+                )}
+              </View>
+
+              {/* Ghi chú */}
+              <View style={{ marginBottom: 14 }}>
+                <Text style={{ color: '#94a3b8', fontSize: 11, fontWeight: '700', textTransform: 'uppercase', marginBottom: 6 }}>
+                  Ghi chú (tùy chọn):
+                </Text>
+                <TextInput
+                  value={notes}
+                  onChangeText={setNotes}
+                  placeholder="Nhập ghi chú ca, vị trí tập kết..."
+                  placeholderTextColor="#64748b"
+                  style={{
+                    backgroundColor: '#1e293b',
+                    borderRadius: 14,
+                    paddingHorizontal: 14,
+                    paddingVertical: 10,
+                    color: '#ffffff',
+                    fontSize: 13,
+                    borderWidth: 1,
+                    borderColor: '#334155',
+                  }}
+                />
+              </View>
+            </ScrollView>
+
+            {/* Footer Buttons */}
+            <View style={{ padding: 14, borderTopWidth: 1, borderTopColor: '#1e293b', flexDirection: 'row', gap: 10 }}>
+              <TouchableOpacity
+                onPress={onClose}
+                disabled={submitting}
+                style={{
+                  flex: 1,
+                  backgroundColor: '#1e293b',
+                  paddingVertical: 14,
+                  borderRadius: 14,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                <Text style={{ color: '#94a3b8', fontWeight: '800', fontSize: 13 }}>ĐÓNG</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                onPress={handleSubmit}
+                disabled={submitting || lotSeqs.length === 0}
+                style={{
+                  flex: 2,
+                  backgroundColor: lotSeqs.length === 0 ? '#334155' : '#0284c7',
+                  paddingVertical: 14,
+                  borderRadius: 14,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 8,
+                }}
+              >
+                {submitting ? (
+                  <ActivityIndicator size="small" color="#ffffff" />
+                ) : (
+                  <>
+                    <Feather name="send" size={16} color="#ffffff" />
+                    <Text style={{ color: '#ffffff', fontWeight: '900', fontSize: 13 }}>
+                      GỬI LÊN WEB ({lotSeqs.length} LOT)
+                    </Text>
+                  </>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </KeyboardAvoidingView>
+    </Modal>
+  );
+}
+
 // ── Màn Hình Chính: Kiểm Kê Kho ──────────────────────────────────────────
 export default function InventoryScreen({ isActive }: { isActive?: boolean } = {}) {
+  const insets = useSafeAreaInsets();
+  const topInset = Math.max(insets.top, Platform.OS === 'android' ? (StatusBar.currentHeight || 28) : 20);
   const { user } = useAuth();
   const initialMemory = getMemoryWarehouseMapCache();
 
@@ -485,6 +870,16 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
   const [showHallSummary, setShowHallSummary] = useState(false);
   const [selectedSummaryGroup, setSelectedSummaryGroup] = useState<any>(null);
   const [expandedRowKeys, setExpandedRowKeys] = useState<Set<string>>(new Set());
+
+  // Cập nhật LOT ở Sảnh
+  const [isHallLotModalVisible, setIsHallLotModalVisible] = useState(false);
+  const [hallModalZone, setHallModalZone] = useState<{ id?: string | null; name: string } | null>(null);
+
+  const availableHalls = useMemo(() => {
+    return zones
+      .filter(z => z.is_hall || /SẢNH|SANH/i.test(z.name || ''))
+      .map(z => ({ id: z.id, name: z.name || 'Sảnh' }));
+  }, [zones]);
 
   const toggleRowExpanded = useCallback((rowKey: string) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -898,6 +1293,7 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
 
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       showToast(`Đã đồng bộ ${itemsToUpsert.length} vị trí lên hệ thống!`, 'success');
+      syncOfflineHallLotUpdates().catch(() => {});
       await loadData(true);
     } catch (e: any) {
       showToast('Lỗi đồng bộ: ' + (e.message || 'Mất kết nối mạng'), 'error');
@@ -1717,6 +2113,19 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
             </View>
 
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              {availableHalls.length > 0 && (
+                <TouchableOpacity
+                  onPress={() => {
+                    setHallModalZone(null);
+                    setIsHallLotModalVisible(true);
+                  }}
+                  style={[styles.downloadBtn, { backgroundColor: '#0369a1' }]}
+                >
+                  <Feather name="truck" size={14} color="#ffffff" />
+                  <Text style={{ color: '#ffffff', fontSize: 11, fontWeight: '800' }}>LOT Sảnh</Text>
+                </TouchableOpacity>
+              )}
+
               <TouchableOpacity
                 onPress={() => currentSession && syncFullSession(currentSession)}
                 disabled={Boolean(currentSession && syncingRef[currentSession.id])}
@@ -1826,9 +2235,10 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
         animationType="slide"
         onRequestClose={() => setSelectedDetailZoneId(null)}
       >
-        <View style={styles.container}>
-          {/* Header Modal */}
-          <View style={styles.header}>
+        <View style={[styles.container, { paddingBottom: insets.bottom }]}>
+          <StatusBar barStyle="light-content" />
+          {/* Header Modal với Safe Area tránh bị thanh status bar che */}
+          <View style={[styles.header, { paddingTop: topInset + 6, paddingBottom: 10 }]}>
             <TouchableOpacity
               onPress={() => {
                 setSelectedDetailZoneId(null);
@@ -1850,22 +2260,37 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
 
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
               {detailZone?.is_hall && (
-                <TouchableOpacity
-                  onPress={() => setShowHallSummary(!showHallSummary)}
-                  style={[
-                    styles.groupToggleBtn,
-                    showHallSummary && { backgroundColor: '#7c2d12', borderColor: '#f97316' },
-                  ]}
-                >
-                  <Feather
-                    name="bar-chart-2"
-                    size={15}
-                    color={showHallSummary ? '#fdba74' : '#94a3b8'}
-                  />
-                  <Text style={{ color: showHallSummary ? '#fdba74' : '#94a3b8', fontSize: 11, fontWeight: '800' }}>
-                    Gom nhóm
-                  </Text>
-                </TouchableOpacity>
+                <>
+                  <TouchableOpacity
+                    onPress={() => {
+                      setHallModalZone({ id: detailZone.id, name: detailZone.name });
+                      setIsHallLotModalVisible(true);
+                    }}
+                    style={[styles.groupToggleBtn, { backgroundColor: '#0284c7', borderColor: '#38bdf8' }]}
+                  >
+                    <Feather name="truck" size={14} color="#ffffff" />
+                    <Text style={{ color: '#ffffff', fontSize: 11, fontWeight: '800' }}>
+                      Cập nhật LOT
+                    </Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    onPress={() => setShowHallSummary(!showHallSummary)}
+                    style={[
+                      styles.groupToggleBtn,
+                      showHallSummary && { backgroundColor: '#7c2d12', borderColor: '#f97316' },
+                    ]}
+                  >
+                    <Feather
+                      name="bar-chart-2"
+                      size={15}
+                      color={showHallSummary ? '#fdba74' : '#94a3b8'}
+                    />
+                    <Text style={{ color: showHallSummary ? '#fdba74' : '#94a3b8', fontSize: 11, fontWeight: '800' }}>
+                      Gom nhóm
+                    </Text>
+                  </TouchableOpacity>
+                </>
               )}
 
               <TouchableOpacity
@@ -2330,6 +2755,18 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
           </View>
         </KeyboardAvoidingView>
       </Modal>
+
+      {/* ── MODAL CẬP NHẬT LOT Ở SẢNH (NHẬP STT) ────────────────── */}
+      <HallLotInputModal
+        visible={isHallLotModalVisible}
+        onClose={() => setIsHallLotModalVisible(false)}
+        initialHall={hallModalZone}
+        availableHalls={availableHalls}
+        onSuccessToast={(msg) => {
+          setToastMsg({ text: msg, type: 'success' });
+          setTimeout(() => setToastMsg(null), 3500);
+        }}
+      />
     </View>
   );
 }

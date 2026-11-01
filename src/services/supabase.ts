@@ -1515,5 +1515,118 @@ export async function getLastWarehouseMapOfflineSyncInfo(): Promise<{
   }
 }
 
+const OFFLINE_HALL_UPDATES_KEY = 'offline_hall_lot_updates_v1';
+
+/**
+ * Gửi danh sách các STT LOT đang có tại Sảnh lên hệ thống Web
+ * - Nếu có mạng: Gửi trực tiếp lên Supabase
+ * - Nếu mất mạng / lỗi mạng: Tự động lưu vào hàng đợi offline trên máy, gửi sau khi có mạng
+ */
+export async function submitHallLotUpdate(params: {
+  system_code: string;
+  hall_id?: string | null;
+  hall_name: string;
+  lot_seqs: number[];
+  notes?: string;
+}): Promise<{ success: boolean; message: string; isOffline?: boolean }> {
+  let companyId: string | null = null;
+  let userId: string | null = null;
+  let userName: string | null = null;
+  try {
+    const rawUser = await AsyncStorage.getItem('auth_user_profile');
+    if (rawUser) {
+      const u = JSON.parse(rawUser);
+      companyId = u.company_id || null;
+      userId = u.id || null;
+      userName = u.full_name || u.email || null;
+    }
+  } catch {}
+
+  const payload = {
+    system_code: params.system_code,
+    company_id: companyId,
+    hall_id: params.hall_id || null,
+    hall_name: params.hall_name,
+    lot_seqs: params.lot_seqs,
+    total_lots: params.lot_seqs.length,
+    created_by: userId,
+    created_by_name: userName,
+    notes: params.notes || null,
+    status: 'PENDING',
+  };
+
+  try {
+    const client = await getSupabaseClient();
+    const query = client.from('hall_lot_updates').insert(payload);
+    const { error } = await withTimeout(query, 6000, 'Mạng yếu hoặc không có kết nối máy chủ');
+    if (error) throw error;
+
+    return { success: true, message: 'Đã gửi danh sách LOT sảnh lên Web thành công!' };
+  } catch (err: any) {
+    // Lưu vào hàng đợi offline để không làm mất dữ liệu của thủ kho
+    try {
+      const existingRaw = await AsyncStorage.getItem(OFFLINE_HALL_UPDATES_KEY);
+      const queue = existingRaw ? JSON.parse(existingRaw) : [];
+      queue.push({
+        ...payload,
+        queued_at: new Date().toISOString(),
+      });
+      await AsyncStorage.setItem(OFFLINE_HALL_UPDATES_KEY, JSON.stringify(queue));
+
+      return {
+        success: true,
+        isOffline: true,
+        message: 'Đã lưu vào máy! Sẽ tự động gửi lên Web ngay khi có mạng.',
+      };
+    } catch (cacheErr: any) {
+      return { success: false, message: 'Lỗi gửi dữ liệu: ' + (err.message || 'Không có mạng') };
+    }
+  }
+}
+
+/**
+ * Đồng bộ các bản ghi LOT sảnh đã lưu ngoại tuyến lên Web
+ */
+export async function syncOfflineHallLotUpdates(): Promise<{ synced: number; remaining: number }> {
+  try {
+    const existingRaw = await AsyncStorage.getItem(OFFLINE_HALL_UPDATES_KEY);
+    if (!existingRaw) return { synced: 0, remaining: 0 };
+
+    const queue: any[] = JSON.parse(existingRaw);
+    if (!queue.length) return { synced: 0, remaining: 0 };
+
+    const client = await getSupabaseClient();
+    const remainingQueue: any[] = [];
+    let syncedCount = 0;
+
+    for (const item of queue) {
+      try {
+        const { queued_at, ...payload } = item;
+        const { error } = await withTimeout(
+          client.from('hall_lot_updates').insert(payload),
+          6000
+        );
+        if (error) {
+          remainingQueue.push(item);
+        } else {
+          syncedCount++;
+        }
+      } catch {
+        remainingQueue.push(item);
+      }
+    }
+
+    if (remainingQueue.length > 0) {
+      await AsyncStorage.setItem(OFFLINE_HALL_UPDATES_KEY, JSON.stringify(remainingQueue));
+    } else {
+      await AsyncStorage.removeItem(OFFLINE_HALL_UPDATES_KEY);
+    }
+
+    return { synced: syncedCount, remaining: remainingQueue.length };
+  } catch {
+    return { synced: 0, remaining: 0 };
+  }
+}
+
 export type { ZoneItem, PositionItem } from '../screens/WarehouseMapScreen';
 
