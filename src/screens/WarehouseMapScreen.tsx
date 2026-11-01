@@ -12,7 +12,7 @@ import {
   Platform,
   Alert
 } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import { Ionicons, Feather } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import {
   getSupabaseClient,
@@ -23,6 +23,7 @@ import {
 } from '../services/supabase';
 import { decodeSTT } from '../utils/numberUtils';
 import { groupWarehouseData } from '../utils/warehouseUtils';
+import HallLotInputModal, { HallOption } from '../components/HallLotInputModal';
 import { matchPalletSearch, calculateSearchScore, matchSearch, normalizeSearchString } from '../utils/searchUtils';
 import { formatMaterialZoneList } from '../utils/provinces';
 
@@ -944,6 +945,49 @@ export default function WarehouseMapScreen({
   // Modal detail
   const [selectedPosDetail, setSelectedPosDetail] = useState<PositionItem | null>(null);
 
+  // Modal Cập nhật LOT ở Sảnh
+  const [isHallLotModalVisible, setIsHallLotModalVisible] = useState(false);
+  const [hallModalInitial, setHallModalInitial] = useState<HallOption | null>(null);
+  const [toastMsg, setToastMsg] = useState<{ text: string; type: 'success' | 'error' | 'warning' | 'info' } | null>(null);
+
+  // Danh sách các sảnh có kèm theo kho cha (VD: Kho Đông 1 › SẢNH 1)
+  const availableHalls = useMemo<HallOption[]>(() => {
+    const rzMap = new Map(zones.map(z => [z.id, z]));
+    
+    // Tìm kho gốc của 1 zone
+    const findWarehouse = (zoneId: string): ZoneItem | null => {
+      let curr = rzMap.get(zoneId);
+      while (curr && curr.parent_id) {
+        const p = rzMap.get(curr.parent_id);
+        if (!p) break;
+        curr = p;
+      }
+      return curr && !curr.parent_id ? curr : null;
+    };
+
+    const hallZones = zones.filter(z => isHallZone(z));
+    const list = hallZones.map(h => {
+      const wh = findWarehouse(h.id);
+      const whName = wh?.name || null;
+      const fullPath = whName ? `${whName} › ${h.name}` : h.name;
+      return {
+        id: h.id,
+        name: h.name,
+        warehouse_id: wh?.id || null,
+        warehouse_name: whName,
+        full_path: fullPath,
+        display_order: h.display_order ?? 0,
+      };
+    });
+
+    return list.sort((a, b) => {
+      if (a.warehouse_id !== b.warehouse_id) {
+        return (a.warehouse_name || '').localeCompare(b.warehouse_name || '', undefined, { numeric: true });
+      }
+      return (a.display_order ?? 0) - (b.display_order ?? 0);
+    });
+  }, [zones]);
+
   // Offline state
   const [isOffline, setIsOffline] = useState(false);
   const [cachedAt, setCachedAt] = useState<string | null>(initialMemory?.cachedAt || null);
@@ -1105,10 +1149,23 @@ export default function WarehouseMapScreen({
   }, [isActive]);
 
   // ── Hierarchy Filtering ────────────────────────────────────────
-  const sortZones = (list: ZoneItem[]) =>
-    [...list].sort((a, b) =>
-      (a.name || '').localeCompare(b.name || '', undefined, { numeric: true })
-    );
+  const sortZones = useCallback((list: ZoneItem[]) =>
+    [...list].sort((a, b) => {
+      // 1. Ưu tiên display_order nếu có
+      const orderA = a.display_order;
+      const orderB = b.display_order;
+      const hasA = typeof orderA === 'number' && !isNaN(orderA);
+      const hasB = typeof orderB === 'number' && !isNaN(orderB);
+
+      if (hasA && hasB && orderA !== orderB) {
+        return orderA - orderB;
+      }
+      if (hasA && !hasB) return -1;
+      if (!hasA && hasB) return 1;
+
+      // 2. Tên tự nhiên
+      return (a.name || '').localeCompare(b.name || '', undefined, { numeric: true });
+    }), []);
 
   // ── Ô Gộp (Group Warehouse Data) ───────────────────────────────
   const { groupedZones, virtualToRealMap } = useMemo(() => {
@@ -1126,7 +1183,44 @@ export default function WarehouseMapScreen({
 
   const warehouses = useMemo(
     () => sortZones(activeZones.filter(z => !z.parent_id)),
-    [activeZones]
+    [activeZones, sortZones]
+  );
+
+  const warehouseOrderMap = useMemo(() => {
+    const map = new Map<string, number>();
+    warehouses.forEach((wh, index) => {
+      map.set(wh.id, index);
+    });
+    return map;
+  }, [warehouses]);
+
+  const compareAisles = useCallback(
+    (a: ZoneItem, b: ZoneItem) => {
+      // 1. Nếu khác kho cha (khi ở chế độ Tất cả kho), gom nhóm theo kho cha trước
+      if (a.parent_id !== b.parent_id) {
+        const whOrderA = a.parent_id ? (warehouseOrderMap.get(a.parent_id) ?? 999) : 999;
+        const whOrderB = b.parent_id ? (warehouseOrderMap.get(b.parent_id) ?? 999) : 999;
+        if (whOrderA !== whOrderB) {
+          return whOrderA - whOrderB;
+        }
+      }
+
+      // 2. Cùng kho: Ưu tiên display_order (DÃY 1 -> SẢNH 1 -> DÃY 2 -> DÃY 3 -> SẢNH 2...)
+      const orderA = a.display_order;
+      const orderB = b.display_order;
+      const hasA = typeof orderA === 'number' && !isNaN(orderA);
+      const hasB = typeof orderB === 'number' && !isNaN(orderB);
+
+      if (hasA && hasB && orderA !== orderB) {
+        return orderA - orderB;
+      }
+      if (hasA && !hasB) return -1;
+      if (!hasA && hasB) return 1;
+
+      // 3. Fallback theo tên tự nhiên
+      return (a.name || '').localeCompare(b.name || '', undefined, { numeric: true });
+    },
+    [warehouseOrderMap]
   );
 
   // ── Pre-compute Zone Descendants Map & Full Paths ONCE (O(1) lookups) ──
@@ -1838,12 +1932,12 @@ export default function WarehouseMapScreen({
           const countA = zoneMatchCountMap.get(a.id) || 0;
           const countB = zoneMatchCountMap.get(b.id) || 0;
           if (countA !== countB) return countB - countA;
-          return a.name.localeCompare(b.name, undefined, { numeric: true });
+          return compareAisles(a, b);
         });
     }
 
-    return sortZones(list);
-  }, [activeZones, selectedWarehouseId, warehouses, isSearchActive, zoneMatchCountMap]);
+    return [...list].sort(compareAisles);
+  }, [activeZones, selectedWarehouseId, warehouses, isSearchActive, zoneMatchCountMap, compareAisles]);
 
   // Slots -> Ô GỘP: Ô 01, Ô 02...
   const slots = useMemo(() => {
@@ -3088,7 +3182,36 @@ export default function WarehouseMapScreen({
                     CHỌN DÃY / SẢNH:
                   </Text>
                 </View>
-                <Text style={styles.sectionCount}>{aisles.length} phân khu</Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <Text style={styles.sectionCount}>{aisles.length} phân khu</Text>
+                  {availableHalls.length > 0 && (
+                    <TouchableOpacity
+                      onPress={() => {
+                        const currWh = selectedWarehouseId && selectedWarehouseId !== 'all'
+                          ? activeZones.find(z => z.id === selectedWarehouseId)
+                          : null;
+                        const firstHallInWh = currWh
+                          ? availableHalls.find(h => h.warehouse_id === currWh.id)
+                          : null;
+
+                        setHallModalInitial(firstHallInWh || null);
+                        setIsHallLotModalVisible(true);
+                      }}
+                      style={{
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        gap: 4,
+                        backgroundColor: '#0284c7',
+                        paddingHorizontal: 8,
+                        paddingVertical: 4,
+                        borderRadius: 8,
+                      }}
+                    >
+                      <Feather name="truck" size={11} color="#ffffff" />
+                      <Text style={{ color: '#ffffff', fontSize: 10, fontWeight: '900' }}>LOT Sảnh</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
               </View>
 
           {/* Switch Warehouse Pills */}
@@ -3162,12 +3285,14 @@ export default function WarehouseMapScreen({
               const whName = (!selectedWarehouseId || selectedWarehouseId === 'all')
                 ? getZoneName(aisle.parent_id)
                 : '';
+              const isHall = isHallZone(aisle);
 
               return (
                 <TouchableOpacity
                   key={aisle.id}
                   style={[
                     styles.aisleCard,
+                    isHall && styles.hallCard,
                     matchCount > 0 && styles.aisleCardMatched
                   ]}
                   onPress={() => {
@@ -3179,7 +3304,9 @@ export default function WarehouseMapScreen({
                 >
                   <View style={styles.aisleCardHeader}>
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 }}>
-                      <Text style={styles.aisleCardTitle}>🚪 {aisle.name}</Text>
+                      <Text style={styles.aisleCardTitle}>
+                        {isHall ? '🚚 ' : '🚪 '}{aisle.name}
+                      </Text>
                       {whName ? (
                         <View style={styles.whTag}>
                           <Text style={styles.whTagText}>{whName}</Text>
@@ -3192,7 +3319,36 @@ export default function WarehouseMapScreen({
                           <Text style={styles.matchCountText}>🔥 {matchCount} khớp</Text>
                         </View>
                       )}
-                      <Text style={styles.aisleCardAction}>Xem Ô →</Text>
+                      {isHall && (
+                        <TouchableOpacity
+                          onPress={(e) => {
+                            e.stopPropagation();
+                            const matched = availableHalls.find(h => h.id === aisle.id);
+                            const currWh = aisle.parent_id
+                              ? activeZones.find(z => z.id === aisle.parent_id)
+                              : null;
+                            const whId = matched?.warehouse_id || aisle.parent_id || currWh?.id || null;
+                            const whName = matched?.warehouse_name || currWh?.name || null;
+                            const fullP = matched?.full_path || (whName ? `${whName} › ${aisle.name}` : aisle.name);
+
+                            setHallModalInitial({
+                              id: aisle.id,
+                              name: aisle.name,
+                              warehouse_id: whId,
+                              warehouse_name: whName,
+                              full_path: fullP,
+                            });
+                            setIsHallLotModalVisible(true);
+                          }}
+                          style={styles.hallCardUpdateBtn}
+                        >
+                          <Feather name="truck" size={11} color="#ffffff" />
+                          <Text style={{ color: '#ffffff', fontSize: 10, fontWeight: '800' }}>Cập nhật</Text>
+                        </TouchableOpacity>
+                      )}
+                      <Text style={styles.aisleCardAction}>
+                        {isHall ? 'Xem Sảnh →' : 'Xem Ô →'}
+                      </Text>
                     </View>
                   </View>
 
@@ -3208,7 +3364,9 @@ export default function WarehouseMapScreen({
                         styles.progressBarFill,
                         {
                           width: `${pct}%`,
-                          backgroundColor: pct >= 90 ? '#f59e0b' : '#10b981'
+                          backgroundColor: isHall
+                            ? (pct >= 90 ? '#f59e0b' : '#38bdf8')
+                            : (pct >= 90 ? '#f59e0b' : '#10b981')
                         }
                       ]}
                     />
@@ -3249,15 +3407,61 @@ export default function WarehouseMapScreen({
             </View>
           </View>
 
-          {/* Hall Banner */}
+          {/* Hall Banner với Nút Cập Nhật LOT Sảnh */}
           <View style={styles.hallBanner}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-              <View style={styles.hallBadge}>
-                <Text style={styles.hallBadgeText}>SẢNH</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+              <View style={{ flex: 1, marginRight: 8 }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                  <View style={styles.hallBadge}>
+                    <Text style={styles.hallBadgeText}>SẢNH</Text>
+                  </View>
+                  <Text style={styles.hallTitle}>{getZoneName(selectedAisleId)}</Text>
+                </View>
+                {/* Đường dẫn phân cấp: Kho > Sảnh */}
+                <Text style={{ color: '#38bdf8', fontSize: 11, fontWeight: '700', marginTop: 3 }}>
+                  📍 {zonePathMap.get(selectedAisleId || '') || getZoneName(selectedAisleId)}
+                </Text>
               </View>
-              <Text style={styles.hallTitle}>{getZoneName(selectedAisleId)}</Text>
+
+              {/* Nút Cập nhật LOT Sảnh */}
+              <TouchableOpacity
+                onPress={() => {
+                  const matched = availableHalls.find(h => h.id === selectedAisleId);
+                  const currWh = selectedWarehouseId && selectedWarehouseId !== 'all'
+                    ? activeZones.find(z => z.id === selectedWarehouseId)
+                    : (selectedAisle?.parent_id ? activeZones.find(z => z.id === selectedAisle.parent_id) : null);
+                  const whId = matched?.warehouse_id || currWh?.id || selectedWarehouseId || null;
+                  const whName = matched?.warehouse_name || currWh?.name || null;
+                  const aisleName = selectedAisle?.name || getZoneName(selectedAisleId);
+                  const fullP = matched?.full_path || (whName ? `${whName} › ${aisleName}` : aisleName);
+
+                  setHallModalInitial({
+                    id: selectedAisleId || '',
+                    name: aisleName,
+                    warehouse_id: whId,
+                    warehouse_name: whName,
+                    full_path: fullP,
+                  });
+                  setIsHallLotModalVisible(true);
+                }}
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 6,
+                  backgroundColor: '#0284c7',
+                  paddingHorizontal: 12,
+                  paddingVertical: 8,
+                  borderRadius: 12,
+                  borderWidth: 1,
+                  borderColor: '#38bdf8',
+                }}
+              >
+                <Feather name="truck" size={14} color="#ffffff" />
+                <Text style={{ color: '#ffffff', fontSize: 11, fontWeight: '900' }}>Cập nhật LOT</Text>
+              </TouchableOpacity>
             </View>
-            <Text style={styles.hallSub}>
+
+            <Text style={[styles.hallSub, { marginTop: 6 }]}>
               <Text style={{ color: '#fbbf24', fontWeight: '800' }}>
                 {currentPositions.filter(p => p.lot_id).length} có hàng
               </Text>
@@ -3850,6 +4054,33 @@ export default function WarehouseMapScreen({
           </View>
         </Modal>
       )}
+
+      {/* ── TOAST BANNER ── */}
+      {toastMsg && (
+        <View
+          style={[
+            styles.toastBanner,
+            {
+              backgroundColor: toastMsg.type === 'success' ? '#065f46' : '#7f1d1d',
+              borderColor: toastMsg.type === 'success' ? '#10b981' : '#f43f5e',
+            },
+          ]}
+        >
+          <Text style={{ color: '#ffffff', fontSize: 12, fontWeight: '800' }}>{toastMsg.text}</Text>
+        </View>
+      )}
+
+      {/* ── MODAL CẬP NHẬT LOT Ở SẢNH ── */}
+      <HallLotInputModal
+        visible={isHallLotModalVisible}
+        onClose={() => setIsHallLotModalVisible(false)}
+        initialHall={hallModalInitial}
+        availableHalls={availableHalls}
+        onSuccessToast={(msg) => {
+          setToastMsg({ text: msg, type: 'success' });
+          setTimeout(() => setToastMsg(null), 3500);
+        }}
+      />
     </View>
   );
 }
@@ -3858,6 +4089,22 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#0a0f1d'
+  },
+  toastBanner: {
+    position: 'absolute',
+    top: 50,
+    left: 16,
+    right: 16,
+    zIndex: 9999,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    borderWidth: 1,
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOpacity: 0.3,
+    shadowRadius: 10,
+    elevation: 8,
   },
   header: {
     flexDirection: 'row',
@@ -4639,6 +4886,20 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#1e293b',
     gap: 8
+  },
+  hallCard: {
+    backgroundColor: '#0c2338', // Nền xanh navy than tối, phân biệt nhẹ với nền #111827 của Dãy
+    borderColor: '#1a3048',     // Viền tối mảnh 1px như bình thường, không nổi bật
+    borderWidth: 1,
+  },
+  hallCardUpdateBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#0284c7',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
   },
   aisleCardHeader: {
     flexDirection: 'row',

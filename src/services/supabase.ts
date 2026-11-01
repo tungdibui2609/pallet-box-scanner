@@ -1526,7 +1526,7 @@ export async function submitHallLotUpdate(params: {
   system_code: string;
   hall_id?: string | null;
   hall_name: string;
-  lot_seqs: number[];
+  lot_seqs: (string | number | any)[];
   notes?: string;
 }): Promise<{ success: boolean; message: string; isOffline?: boolean }> {
   let companyId: string | null = null;
