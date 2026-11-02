@@ -340,50 +340,126 @@ const LevelInventoryModal = ({
 
                         {/* Hàng 2: Thông tin sản phẩm + Số lượng */}
                         {isOccupied ? (
-                          <View style={{ gap: 3, marginTop: 2 }}>
-                            <View
-                              style={{
-                                borderLeftWidth: 3,
-                                borderLeftColor: hasMixed ? prodColor : '#334155',
-                                paddingLeft: 8,
-                                paddingVertical: 2,
-                              }}
-                            >
-                              {slot.sku ? (
-                                <Text style={styles.slotSkuText}>{slot.sku}</Text>
-                              ) : null}
-                              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                                {hasMixed && (
-                                  <View
-                                    style={{
-                                      width: 8,
-                                      height: 8,
-                                      borderRadius: 4,
-                                      backgroundColor: prodColor,
-                                    }}
-                                  />
-                                )}
-                                <Text style={styles.slotProdName}>
-                                  {slot.product_name || 'Hàng đông lạnh'}
-                                </Text>
-                              </View>
-                              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 3 }}>
-                                <Text style={styles.slotQtyLabel}>
-                                  SL:{' '}
-                                  <Text style={styles.slotQtyValue}>
-                                    {slot.quantity ?? 0} {slot.unit || 'Thùng'}
-                                  </Text>
-                                </Text>
-                                {slot.packaging_date ? (
-                                  <Text style={styles.slotDateMeta}>
-                                    ĐG: {slot.packaging_date.split('-').reverse().join('/')}
-                                  </Text>
-                                ) : null}
-                                {slot.material_zone ? (
-                                  <Text style={styles.slotZoneMeta}>{slot.material_zone}</Text>
-                                ) : null}
-                              </View>
-                            </View>
+                          <View style={{ gap: 4, marginTop: 4 }}>
+                            {(() => {
+                              const slotItems = (() => {
+                                if (Array.isArray(slot.items) && slot.items.length > 0) return slot.items;
+                                const rawNames = (slot.product_name || '').split(',').map((s: string) => s.trim()).filter(Boolean);
+                                const rawSkus = (slot.sku || '').split(',').map((s: string) => s.trim()).filter(Boolean);
+                                if (rawNames.length > 1) {
+                                  return rawNames.map((name: string, i: number) => ({
+                                    product_name: name,
+                                    sku: rawSkus[i] || '',
+                                    quantity: null,
+                                    unit: slot.unit || 'Thùng',
+                                  }));
+                                }
+                                return null;
+                              })();
+
+                              if (slotItems && slotItems.length > 1) {
+                                return (
+                                  <View style={styles.multiProdBox}>
+                                    <View style={styles.multiProdHeader}>
+                                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+                                        <Feather name="layers" size={12} color="#38bdf8" />
+                                        <Text style={styles.multiProdTitle}>SẢN PHẨM ({slotItems.length}):</Text>
+                                      </View>
+                                      <View style={styles.multiProdTotalBadge}>
+                                        <Text style={styles.multiProdTotalBadgeText}>
+                                          Tổng: {slot.quantity ?? 0} {slot.unit || 'Thùng'}
+                                        </Text>
+                                      </View>
+                                    </View>
+
+                                    <View style={styles.multiProdItemsList}>
+                                      {slotItems.map((it: any, itemIdx: number) => (
+                                        <View key={`it-${itemIdx}`} style={[styles.multiProdItemRow, itemIdx > 0 && styles.multiProdItemRowBorder]}>
+                                          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 2 }}>
+                                            {it.sku ? (
+                                              <View style={styles.multiProdSkuBadge}>
+                                                <Text style={styles.multiProdSkuText}>{it.sku}</Text>
+                                              </View>
+                                            ) : <View />}
+
+                                            {it.quantity !== null && it.quantity !== undefined ? (
+                                              <View style={styles.multiProdQtyBadge}>
+                                                <Text style={styles.multiProdQtyText}>
+                                                  {it.quantity} {it.unit || slot.unit || 'Thùng'}
+                                                </Text>
+                                              </View>
+                                            ) : null}
+                                          </View>
+
+                                          <Text style={styles.multiProdName}>
+                                            {it.product_name || 'Hàng đông lạnh'}
+                                          </Text>
+                                        </View>
+                                      ))}
+                                    </View>
+
+                                    {(slot.packaging_date || slot.material_zone) ? (
+                                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 4, paddingHorizontal: 4 }}>
+                                        {slot.packaging_date ? (
+                                          <Text style={styles.slotDateMeta}>
+                                            ĐG: {slot.packaging_date.split('-').reverse().join('/')}
+                                          </Text>
+                                        ) : null}
+                                        {slot.material_zone ? (
+                                          <Text style={styles.slotZoneMeta}>{slot.material_zone}</Text>
+                                        ) : null}
+                                      </View>
+                                    ) : null}
+                                  </View>
+                                );
+                              }
+
+                              return (
+                                <View
+                                  style={{
+                                    borderLeftWidth: 3,
+                                    borderLeftColor: hasMixed ? prodColor : '#334155',
+                                    paddingLeft: 8,
+                                    paddingVertical: 2,
+                                  }}
+                                >
+                                  {slot.sku ? (
+                                    <Text style={styles.slotSkuText}>{slot.sku}</Text>
+                                  ) : null}
+                                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                                    {hasMixed && (
+                                      <View
+                                        style={{
+                                          width: 8,
+                                          height: 8,
+                                          borderRadius: 4,
+                                          backgroundColor: prodColor,
+                                        }}
+                                      />
+                                    )}
+                                    <Text style={styles.slotProdName}>
+                                      {slot.product_name || 'Hàng đông lạnh'}
+                                    </Text>
+                                  </View>
+                                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 3 }}>
+                                    <Text style={styles.slotQtyLabel}>
+                                      SL:{' '}
+                                      <Text style={styles.slotQtyValue}>
+                                        {slot.quantity ?? 0} {slot.unit || 'Thùng'}
+                                      </Text>
+                                    </Text>
+                                    {slot.packaging_date ? (
+                                      <Text style={styles.slotDateMeta}>
+                                        ĐG: {slot.packaging_date.split('-').reverse().join('/')}
+                                      </Text>
+                                    ) : null}
+                                    {slot.material_zone ? (
+                                      <Text style={styles.slotZoneMeta}>{slot.material_zone}</Text>
+                                    ) : null}
+                                  </View>
+                                </View>
+                              );
+                            })()}
 
                             {slot.extra_info ? (
                               <View style={styles.lotNoteBox}>
@@ -3115,6 +3191,88 @@ const styles = StyleSheet.create({
   whSelectChipTextActive: {
     color: '#ffffff',
     fontWeight: '900',
+  },
+  // Multi-Product Box Styles (Dành cho pallet có nhiều dòng sản phẩm)
+  multiProdBox: {
+    backgroundColor: '#0a101f',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#1e293b',
+    padding: 8,
+    marginTop: 2,
+  },
+  multiProdHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 6,
+    paddingBottom: 4,
+    borderBottomWidth: 0.5,
+    borderBottomColor: '#1e293b',
+  },
+  multiProdTitle: {
+    color: '#38bdf8',
+    fontSize: 10,
+    fontWeight: '900',
+    letterSpacing: 0.5,
+  },
+  multiProdTotalBadge: {
+    backgroundColor: '#065f4633',
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 6,
+    borderWidth: 0.5,
+    borderColor: '#10b98166',
+  },
+  multiProdTotalBadgeText: {
+    color: '#34d399',
+    fontSize: 10.5,
+    fontWeight: '900',
+  },
+  multiProdItemsList: {
+    gap: 6,
+  },
+  multiProdItemRow: {
+    paddingVertical: 4,
+  },
+  multiProdItemRowBorder: {
+    borderTopWidth: 0.5,
+    borderTopColor: '#1e293b',
+    paddingTop: 6,
+  },
+  multiProdSkuBadge: {
+    backgroundColor: '#1e293b',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    borderWidth: 0.5,
+    borderColor: '#334155',
+  },
+  multiProdSkuText: {
+    color: '#93c5fd',
+    fontSize: 10,
+    fontWeight: '800',
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+  },
+  multiProdQtyBadge: {
+    backgroundColor: '#064e3b',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 5,
+    borderWidth: 0.5,
+    borderColor: '#10b981',
+  },
+  multiProdQtyText: {
+    color: '#6ee7b7',
+    fontSize: 10.5,
+    fontWeight: '900',
+  },
+  multiProdName: {
+    color: '#f8fafc',
+    fontSize: 12,
+    fontWeight: '700',
+    lineHeight: 16,
+    marginTop: 2,
   },
 });
 

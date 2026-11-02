@@ -113,6 +113,13 @@ export interface PositionItem {
   production_place?: string | null;
   extra_info?: string | null;
   quantity?: number | null;
+  items?: Array<{
+    product_id?: string | null;
+    sku?: string | null;
+    product_name?: string | null;
+    quantity?: number | null;
+    unit?: string | null;
+  }> | null;
 }
 
 // ── CHUẨN HÓA VÀ ĐỊNH DẠNG ĐƠN VỊ TÍNH (Thùng / Kg / Sọt...) ──────────────
@@ -3929,10 +3936,78 @@ export default function WarehouseMapScreen({
               {/* Occupied Lot details */}
               {selectedPosDetail.lot_id && (
                 <View style={styles.modalDetailCard}>
-                  <Text style={{ color: '#94a3b8', fontSize: 10, marginBottom: 2 }}>SẢN PHẨM / PHÂN LOẠI:</Text>
-                  <Text style={styles.modalProductName}>
-                    {selectedPosDetail.product_name || 'Hàng đông lạnh'}
-                  </Text>
+                  {(() => {
+                    const posItems = (() => {
+                      if (Array.isArray(selectedPosDetail.items) && selectedPosDetail.items.length > 0) {
+                        return selectedPosDetail.items;
+                      }
+                      const rawNames = (selectedPosDetail.product_name || '').split(',').map((s: string) => s.trim()).filter(Boolean);
+                      const rawSkus = (selectedPosDetail.sku || '').split(',').map((s: string) => s.trim()).filter(Boolean);
+                      if (rawNames.length > 1) {
+                        return rawNames.map((name: string, i: number) => ({
+                          product_name: name,
+                          sku: rawSkus[i] || '',
+                          quantity: null,
+                          unit: selectedPosDetail.unit || 'Thùng',
+                        }));
+                      }
+                      return null;
+                    })();
+
+                    if (posItems && posItems.length > 1) {
+                      return (
+                        <View style={{ marginBottom: 10 }}>
+                          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                            <Text style={{ color: '#38bdf8', fontSize: 11, fontWeight: '900' }}>
+                              DANH SÁCH SẢN PHẨM ({posItems.length} DÒNG):
+                            </Text>
+                            <View style={{ backgroundColor: '#065f4633', paddingHorizontal: 7, paddingVertical: 2, borderRadius: 6, borderWidth: 0.5, borderColor: '#10b98166' }}>
+                              <Text style={{ color: '#34d399', fontSize: 11, fontWeight: '900' }}>
+                                Tổng: {selectedPosDetail.quantity ? `${selectedPosDetail.quantity} ${selectedPosDetail.unit || 'Thùng'}` : '---'}
+                              </Text>
+                            </View>
+                          </View>
+
+                          <View style={{ backgroundColor: '#0a101f', borderRadius: 10, borderWidth: 1, borderColor: '#1e293b', padding: 8, gap: 6 }}>
+                            {posItems.map((it: any, itemIdx: number) => (
+                              <View key={`map-it-${itemIdx}`} style={{ paddingTop: itemIdx > 0 ? 6 : 0, borderTopWidth: itemIdx > 0 ? 0.5 : 0, borderTopColor: '#1e293b' }}>
+                                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 2 }}>
+                                  {it.sku ? (
+                                    <View style={{ backgroundColor: '#1e293b', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, borderWidth: 0.5, borderColor: '#334155' }}>
+                                      <Text style={{ color: '#93c5fd', fontSize: 10, fontWeight: '800', fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace' }}>
+                                        {it.sku}
+                                      </Text>
+                                    </View>
+                                  ) : <View />}
+
+                                  {it.quantity !== null && it.quantity !== undefined ? (
+                                    <View style={{ backgroundColor: '#064e3b', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 5, borderWidth: 0.5, borderColor: '#10b981' }}>
+                                      <Text style={{ color: '#6ee7b7', fontSize: 10.5, fontWeight: '900' }}>
+                                        {it.quantity} {it.unit || selectedPosDetail.unit || 'Thùng'}
+                                      </Text>
+                                    </View>
+                                  ) : null}
+                                </View>
+
+                                <Text style={{ color: '#f8fafc', fontSize: 12, fontWeight: '700', lineHeight: 16 }}>
+                                  {it.product_name || 'Hàng đông lạnh'}
+                                </Text>
+                              </View>
+                            ))}
+                          </View>
+                        </View>
+                      );
+                    }
+
+                    return (
+                      <>
+                        <Text style={{ color: '#94a3b8', fontSize: 10, marginBottom: 2 }}>SẢN PHẨM / PHÂN LOẠI:</Text>
+                        <Text style={styles.modalProductName}>
+                          {selectedPosDetail.product_name || 'Hàng đông lạnh'}
+                        </Text>
+                      </>
+                    );
+                  })()}
 
                   <View style={styles.modalGrid}>
                     <View style={styles.modalGridCell}>

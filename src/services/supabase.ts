@@ -1238,6 +1238,28 @@ export async function syncWarehouseMapOffline(): Promise<{
               ? rawPlaces.join(', ')
               : (l.metadata?.production_place || null);
 
+            // Trích xuất danh sách từng dòng sản phẩm chi tiết kèm số lượng (dành cho pallet hỗn hợp / nhiều dòng)
+            const itemsList = allItems.map((it: any) => {
+              const prod = it.products || (it.product_id ? prodCacheMap.get(it.product_id) : null);
+              return {
+                product_id: it.product_id,
+                sku: prod?.sku || '',
+                product_name: prod?.name || 'Hàng đông lạnh',
+                quantity: it.quantity ?? 0,
+                unit: it.unit || unit,
+              };
+            });
+
+            if (itemsList.length === 0 && (l.products?.name || fallbackLotProd?.name || l.product_id)) {
+              itemsList.push({
+                product_id: l.product_id,
+                sku: l.products?.sku || fallbackLotProd?.sku || '',
+                product_name: l.products?.name || fallbackLotProd?.name || 'Hàng đông lạnh',
+                quantity: l.quantity ?? 0,
+                unit: unit,
+              });
+            }
+
             lotMap.set(l.id, {
               code: l.code,
               stt: l.daily_seq ? decodeSTT(l.daily_seq) : null,
@@ -1246,6 +1268,7 @@ export async function syncWarehouseMapOffline(): Promise<{
               aliases,
               unit,
               tags,
+              items: itemsList,
               packaging_date: l.packaging_date ? String(l.packaging_date).split('T')[0] : null,
               peeling_date: peelingDate,
               raw_material_date: rawMaterialDate,
@@ -1314,7 +1337,8 @@ export async function syncWarehouseMapOffline(): Promise<{
         batch_code: lotInfo?.batch_code || null,
         production_place: lotInfo?.production_place || null,
         extra_info: lotInfo?.extra_info || null,
-        quantity: lotInfo?.quantity || null
+        quantity: lotInfo?.quantity || null,
+        items: lotInfo?.items || [],
       };
     });
 
