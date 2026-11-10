@@ -242,6 +242,53 @@ const LevelInventoryModal = ({
 }) => {
   if (!level) return null;
 
+  const [fetchedLotItemsMap, setFetchedLotItemsMap] = useState<Record<string, any[]>>({});
+
+  // Tự động tải chi tiết từng dòng sản phẩm kèm số lượng thực tế từ Supabase nếu máy chưa có
+  useEffect(() => {
+    if (!visible || !level?.slots || level.slots.length === 0) return;
+    const client = getSupabaseClient();
+    if (!client) return;
+
+    const neededLotIds: string[] = [];
+    (level.slots || []).forEach((s: any) => {
+      if (!s.lot_id) return;
+      const hasValidItems =
+        Array.isArray(s.items) &&
+        s.items.length > 0 &&
+        s.items.some((it: any) => it.quantity !== null && it.quantity !== undefined);
+      if (!hasValidItems && !fetchedLotItemsMap[s.lot_id] && !neededLotIds.includes(s.lot_id)) {
+        neededLotIds.push(s.lot_id);
+      }
+    });
+
+    if (neededLotIds.length === 0) return;
+
+    getSupabaseClient().then((client: any) => {
+      if (!client) return;
+      client
+        .from('lot_items')
+        .select('lot_id, product_id, quantity, unit, products ( name, sku, unit )')
+        .in('lot_id', neededLotIds)
+        .then(({ data, error }: any) => {
+          if (error || !data || data.length === 0) return;
+          const newMap: Record<string, any[]> = {};
+          data.forEach((it: any) => {
+            if (!newMap[it.lot_id]) newMap[it.lot_id] = [];
+            newMap[it.lot_id].push({
+              product_id: it.product_id,
+              sku: it.products?.sku || '',
+              product_name: it.products?.name || 'Hàng đông lạnh',
+              quantity: it.quantity ?? 0,
+              unit: it.unit || it.products?.unit || 'Thùng',
+            });
+          });
+          setFetchedLotItemsMap(prev => ({ ...prev, ...newMap }));
+        })
+        .catch(() => {});
+    }).catch(() => {});
+  }, [visible, level?.slots]);
+
   const allSlotIds: string[] = (level.slots || []).map((s: any) => s.id);
   const allChecked = allSlotIds.length > 0 && allSlotIds.every(id => inventoryResults[id]?.checked);
 
@@ -343,6 +390,9 @@ const LevelInventoryModal = ({
                           <View style={{ gap: 4, marginTop: 4 }}>
                             {(() => {
                               const slotItems = (() => {
+                                const dynamicItems = slot.lot_id ? fetchedLotItemsMap[slot.lot_id] : null;
+                                if (Array.isArray(dynamicItems) && dynamicItems.length > 0) return dynamicItems;
+
                                 if (Array.isArray(slot.items) && slot.items.length > 0) return slot.items;
                                 const rawNames = (slot.product_name || '').split(',').map((s: string) => s.trim()).filter(Boolean);
                                 const rawSkus = (slot.sku || '').split(',').map((s: string) => s.trim()).filter(Boolean);
@@ -375,25 +425,33 @@ const LevelInventoryModal = ({
                                     <View style={styles.multiProdItemsList}>
                                       {slotItems.map((it: any, itemIdx: number) => (
                                         <View key={`it-${itemIdx}`} style={[styles.multiProdItemRow, itemIdx > 0 && styles.multiProdItemRowBorder]}>
-                                          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 2 }}>
-                                            {it.sku ? (
-                                              <View style={styles.multiProdSkuBadge}>
-                                                <Text style={styles.multiProdSkuText}>{it.sku}</Text>
-                                              </View>
-                                            ) : <View />}
+                                          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                                            {/* Cột trái: SKU -> Tên sản phẩm */}
+                                            <View style={{ flex: 1 }}>
+                                              {it.sku ? (
+                                                <View style={{ alignSelf: 'flex-start', marginBottom: 3 }}>
+                                                  <View style={styles.multiProdSkuBadge}>
+                                                    <Text style={styles.multiProdSkuText}>{it.sku}</Text>
+                                                  </View>
+                                                </View>
+                                              ) : null}
 
+                                              <Text style={styles.multiProdName}>
+                                                {it.product_name || 'Hàng đông lạnh'}
+                                              </Text>
+                                            </View>
+
+                                            {/* Cột phải: Số lượng hiển thị sau Tên sản phẩm */}
                                             {it.quantity !== null && it.quantity !== undefined ? (
-                                              <View style={styles.multiProdQtyBadge}>
-                                                <Text style={styles.multiProdQtyText}>
-                                                  {it.quantity} {it.unit || slot.unit || 'Thùng'}
-                                                </Text>
+                                              <View style={{ alignItems: 'flex-end', justifyContent: 'center' }}>
+                                                <View style={styles.multiProdQtyBadge}>
+                                                  <Text style={styles.multiProdQtyText}>
+                                                    {it.quantity} {it.unit || slot.unit || 'Thùng'}
+                                                  </Text>
+                                                </View>
                                               </View>
                                             ) : null}
                                           </View>
-
-                                          <Text style={styles.multiProdName}>
-                                            {it.product_name || 'Hàng đông lạnh'}
-                                          </Text>
                                         </View>
                                       ))}
                                     </View>
@@ -648,6 +706,20 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
           setLastSync(
             `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')} ${d.getDate().toString().padStart(2, '0')}/${(d.getMonth() + 1).toString().padStart(2, '0')}`
           );
+        }
+
+        // Tự động kiểm tra: Nếu sơ đồ kho trong máy là bản cũ chưa có cấu trúc items cho các pallet nhiều dòng
+        const hasOutdatedMultiProd = mapData.positions.some(
+          (p: any) => p.lot_id && p.product_name && p.product_name.includes(',') && (!p.items || p.items.length === 0)
+        );
+        if (hasOutdatedMultiProd) {
+          // Tự động chạy đồng bộ ngầm để cập nhật đầy đủ items và số lượng chi tiết từng dòng
+          syncWarehouseMapOffline().then((res: any) => {
+            if (res.success && res.positions) {
+              setZones(res.zones);
+              setRawPositions(res.positions);
+            }
+          }).catch(() => {});
         }
       }
 

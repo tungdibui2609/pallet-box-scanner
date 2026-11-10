@@ -951,6 +951,39 @@ export default function WarehouseMapScreen({
 
   // Modal detail
   const [selectedPosDetail, setSelectedPosDetail] = useState<PositionItem | null>(null);
+  const [modalLotItemsMap, setModalLotItemsMap] = useState<Record<string, any[]>>({});
+
+  // Tự động tải danh sách từng dòng sản phẩm kèm số lượng thực tế từ Supabase khi mở modal xem chi tiết
+  useEffect(() => {
+    if (!selectedPosDetail?.lot_id) return;
+    const lotId = selectedPosDetail.lot_id;
+    const hasValidItems =
+      Array.isArray(selectedPosDetail.items) &&
+      selectedPosDetail.items.length > 0 &&
+      selectedPosDetail.items.some((it: any) => it.quantity !== null && it.quantity !== undefined);
+
+    if (hasValidItems || modalLotItemsMap[lotId]) return;
+
+    getSupabaseClient().then((client: any) => {
+      if (!client) return;
+      client
+        .from('lot_items')
+        .select('lot_id, product_id, quantity, unit, products ( name, sku, unit )')
+        .eq('lot_id', lotId)
+        .then(({ data, error }: any) => {
+          if (error || !data || data.length === 0) return;
+          const items = data.map((it: any) => ({
+            product_id: it.product_id,
+            sku: it.products?.sku || '',
+            product_name: it.products?.name || 'Hàng đông lạnh',
+            quantity: it.quantity ?? 0,
+            unit: it.unit || it.products?.unit || 'Thùng',
+          }));
+          setModalLotItemsMap(prev => ({ ...prev, [lotId]: items }));
+        })
+        .catch(() => {});
+    }).catch(() => {});
+  }, [selectedPosDetail]);
 
   // Modal Cập nhật LOT ở Sảnh
   const [isHallLotModalVisible, setIsHallLotModalVisible] = useState(false);
@@ -1008,7 +1041,12 @@ export default function WarehouseMapScreen({
     const checkLotsIncomplete = (posList: any[]) => {
       const occupied = (posList || []).filter((p: any) => p.lot_id && p.lot_id !== 'pending');
       // Chỉ coi là thiếu thông tin LOT khi có hàng trong kho nhưng KHÔNG có bất kỳ vị trí nào có lot_code (lỗi HTTP 414 cũ)
-      return occupied.length > 0 && !occupied.some((p: any) => Boolean(p.lot_code));
+      // HOẶC pallet hỗn hợp nhiều sản phẩm nhưng máy lưu cache cũ chưa có cấu trúc items
+      const hasMissingLotCodes = occupied.length > 0 && !occupied.some((p: any) => Boolean(p.lot_code));
+      const hasMultiProdWithoutItems = occupied.some(
+        (p: any) => p.product_name && p.product_name.includes(',') && (!p.items || p.items.length === 0)
+      );
+      return hasMissingLotCodes || hasMultiProdWithoutItems;
     };
 
     // 0. Nếu đã có sẵn trong RAM cache và không ép sync (forceSync) -> dùng ngay 0ms, KHÔNG tải ngầm tự động!
@@ -3938,6 +3976,9 @@ export default function WarehouseMapScreen({
                 <View style={styles.modalDetailCard}>
                   {(() => {
                     const posItems = (() => {
+                      const dynamicItems = selectedPosDetail.lot_id ? modalLotItemsMap[selectedPosDetail.lot_id] : null;
+                      if (Array.isArray(dynamicItems) && dynamicItems.length > 0) return dynamicItems;
+
                       if (Array.isArray(selectedPosDetail.items) && selectedPosDetail.items.length > 0) {
                         return selectedPosDetail.items;
                       }
@@ -3971,27 +4012,35 @@ export default function WarehouseMapScreen({
                           <View style={{ backgroundColor: '#0a101f', borderRadius: 10, borderWidth: 1, borderColor: '#1e293b', padding: 8, gap: 6 }}>
                             {posItems.map((it: any, itemIdx: number) => (
                               <View key={`map-it-${itemIdx}`} style={{ paddingTop: itemIdx > 0 ? 6 : 0, borderTopWidth: itemIdx > 0 ? 0.5 : 0, borderTopColor: '#1e293b' }}>
-                                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 2 }}>
-                                  {it.sku ? (
-                                    <View style={{ backgroundColor: '#1e293b', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, borderWidth: 0.5, borderColor: '#334155' }}>
-                                      <Text style={{ color: '#93c5fd', fontSize: 10, fontWeight: '800', fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace' }}>
-                                        {it.sku}
-                                      </Text>
-                                    </View>
-                                  ) : <View />}
+                                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                                  {/* Cột trái: SKU -> Tên sản phẩm */}
+                                  <View style={{ flex: 1 }}>
+                                    {it.sku ? (
+                                      <View style={{ alignSelf: 'flex-start', marginBottom: 3 }}>
+                                        <View style={{ backgroundColor: '#1e293b', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, borderWidth: 0.5, borderColor: '#334155' }}>
+                                          <Text style={{ color: '#93c5fd', fontSize: 10, fontWeight: '800', fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace' }}>
+                                            {it.sku}
+                                          </Text>
+                                        </View>
+                                      </View>
+                                    ) : null}
 
+                                    <Text style={{ color: '#f8fafc', fontSize: 12, fontWeight: '700', lineHeight: 16 }}>
+                                      {it.product_name || 'Hàng đông lạnh'}
+                                    </Text>
+                                  </View>
+
+                                  {/* Cột phải: Số lượng hiển thị sau Tên sản phẩm */}
                                   {it.quantity !== null && it.quantity !== undefined ? (
-                                    <View style={{ backgroundColor: '#064e3b', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 5, borderWidth: 0.5, borderColor: '#10b981' }}>
-                                      <Text style={{ color: '#6ee7b7', fontSize: 10.5, fontWeight: '900' }}>
-                                        {it.quantity} {it.unit || selectedPosDetail.unit || 'Thùng'}
-                                      </Text>
+                                    <View style={{ alignItems: 'flex-end', justifyContent: 'center' }}>
+                                      <View style={{ backgroundColor: '#064e3b', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 5, borderWidth: 0.5, borderColor: '#10b981' }}>
+                                        <Text style={{ color: '#6ee7b7', fontSize: 10.5, fontWeight: '900' }}>
+                                          {it.quantity} {it.unit || selectedPosDetail.unit || 'Thùng'}
+                                        </Text>
+                                      </View>
                                     </View>
                                   ) : null}
                                 </View>
-
-                                <Text style={{ color: '#f8fafc', fontSize: 12, fontWeight: '700', lineHeight: 16 }}>
-                                  {it.product_name || 'Hàng đông lạnh'}
-                                </Text>
                               </View>
                             ))}
                           </View>
