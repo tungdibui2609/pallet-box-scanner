@@ -7,12 +7,13 @@ import StampScannerScreen from './src/screens/StampScannerScreen';
 import PalletListScreen from './src/screens/PalletListScreen';
 import WarehouseMapScreen from './src/screens/WarehouseMapScreen';
 import InventoryScreen from './src/screens/InventoryScreen';
+import OperationsDataScreen from './src/screens/OperationsDataScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
 import LoginScreen from './src/screens/LoginScreen';
 import { AuthProvider, useAuth } from './src/contexts/AuthContext';
 import { triggerBackgroundAutoSync } from './src/services/autoSync';
 
-type AppTab = 'scanner' | 'stamp_scanner' | 'inventory' | 'warehouse_map' | 'pallets' | 'settings';
+type AppTab = 'scanner' | 'stamp_scanner' | 'operations' | 'inventory' | 'warehouse_map' | 'pallets' | 'settings';
 
 function AppContent() {
   const insets = useSafeAreaInsets();
@@ -20,6 +21,7 @@ function AppContent() {
   const [currentTab, setCurrentTab] = useState<AppTab>('scanner');
   const [visitedTabs, setVisitedTabs] = useState<Record<string, boolean>>({
     scanner: true,
+    operations: false,
     warehouse_map: false,
     inventory: false,
     pallets: false,
@@ -115,6 +117,14 @@ function AppContent() {
             />
           )}
         </View>
+        {/* Keep-Alive cho Số Liệu (Công việc / Ca làm việc) */}
+        <View style={[styles.tabKeepAlive, currentTab !== 'operations' && styles.tabHidden]}>
+          {visitedTabs.operations && (
+            <OperationsDataScreen
+              isActive={currentTab === 'operations'}
+            />
+          )}
+        </View>
         {/* Keep-Alive cho Kiểm Kê Kho */}
         <View style={[styles.tabKeepAlive, currentTab !== 'inventory' && styles.tabHidden]}>
           {visitedTabs.inventory && (
@@ -170,6 +180,20 @@ function AppContent() {
           />
           <Text style={[styles.navText, currentTab === 'stamp_scanner' && { color: '#fbbf24' }]}>
             Dấu Đóng
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.navItem}
+          onPress={() => setCurrentTab('operations')}
+        >
+          <Ionicons
+            name={currentTab === 'operations' ? 'calculator' : 'calculator-outline'}
+            size={22}
+            color={currentTab === 'operations' ? '#818cf8' : '#94a3b8'}
+          />
+          <Text style={[styles.navText, currentTab === 'operations' && { color: '#818cf8' }]}>
+            Số Liệu
           </Text>
         </TouchableOpacity>
 
@@ -346,7 +370,7 @@ const styles = StyleSheet.create({
   },
   navText: {
     color: '#94a3b8',
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: '700',
   },
   navTextActive: {
