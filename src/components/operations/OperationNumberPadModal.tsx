@@ -82,20 +82,22 @@ export default function OperationNumberPadModal({ visible, product, defaultUnit,
       alert('Vui lòng nhập số lượng lớn hơn 0');
       return;
     }
-    setSubmitting(true);
+    const currentUnit = selectedUnit;
+    const currentNote = note.trim() || undefined;
+
+    // Đóng bàn phím và reset ngay lập tức (0ms lag phản hồi tức thì cho người dùng trong kho đông)
+    setValueStr('');
+    onClose();
+
     try {
       await onSubmit({
         quantity: qty,
-        unit: selectedUnit,
+        unit: currentUnit,
         type,
-        note: note.trim() || undefined,
+        note: currentNote,
       });
-      setValueStr('');
-      onClose();
     } catch (err: any) {
-      alert('Lỗi lưu số liệu: ' + (err?.message || err));
-    } finally {
-      setSubmitting(false);
+      console.warn('Lỗi submit bàn phím:', err);
     }
   };
 

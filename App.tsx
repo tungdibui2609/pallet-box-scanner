@@ -12,15 +12,18 @@ import SettingsScreen from './src/screens/SettingsScreen';
 import LoginScreen from './src/screens/LoginScreen';
 import { AuthProvider, useAuth } from './src/contexts/AuthContext';
 import { triggerBackgroundAutoSync } from './src/services/autoSync';
+import { FullMenuModal } from './src/components/navigation/FullMenuModal';
 
 type AppTab = 'scanner' | 'stamp_scanner' | 'operations' | 'inventory' | 'warehouse_map' | 'pallets' | 'settings';
 
 function AppContent() {
   const insets = useSafeAreaInsets();
   const { user, isLoading } = useAuth();
-  const [currentTab, setCurrentTab] = useState<AppTab>('scanner');
+  const [currentTab, setCurrentTab] = useState<AppTab>('stamp_scanner');
+  const [isFullMenuOpen, setIsFullMenuOpen] = useState(false);
   const [visitedTabs, setVisitedTabs] = useState<Record<string, boolean>>({
-    scanner: true,
+    scanner: false,
+    stamp_scanner: true,
     operations: false,
     warehouse_map: false,
     inventory: false,
@@ -147,112 +150,110 @@ function AppContent() {
         )}
       </View>
 
-      {/* ── BOTTOM NAVIGATION BAR ─────────────────── */}
+      {/* ── BOTTOM NAVIGATION BAR (TINH GỌN 5 NÚT: MENU + 4 CHỨC NĂNG CHÍNH) ─────────────────── */}
       <View style={[
         styles.bottomNav,
         {
-          paddingBottom: Math.max(insets.bottom, 12),
-          height: 60 + Math.max(insets.bottom, 12),
+          paddingBottom: Math.max(insets.bottom, 10),
+          height: 58 + Math.max(insets.bottom, 10),
         }
       ]}>
-        <TouchableOpacity
-          style={styles.navItem}
-          onPress={() => setCurrentTab('scanner')}
-        >
-          <Ionicons
-            name={currentTab === 'scanner' ? 'scan' : 'scan-outline'}
-            size={22}
-            color={currentTab === 'scanner' ? '#22c55e' : '#94a3b8'}
-          />
-          <Text style={[styles.navText, currentTab === 'scanner' && { color: '#22c55e' }]}>
-            Quét Tem
-          </Text>
-        </TouchableOpacity>
+        {/* Nút 1: Menu Hamburger (Mở toàn bộ danh mục chức năng) */}
+        {(() => {
+          const isDrawerActive = !['stamp_scanner', 'operations', 'pallets', 'warehouse_map'].includes(currentTab);
+          return (
+            <TouchableOpacity
+              style={styles.navItem}
+              onPress={() => setIsFullMenuOpen(true)}
+              activeOpacity={0.7}
+            >
+              <View style={styles.menuIconWrapper}>
+                <Ionicons
+                  name="menu"
+                  size={24}
+                  color={isDrawerActive ? '#38bdf8' : '#cbd5e1'}
+                />
+                {isDrawerActive && <View style={styles.menuActiveDot} />}
+              </View>
+              <Text style={[styles.navText, isDrawerActive && { color: '#38bdf8', fontWeight: '800' }]}>
+                Menu
+              </Text>
+            </TouchableOpacity>
+          );
+        })()}
 
+        {/* Nút 2: Dấu Đóng Thùng */}
         <TouchableOpacity
           style={styles.navItem}
           onPress={() => setCurrentTab('stamp_scanner')}
+          activeOpacity={0.7}
         >
           <Ionicons
             name={currentTab === 'stamp_scanner' ? 'finger-print' : 'finger-print-outline'}
             size={22}
             color={currentTab === 'stamp_scanner' ? '#fbbf24' : '#94a3b8'}
           />
-          <Text style={[styles.navText, currentTab === 'stamp_scanner' && { color: '#fbbf24' }]}>
+          <Text style={[styles.navText, currentTab === 'stamp_scanner' && { color: '#fbbf24', fontWeight: '800' }]}>
             Dấu Đóng
           </Text>
         </TouchableOpacity>
 
+        {/* Nút 3: Số Liệu Báo Cáo & Ca Làm */}
         <TouchableOpacity
           style={styles.navItem}
           onPress={() => setCurrentTab('operations')}
+          activeOpacity={0.7}
         >
           <Ionicons
             name={currentTab === 'operations' ? 'calculator' : 'calculator-outline'}
             size={22}
             color={currentTab === 'operations' ? '#818cf8' : '#94a3b8'}
           />
-          <Text style={[styles.navText, currentTab === 'operations' && { color: '#818cf8' }]}>
+          <Text style={[styles.navText, currentTab === 'operations' && { color: '#818cf8', fontWeight: '800' }]}>
             Số Liệu
           </Text>
         </TouchableOpacity>
 
+        {/* Nút 4: Pallet Kho */}
         <TouchableOpacity
           style={styles.navItem}
           onPress={() => setCurrentTab('pallets')}
+          activeOpacity={0.7}
         >
           <Ionicons
             name={currentTab === 'pallets' ? 'cube' : 'cube-outline'}
             size={22}
             color={currentTab === 'pallets' ? '#38bdf8' : '#94a3b8'}
           />
-          <Text style={[styles.navText, currentTab === 'pallets' && { color: '#38bdf8' }]}>
+          <Text style={[styles.navText, currentTab === 'pallets' && { color: '#38bdf8', fontWeight: '800' }]}>
             Pallet Kho
           </Text>
         </TouchableOpacity>
 
+        {/* Nút 5: Sơ Đồ Kho */}
         <TouchableOpacity
           style={styles.navItem}
           onPress={() => setCurrentTab('warehouse_map')}
+          activeOpacity={0.7}
         >
           <Ionicons
             name={currentTab === 'warehouse_map' ? 'map' : 'map-outline'}
             size={22}
             color={currentTab === 'warehouse_map' ? '#06b6d4' : '#94a3b8'}
           />
-          <Text style={[styles.navText, currentTab === 'warehouse_map' && { color: '#06b6d4' }]}>
+          <Text style={[styles.navText, currentTab === 'warehouse_map' && { color: '#06b6d4', fontWeight: '800' }]}>
             Sơ Đồ Kho
           </Text>
         </TouchableOpacity>
-
-        <TouchableOpacity
-          style={styles.navItem}
-          onPress={() => setCurrentTab('inventory')}
-        >
-          <Ionicons
-            name={currentTab === 'inventory' ? 'clipboard' : 'clipboard-outline'}
-            size={22}
-            color={currentTab === 'inventory' ? '#10b981' : '#94a3b8'}
-          />
-          <Text style={[styles.navText, currentTab === 'inventory' && { color: '#10b981' }]}>
-            Kiểm Kê
-          </Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={styles.navItem}
-          onPress={() => setCurrentTab('settings')}
-        >
-          <Ionicons
-            name={currentTab === 'settings' ? 'settings' : 'settings-outline'}
-            size={22}
-            color={currentTab === 'settings' ? '#a78bfa' : '#94a3b8'}
-          />
-          <Text style={[styles.navText, currentTab === 'settings' && { color: '#a78bfa' }]}>
-            Cài Đặt
-          </Text>
-        </TouchableOpacity>
       </View>
+
+      {/* ── MODAL FULL MENU (HIỂN THỊ TOÀN BỘ TẤT CẢ CHỨC NĂNG) ─────────────────── */}
+      <FullMenuModal
+        visible={isFullMenuOpen}
+        onClose={() => setIsFullMenuOpen(false)}
+        currentTab={currentTab}
+        onSelectTab={setCurrentTab}
+      />
     </View>
   );
 }
@@ -375,5 +376,21 @@ const styles = StyleSheet.create({
   },
   navTextActive: {
     color: '#22c55e',
+  },
+  menuIconWrapper: {
+    position: 'relative',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  menuActiveDot: {
+    position: 'absolute',
+    top: -2,
+    right: -4,
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+    backgroundColor: '#38bdf8',
+    borderWidth: 1.5,
+    borderColor: '#1e293b',
   },
 });

@@ -36,6 +36,7 @@ export interface DeliveryShift {
     order_type_code?: string | null;
     products_summary?: Record<string, any>;
     units_summary?: Record<string, any>;
+    is_offline?: boolean;
     [key: string]: any;
   } | null;
 }
@@ -67,6 +68,7 @@ export interface JournalRecord {
   sent_by_name: string | null;
   sent_at: string;
   system_code?: string | null;
+  is_offline?: boolean;
 }
 
 export interface OrderTypeItem {
@@ -113,6 +115,119 @@ export interface AggregatedUnitItem {
   count: number;
 }
 
+// ── CÁC HẰNG SỐ & HÀNG ĐỢI OFFLINE STORAGE ─────────────────────────
+const OP_CACHE_OPEN_SHIFTS_KEY = 'solieu_cache_open_shifts';
+const OP_CACHE_PAST_SHIFTS_KEY = 'solieu_cache_past_shifts';
+const OP_CACHE_JOURNALS_PREFIX = 'solieu_cache_journals_';
+const OP_CACHE_SUB_SHIFTS_PREFIX = 'solieu_cache_sub_shifts_';
+const OP_CACHE_PRODUCTS_KEY = 'solieu_cache_products';
+const OP_CACHE_TEMPLATES_KEY = 'solieu_cache_job_templates';
+const OP_CACHE_ORDER_TYPES_KEY = 'solieu_cache_order_types';
+const OP_OFFLINE_QUEUE_KEY = 'solieu_offline_queue_v1';
+
+// CỜ PHÁT HIỆN OFFLINE TỨC THÌ (FAST OFFLINE FLAG - 0MS LAG TRONG KHO ĐÔNG)
+let isKnownOffline = false;
+let lastOfflineDetectedAt = 0;
+const OFFLINE_RECHECK_INTERVAL = 45000; // 45 giây sau mới thử lại mạng để tránh delay
+
+export function setKnownOffline(offline: boolean) {
+  isKnownOffline = offline;
+  if (offline) {
+    lastOfflineDetectedAt = Date.now();
+  }
+}
+
+export function isOfflineDetected(): boolean {
+  if (!isKnownOffline) return false;
+  // Nếu đã qua 45 giây kể từ lúc phát hiện offline, cho phép thử lại mạng 1 lần
+  if (Date.now() - lastOfflineDetectedAt > OFFLINE_RECHECK_INTERVAL) {
+    isKnownOffline = false;
+    return false;
+  }
+  return true;
+}
+
+export type OperationsActionType =
+  | 'CREATE_SHIFT'
+  | 'SUBMIT_JOURNAL'
+  | 'UPDATE_JOURNAL'
+  | 'DELETE_JOURNAL'
+  | 'CLOSE_SHIFT'
+  | 'REOPEN_SHIFT'
+  | 'DELETE_SHIFT'
+  | 'SYNC_PINNED';
+
+export interface OperationsQueueAction {
+  id: string;
+  type: OperationsActionType;
+  payload: any;
+  timestamp: number;
+  shiftId?: string;
+  retryCount?: number;
+}
+
+// Helper bọc timeout cho các lệnh mạng để không bị treo khi vào kho lạnh (mặc định 1000ms siêu tốc)
+async function withNetworkTimeout<T = any>(promise: Promise<T> | any, ms = 1000): Promise<T> {
+  let timer: any;
+  const timeoutPromise = new Promise<T>((_, reject) => {
+    timer = setTimeout(() => {
+      setKnownOffline(true);
+      reject(new Error('NETWORK_TIMEOUT_COLD_ROOM'));
+    }, ms);
+  });
+  try {
+    const res = await Promise.race([promise, timeoutPromise]);
+    clearTimeout(timer);
+    return res as T;
+  } catch (err) {
+    clearTimeout(timer);
+    setKnownOffline(true);
+    throw err;
+  }
+}
+
+// Lấy danh sách hành động đang chờ đẩy lên Supabase
+export async function getOfflineOperationsQueue(): Promise<OperationsQueueAction[]> {
+  try {
+    const raw = await AsyncStorage.getItem(OP_OFFLINE_QUEUE_KEY);
+    if (!raw) return [];
+    return JSON.parse(raw) || [];
+  } catch {
+    return [];
+  }
+}
+
+// Lưu danh sách hàng đợi offline
+export async function saveOfflineOperationsQueue(queue: OperationsQueueAction[]): Promise<void> {
+  try {
+    await AsyncStorage.setItem(OP_OFFLINE_QUEUE_KEY, JSON.stringify(queue));
+  } catch (e) {
+    console.warn('Lỗi lưu hàng đợi offline số liệu:', e);
+  }
+}
+
+// Thêm 1 hành động vào hàng đợi
+export async function addToOfflineOperationsQueue(
+  action: Omit<OperationsQueueAction, 'id' | 'timestamp'>
+): Promise<OperationsQueueAction> {
+  const queue = await getOfflineOperationsQueue();
+  const newAction: OperationsQueueAction = {
+    id: `act_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+    timestamp: Date.now(),
+    retryCount: 0,
+    ...action,
+  };
+  queue.push(newAction);
+  await saveOfflineOperationsQueue(queue);
+  return newAction;
+}
+
+// Lấy số lượng thao tác đang chờ đồng bộ lên máy chủ
+export async function getPendingOperationsCount(): Promise<number> {
+  const queue = await getOfflineOperationsQueue();
+  return queue.length;
+}
+
 // Lấy system_code kho hiện tại
 export async function getCurrentSystemCode(): Promise<string> {
   const code = await AsyncStorage.getItem('config_system_code');
@@ -124,82 +239,205 @@ export function getShiftSystemCode(systemCode: string): string {
   return `${systemCode}__solieu`;
 }
 
-// 1. Tải danh sách công việc đang mở (Status: 'open')
+// Helper quản lý Cache Ca Đang Mở
+async function getCachedOpenShifts(): Promise<DeliveryShift[]> {
+  try {
+    const raw = await AsyncStorage.getItem(OP_CACHE_OPEN_SHIFTS_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+async function setCachedOpenShifts(shifts: DeliveryShift[]): Promise<void> {
+  try {
+    await AsyncStorage.setItem(OP_CACHE_OPEN_SHIFTS_KEY, JSON.stringify(shifts));
+  } catch (e) {
+    console.warn('Lỗi lưu cache open shifts:', e);
+  }
+}
+
+// Helper quản lý Cache Ca Đã Hoàn Thành
+async function getCachedPastShifts(): Promise<DeliveryShift[]> {
+  try {
+    const raw = await AsyncStorage.getItem(OP_CACHE_PAST_SHIFTS_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+async function setCachedPastShifts(shifts: DeliveryShift[]): Promise<void> {
+  try {
+    await AsyncStorage.setItem(OP_CACHE_PAST_SHIFTS_KEY, JSON.stringify(shifts));
+  } catch (e) {
+    console.warn('Lỗi lưu cache past shifts:', e);
+  }
+}
+
+// Helper quản lý Cache Nhật ký theo Ca
+async function getCachedJournals(shiftId: string): Promise<JournalRecord[]> {
+  try {
+    const raw = await AsyncStorage.getItem(`${OP_CACHE_JOURNALS_PREFIX}${shiftId}`);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+async function setCachedJournals(shiftId: string, journals: JournalRecord[]): Promise<void> {
+  try {
+    await AsyncStorage.setItem(`${OP_CACHE_JOURNALS_PREFIX}${shiftId}`, JSON.stringify(journals));
+  } catch (e) {
+    console.warn('Lỗi lưu cache journals:', e);
+  }
+}
+
+// Helper quản lý Cache Chốt Tạm (Sub-Shifts)
+async function getCachedSubShifts(shiftId: string): Promise<SubShift[]> {
+  try {
+    const raw = await AsyncStorage.getItem(`${OP_CACHE_SUB_SHIFTS_PREFIX}${shiftId}`);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+async function setCachedSubShifts(shiftId: string, subShifts: SubShift[]): Promise<void> {
+  try {
+    await AsyncStorage.setItem(`${OP_CACHE_SUB_SHIFTS_PREFIX}${shiftId}`, JSON.stringify(subShifts));
+  } catch (e) {
+    console.warn('Lỗi lưu cache sub-shifts:', e);
+  }
+}
+
+// 1. Tải danh sách công việc đang mở (Status: 'open') - Offline-First
 export async function getOpenShifts(): Promise<DeliveryShift[]> {
-  const supabase = await getSupabaseClient();
   const baseSys = await getCurrentSystemCode();
   const shiftSys = getShiftSystemCode(baseSys);
+  const cached = await getCachedOpenShifts();
+  const queue = await getOfflineOperationsQueue();
 
-  const { data, error } = await supabase
-    .from('delivery_shifts')
-    .select('*')
-    .eq('system_code', shiftSys)
-    .eq('status', 'open')
-    .order('opened_at', { ascending: false });
+  try {
+    const supabase = await getSupabaseClient();
+    const { data, error } = await withNetworkTimeout(
+      supabase
+        .from('delivery_shifts')
+        .select('*')
+        .eq('system_code', shiftSys)
+        .eq('status', 'open')
+        .order('opened_at', { ascending: false }),
+      2500
+    );
 
-  if (error) {
-    console.warn('Lỗi lấy danh sách ca đang mở:', error);
-    return [];
+    if (!error && Array.isArray(data)) {
+      // Merge với các ca tạo offline đang chờ sync trong queue
+      const offlineCreatedShifts = queue
+        .filter(q => q.type === 'CREATE_SHIFT' && q.payload?.offlineShift)
+        .map(q => q.payload.offlineShift as DeliveryShift);
+
+      // Lọc bỏ các ca đã bị chốt offline trong queue
+      const offlineClosedShiftIds = new Set(
+        queue.filter(q => q.type === 'CLOSE_SHIFT' || q.type === 'DELETE_SHIFT').map(q => q.shiftId)
+      );
+
+      const merged = [
+        ...offlineCreatedShifts,
+        ...data.filter(s => !offlineClosedShiftIds.has(s.id)),
+      ];
+
+      await setCachedOpenShifts(merged);
+      return merged;
+    }
+  } catch (e) {
+    console.warn('[Offline Mode] Không thể kết nối máy chủ, nạp danh sách ca đang mở từ bộ nhớ máy:', e);
   }
-  return data || [];
+
+  // Fallback đọc từ cache nội bộ
+  return cached;
 }
 
-// 2. Tải danh sách công việc đã đóng (Status: 'closed')
+// 2. Tải danh sách công việc đã đóng (Status: 'closed') - Offline-First
 export async function getPastShifts(limit = 50): Promise<DeliveryShift[]> {
-  const supabase = await getSupabaseClient();
   const baseSys = await getCurrentSystemCode();
   const shiftSys = getShiftSystemCode(baseSys);
+  const cached = await getCachedPastShifts();
 
-  const { data, error } = await supabase
-    .from('delivery_shifts')
-    .select('*')
-    .eq('system_code', shiftSys)
-    .eq('status', 'closed')
-    .order('closed_at', { ascending: false })
-    .limit(limit);
+  try {
+    const supabase = await getSupabaseClient();
+    const { data, error } = await withNetworkTimeout(
+      supabase
+        .from('delivery_shifts')
+        .select('*')
+        .eq('system_code', shiftSys)
+        .eq('status', 'closed')
+        .order('closed_at', { ascending: false })
+        .limit(limit),
+      2500
+    );
 
-  if (error) {
-    console.warn('Lỗi lấy danh sách ca đã đóng:', error);
-    return [];
+    if (!error && Array.isArray(data)) {
+      await setCachedPastShifts(data);
+      return data;
+    }
+  } catch (e) {
+    console.warn('[Offline Mode] Không thể kết nối máy chủ, nạp ca đã hoàn thành từ bộ nhớ máy:', e);
   }
-  return data || [];
+
+  return cached;
 }
 
-// 3. Tải danh sách loại phiếu theo phân hệ
+// 3. Tải danh sách loại phiếu theo phân hệ (Có cache)
 export async function getOrderTypes(): Promise<OrderTypeItem[]> {
-  const supabase = await getSupabaseClient();
   const baseSys = await getCurrentSystemCode();
 
-  const { data, error } = await supabase
-    .from('order_types')
-    .select('id, code, name, scope, system_code, is_active')
-    .eq('system_code', baseSys)
-    .eq('is_active', true)
-    .order('code', { ascending: true });
+  try {
+    const supabase = await getSupabaseClient();
+    const { data, error } = await withNetworkTimeout(
+      supabase
+        .from('order_types')
+        .select('id, code, name, scope, system_code, is_active')
+        .eq('system_code', baseSys)
+        .eq('is_active', true)
+        .order('code', { ascending: true }),
+      2000
+    );
 
-  if (error) {
-    console.warn('Lỗi lấy loại phiếu:', error);
+    if (!error && Array.isArray(data)) {
+      await AsyncStorage.setItem(OP_CACHE_ORDER_TYPES_KEY, JSON.stringify(data));
+      return data;
+    }
+  } catch (e) {
+    console.warn('Lấy loại phiếu từ cache:', e);
+  }
+
+  try {
+    const cached = await AsyncStorage.getItem(OP_CACHE_ORDER_TYPES_KEY);
+    return cached ? JSON.parse(cached) : [];
+  } catch {
     return [];
   }
-  return data || [];
 }
 
-// 3.1 Tải danh sách công việc mẫu (Job Templates)
+// 3.1 Tải danh sách công việc mẫu (Job Templates) (Có cache)
 export async function getJobTemplates(): Promise<JobTemplate[]> {
-  const supabase = await getSupabaseClient();
   const baseSys = await getCurrentSystemCode();
   const cleanCode = baseSys ? baseSys.trim().replace(/__solieu$/, '') : 'COLD';
 
   try {
-    const { data, error } = await (supabase as any)
-      .from('delivery_job_templates')
-      .select('*')
-      .eq('system_code', cleanCode)
-      .order('order_index', { ascending: true })
-      .order('created_at', { ascending: true });
+    const supabase = await getSupabaseClient();
+    const { data, error } = await withNetworkTimeout(
+      (supabase as any)
+        .from('delivery_job_templates')
+        .select('*')
+        .eq('system_code', cleanCode)
+        .order('order_index', { ascending: true })
+        .order('created_at', { ascending: true }),
+      2000
+    );
 
     if (!error && Array.isArray(data)) {
-      return data.map((row: any) => ({
+      const parsed = data.map((row: any) => ({
         id: row.id,
         name: row.name,
         notes: row.notes,
@@ -208,17 +446,22 @@ export async function getJobTemplates(): Promise<JobTemplate[]> {
         system_code: row.system_code,
         order_index: row.order_index,
       }));
-    }
-    if (error) {
-      console.warn('Lỗi lấy công việc mẫu SQL:', error);
+      await AsyncStorage.setItem(OP_CACHE_TEMPLATES_KEY, JSON.stringify(parsed));
+      return parsed;
     }
   } catch (e) {
-    console.warn('Lỗi query delivery_job_templates:', e);
+    console.warn('Lấy công việc mẫu từ cache:', e);
   }
-  return [];
+
+  try {
+    const cached = await AsyncStorage.getItem(OP_CACHE_TEMPLATES_KEY);
+    return cached ? JSON.parse(cached) : [];
+  } catch {
+    return [];
+  }
 }
 
-// 4. Mở ca công việc mới
+// 4. Mở ca công việc mới (Hỗ trợ mở ca ngay cả khi hoàn toàn mất mạng trong kho đông)
 export async function createShift(params: {
   jobName: string;
   notes?: string;
@@ -230,16 +473,14 @@ export async function createShift(params: {
   templateId?: string | null;
   user: any;
 }): Promise<DeliveryShift | null> {
-  const supabase = await getSupabaseClient();
   const baseSys = await getCurrentSystemCode();
   const shiftSys = getShiftSystemCode(baseSys);
-
   const openedAtIso = params.openedAt ? new Date(params.openedAt).toISOString() : new Date().toISOString();
 
   const payload = {
     system_code: shiftSys,
     company_id: params.user?.company_id || null,
-    status: 'open',
+    status: 'open' as const,
     opened_by: params.user?.id || null,
     opened_by_name: params.user?.full_name || 'Nhân viên kho',
     opened_at: openedAtIso,
@@ -255,40 +496,135 @@ export async function createShift(params: {
     }
   };
 
-  const { data, error } = await supabase
-    .from('delivery_shifts')
-    .insert([payload])
-    .select()
-    .single();
+  // 1. Thử gọi Supabase trước (timeout 2500ms)
+  try {
+    const supabase = await getSupabaseClient();
+    const { data, error } = await withNetworkTimeout(
+      supabase.from('delivery_shifts').insert([payload]).select().single(),
+      2500
+    );
 
-  if (error) {
-    console.error('Lỗi tạo ca mới:', error);
-    throw error;
+    if (!error && data) {
+      // Cập nhật vào danh sách ca đang mở cache
+      const cached = await getCachedOpenShifts();
+      await setCachedOpenShifts([data, ...cached.filter(s => s.id !== data.id)]);
+      await setCachedJournals(data.id, []);
+      return data;
+    }
+  } catch (netErr) {
+    console.warn('[Offline Mode] Mất mạng khi mở ca, chuyển sang tạo ca ngoại tuyến:', netErr);
   }
-  return data;
+
+  // 2. Chế độ Ngoại Tuyến (Offline trong kho đông)
+  const tempShiftId = `offline_shift_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+  const offlineShift: DeliveryShift = {
+    id: tempShiftId,
+    system_code: shiftSys,
+    company_id: params.user?.company_id || null,
+    status: 'open',
+    opened_by: params.user?.id || null,
+    opened_by_name: params.user?.full_name || 'Nhân viên kho',
+    opened_at: openedAtIso,
+    notes: params.jobName.trim(),
+    summary_data: {
+      job_name: params.jobName.trim(),
+      job_notes: params.notes?.trim() || null,
+      template_id: params.templateId || null,
+      pinned_products: params.pinnedProducts || [],
+      order_type_id: params.orderTypeId || null,
+      order_type_name: params.orderTypeName || null,
+      order_type_code: params.orderTypeCode || null,
+      is_offline: true,
+    }
+  };
+
+  // Lưu vào cache
+  const cached = await getCachedOpenShifts();
+  await setCachedOpenShifts([offlineShift, ...cached]);
+  await setCachedJournals(tempShiftId, []);
+
+  // Đẩy vào hàng đợi đồng bộ
+  await addToOfflineOperationsQueue({
+    type: 'CREATE_SHIFT',
+    payload: { params, offlineShift, tempShiftId },
+    shiftId: tempShiftId,
+  });
+
+  return offlineShift;
 }
 
-// 5. Tải nhật ký số liệu của 1 ca (Lọc nghiêm ngặt theo CV_ID)
+// 5. Tải nhật ký số liệu của 1 ca (Offline-First siêu tốc 0ms lag)
 export async function getShiftJournals(shiftId: string): Promise<JournalRecord[]> {
-  const supabase = await getSupabaseClient();
   const baseSys = await getCurrentSystemCode();
   const shiftSys = getShiftSystemCode(baseSys);
+  const cached = await getCachedJournals(shiftId);
+  const queue = await getOfflineOperationsQueue();
 
-  const { data, error } = await supabase
-    .from('delivery_journal')
-    .select('*')
-    .or(`system_code.eq.${shiftSys},system_code.eq.${baseSys}`)
-    .ilike('notes', `%[CV_ID: ${shiftId}]%`)
-    .order('sent_at', { ascending: false });
+  // Danh sách các lượt ghi nhận offline của ca này trong queue
+  const offlineJournalsInQueue = queue
+    .filter(q => q.type === 'SUBMIT_JOURNAL' && (q.shiftId === shiftId || q.payload?.shiftId === shiftId))
+    .map(q => q.payload?.offlineRecord as JournalRecord)
+    .filter(Boolean);
 
-  if (error) {
-    console.warn('Lỗi tải nhật ký ca:', error);
-    return [];
+  const deletedRecordIds = new Set(
+    queue.filter(q => q.type === 'DELETE_JOURNAL').map(q => q.payload?.recordId)
+  );
+
+  const updatedRecordMap = new Map<string, any>(
+    queue.filter(q => q.type === 'UPDATE_JOURNAL').map(q => [q.payload?.id, q.payload])
+  );
+
+  const buildOfflineMerged = () => {
+    const combined = [...offlineJournalsInQueue, ...cached.filter(c => !offlineJournalsInQueue.some(o => o.id === c.id))];
+    return combined
+      .filter(r => !deletedRecordIds.has(r.id))
+      .map(r => {
+        const up = updatedRecordMap.get(r.id);
+        return up ? { ...r, quantity_sent: up.quantity, unit: up.unit, notes: up.notes || r.notes } : r;
+      });
+  };
+
+  // Nếu là ca offline hoặc hệ thống đã phát hiện mất mạng: đọc ngay từ bộ nhớ máy (0ms lag)
+  if (shiftId.startsWith('offline_shift_') || isOfflineDetected()) {
+    return buildOfflineMerged();
   }
-  return data || [];
+
+  try {
+    const supabase = await getSupabaseClient();
+    const { data, error } = await withNetworkTimeout(
+      supabase
+        .from('delivery_journal')
+        .select('*')
+        .or(`system_code.eq.${shiftSys},system_code.eq.${baseSys}`)
+        .ilike('notes', `%[CV_ID: ${shiftId}]%`)
+        .order('sent_at', { ascending: false }),
+      800
+    );
+
+    if (!error && Array.isArray(data)) {
+      // Merge với các bản ghi offline
+      const merged = [
+        ...offlineJournalsInQueue,
+        ...data.filter(d => !offlineJournalsInQueue.some(o => o.id === d.id)),
+      ]
+        .filter(r => !deletedRecordIds.has(r.id))
+        .map(r => {
+          const up = updatedRecordMap.get(r.id);
+          return up ? { ...r, quantity_sent: up.quantity, unit: up.unit, notes: up.notes || r.notes } : r;
+        });
+
+      await setCachedJournals(shiftId, merged);
+      return merged;
+    }
+  } catch (e) {
+    setKnownOffline(true);
+    console.warn('[Offline Mode] Mất mạng khi tải nhật ký, dùng cache nội bộ:', e);
+  }
+
+  return buildOfflineMerged();
 }
 
-// 6. Ghi nhận 1 lượt Nhập / Xuất (Journal Entry)
+// 6. Ghi nhận 1 lượt Nhập / Xuất (Offline-First: Phản hồi 0ms, không sợ rớt mạng)
 export async function submitJournalEntry(params: {
   shift: DeliveryShift;
   product: ShiftProductItem;
@@ -298,7 +634,6 @@ export async function submitJournalEntry(params: {
   user: any;
   userNote?: string;
 }): Promise<boolean> {
-  const supabase = await getSupabaseClient();
   const baseSys = await getCurrentSystemCode();
   const shiftSys = getShiftSystemCode(baseSys);
   const isImport = params.type === 'in';
@@ -306,7 +641,6 @@ export async function submitJournalEntry(params: {
   const jobName = params.shift.summary_data?.job_name || params.shift.notes || 'Công việc';
 
   const notesTag = `[CV_ID: ${params.shift.id}] [PID: ${params.product.id}] [SKU: ${params.product.sku || ''}] [CV: ${jobName}] ${isImport ? 'Nhập kho' : 'Xuất kho'}${params.userNote ? ` - ${params.userNote.trim()}` : ''}`;
-
   const companyId = params.user?.company_id || params.shift.company_id || null;
 
   const payload = {
@@ -341,18 +675,65 @@ export async function submitJournalEntry(params: {
     created_by_name: params.user?.full_name || null,
   };
 
-  const { error } = await supabase
-    .from('delivery_journal')
-    .insert([payload]);
+  const tempJournalId = `offline_jn_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+  const localRecord: JournalRecord = {
+    id: tempJournalId,
+    delivery_code: payload.delivery_code,
+    item_name: params.product.name,
+    quantity_sent: params.quantity,
+    unit: params.unit,
+    from_department: payload.from_department,
+    to_department: payload.to_department,
+    status: payload.status,
+    notes: notesTag,
+    sent_by_name: params.user?.full_name || 'Nhân viên kho',
+    sent_at: nowIso,
+    system_code: shiftSys,
+    is_offline: true,
+  };
 
-  if (error) {
-    console.error('Lỗi ghi nhật ký:', error);
-    throw error;
+  // Cập nhật ngay vào cache nhật ký của ca để UI hiển thị số lượng tức thời
+  const currentJournals = await getCachedJournals(params.shift.id);
+  await setCachedJournals(params.shift.id, [localRecord, ...currentJournals]);
+
+  // NẾU CA LÀ CA OFFLINE HOẶC HỆ THỐNG ĐÃ PHÁT HIỆN MẤT MẠNG TRONG KHO ĐÔNG:
+  // LƯU OFFLINE VÀ TRẢ VỀ NGAY LẬP TỨC (0ms lag)!
+  if (params.shift.id.startsWith('offline_shift_') || isOfflineDetected()) {
+    await addToOfflineOperationsQueue({
+      type: 'SUBMIT_JOURNAL',
+      payload: { payload, offlineRecord: localRecord, shiftId: params.shift.id },
+      shiftId: params.shift.id,
+    });
+    return true;
   }
+
+  // Nếu chưa biết là offline, thử gửi online với timeout ngắn 700ms
+  try {
+    const supabase = await getSupabaseClient();
+    const { error } = await withNetworkTimeout(
+      supabase.from('delivery_journal').insert([payload]),
+      700
+    );
+
+    if (!error) {
+      return true;
+    }
+  } catch (e) {
+    setKnownOffline(true);
+    console.warn('[Offline Mode] Phát hiện mất mạng kho đông, chuyển sang lưu offline tức thời:', e);
+  }
+
+  // Đẩy vào hàng đợi offline
+  await addToOfflineOperationsQueue({
+    type: 'SUBMIT_JOURNAL',
+    payload: { payload, offlineRecord: localRecord, shiftId: params.shift.id },
+    shiftId: params.shift.id,
+  });
+
   return true;
 }
 
-// 6.1 Cập nhật một dòng nhật ký (Sửa lượt bấm)
+// 6.1 Cập nhật một dòng nhật ký (Sửa lượt bấm - Offline-First)
 export async function updateJournalEntry(params: {
   id: string;
   quantity: number;
@@ -361,7 +742,6 @@ export async function updateJournalEntry(params: {
   notes?: string;
   shiftId: string;
 }): Promise<boolean> {
-  const supabase = await getSupabaseClient();
   const isImport = params.type === 'in';
   const existingNotes = params.notes || '';
   const cvTag = `[CV_ID: ${params.shiftId}]`;
@@ -378,47 +758,131 @@ export async function updateJournalEntry(params: {
     notes: cleanNotes,
   };
 
-  const { error } = await supabase
-    .from('delivery_journal')
-    .update(payload)
-    .eq('id', params.id);
+  // Cập nhật cache local
+  const currentJournals = await getCachedJournals(params.shiftId);
+  const updatedList = currentJournals.map(j => {
+    if (j.id === params.id) {
+      return {
+        ...j,
+        quantity_sent: params.quantity,
+        unit: params.unit,
+        from_department: payload.from_department,
+        to_department: payload.to_department,
+        status: payload.status,
+        notes: cleanNotes,
+      };
+    }
+    return j;
+  });
+  await setCachedJournals(params.shiftId, updatedList);
 
-  if (error) {
-    console.error('Lỗi cập nhật dòng nhật ký:', error);
-    throw error;
+  // Nếu là record offline chưa từng đẩy lên mạng, cập nhật payload trong queue
+  if (params.id.startsWith('offline_jn_')) {
+    const queue = await getOfflineOperationsQueue();
+    const qItem = queue.find(q => q.type === 'SUBMIT_JOURNAL' && q.payload?.offlineRecord?.id === params.id);
+    if (qItem) {
+      qItem.payload.payload.quantity_sent = params.quantity;
+      qItem.payload.payload.unit = params.unit;
+      qItem.payload.payload.result_quantity = params.quantity;
+      qItem.payload.payload.result_unit = params.unit;
+      qItem.payload.offlineRecord.quantity_sent = params.quantity;
+      qItem.payload.offlineRecord.unit = params.unit;
+      await saveOfflineOperationsQueue(queue);
+      return true;
+    }
   }
+
+  // Thử online
+  try {
+    const supabase = await getSupabaseClient();
+    const { error } = await withNetworkTimeout(
+      supabase.from('delivery_journal').update(payload).eq('id', params.id),
+      2000
+    );
+    if (!error) return true;
+  } catch (e) {
+    console.warn('[Offline Mode] Mất mạng khi sửa nhật ký, lưu hàng đợi:', e);
+  }
+
+  await addToOfflineOperationsQueue({
+    type: 'UPDATE_JOURNAL',
+    payload: { id: params.id, payload, shiftId: params.shiftId },
+    shiftId: params.shiftId,
+  });
+
   return true;
 }
 
-// 6.2 Xóa một dòng nhật ký (Xóa lượt bấm nhầm)
-export async function deleteJournalEntry(id: string): Promise<boolean> {
-  const supabase = await getSupabaseClient();
-  const { error } = await supabase
-    .from('delivery_journal')
-    .delete()
-    .eq('id', id);
-
-  if (error) {
-    console.error('Lỗi xóa lượt ghi nhận:', error);
-    throw error;
+// 6.2 Xóa một dòng nhật ký (Xóa lượt bấm nhầm - Offline-First)
+export async function deleteJournalEntry(id: string, shiftId?: string): Promise<boolean> {
+  // Cập nhật cache local nếu biết shiftId
+  if (shiftId) {
+    const currentJournals = await getCachedJournals(shiftId);
+    await setCachedJournals(shiftId, currentJournals.filter(j => j.id !== id));
   }
+
+  // Nếu là bản ghi offline trong queue, chỉ cần xóa khỏi queue
+  if (id.startsWith('offline_jn_')) {
+    const queue = await getOfflineOperationsQueue();
+    const filtered = queue.filter(q => !(q.type === 'SUBMIT_JOURNAL' && q.payload?.offlineRecord?.id === id));
+    await saveOfflineOperationsQueue(filtered);
+    return true;
+  }
+
+  // Thử online
+  try {
+    const supabase = await getSupabaseClient();
+    const { error } = await withNetworkTimeout(
+      supabase.from('delivery_journal').delete().eq('id', id),
+      2000
+    );
+    if (!error) return true;
+  } catch (e) {
+    console.warn('[Offline Mode] Mất mạng khi xóa nhật ký, lưu hàng đợi:', e);
+  }
+
+  await addToOfflineOperationsQueue({
+    type: 'DELETE_JOURNAL',
+    payload: { recordId: id, shiftId },
+    shiftId,
+  });
+
   return true;
 }
 
 // 7. Đồng bộ danh sách ghim lên ca công việc
 export async function syncPinnedProducts(shiftId: string, currentSummary: any, pinned: ShiftProductItem[]): Promise<void> {
-  const supabase = await getSupabaseClient();
   const nextSummary = {
     ...(currentSummary || {}),
     pinned_products: pinned,
   };
-  await supabase
-    .from('delivery_shifts')
-    .update({ summary_data: nextSummary })
-    .eq('id', shiftId);
+
+  // Cập nhật cache local
+  const openShifts = await getCachedOpenShifts();
+  const updatedOpenShifts = openShifts.map(s => {
+    if (s.id === shiftId) {
+      return { ...s, summary_data: nextSummary };
+    }
+    return s;
+  });
+  await setCachedOpenShifts(updatedOpenShifts);
+
+  if (shiftId.startsWith('offline_shift_')) {
+    return;
+  }
+
+  try {
+    const supabase = await getSupabaseClient();
+    await withNetworkTimeout(
+      supabase.from('delivery_shifts').update({ summary_data: nextSummary }).eq('id', shiftId),
+      2000
+    );
+  } catch (e) {
+    console.warn('[Offline Mode] Mất mạng khi lưu ghim:', e);
+  }
 }
 
-// 8. Chốt sổ hoàn thành ca công việc
+// 8. Chốt sổ hoàn thành ca công việc (Offline-First)
 export async function closeShift(params: {
   shiftId: string;
   jobName: string;
@@ -428,10 +892,9 @@ export async function closeShift(params: {
   orderTypeCode?: string | null;
   user: any;
 }): Promise<boolean> {
-  const supabase = await getSupabaseClient();
   const closedAtIso = new Date().toISOString();
 
-  // 1. Tính tổng các mặt hàng đã nhập xuất trong ca
+  // 1. Tính tổng các mặt hàng đã nhập xuất trong ca từ cache/dữ liệu local
   const journals = await getShiftJournals(params.shiftId);
   const productsSummary: Record<string, { product_name: string; unit: string; in_qty: number; out_qty: number }> = {};
   const unitsSummary: Record<string, { sent: number; received: number }> = {};
@@ -453,7 +916,7 @@ export async function closeShift(params: {
   });
 
   const payload = {
-    status: 'closed',
+    status: 'closed' as const,
     closed_by: params.user?.id || null,
     closed_by_name: params.user?.full_name || 'Nhân viên kho',
     closed_at: closedAtIso,
@@ -471,15 +934,56 @@ export async function closeShift(params: {
     }
   };
 
-  const { error } = await supabase
-    .from('delivery_shifts')
-    .update(payload)
-    .eq('id', params.shiftId);
+  // Cập nhật chuyển ca từ open sang past trong cache
+  const openShifts = await getCachedOpenShifts();
+  const matchedShift = openShifts.find(s => s.id === params.shiftId);
+  await setCachedOpenShifts(openShifts.filter(s => s.id !== params.shiftId));
 
-  if (error) {
-    console.error('Lỗi chốt ca:', error);
-    throw error;
+  if (matchedShift) {
+    const closedShift: DeliveryShift = {
+      ...matchedShift,
+      status: 'closed',
+      closed_at: closedAtIso,
+      closed_by: payload.closed_by,
+      closed_by_name: payload.closed_by_name,
+      notes: payload.notes,
+      summary_data: {
+        ...(matchedShift.summary_data || {}),
+        ...payload.summary_data,
+      }
+    };
+    const pastShifts = await getCachedPastShifts();
+    await setCachedPastShifts([closedShift, ...pastShifts]);
   }
+
+  // Nếu là ca offline chưa từng đẩy lên Supabase
+  if (params.shiftId.startsWith('offline_shift_')) {
+    await addToOfflineOperationsQueue({
+      type: 'CLOSE_SHIFT',
+      payload: { params, payload, shiftId: params.shiftId },
+      shiftId: params.shiftId,
+    });
+    return true;
+  }
+
+  // Thử online
+  try {
+    const supabase = await getSupabaseClient();
+    const { error } = await withNetworkTimeout(
+      supabase.from('delivery_shifts').update(payload).eq('id', params.shiftId),
+      2500
+    );
+    if (!error) return true;
+  } catch (e) {
+    console.warn('[Offline Mode] Mất mạng khi chốt ca, lưu hàng đợi:', e);
+  }
+
+  await addToOfflineOperationsQueue({
+    type: 'CLOSE_SHIFT',
+    payload: { params, payload, shiftId: params.shiftId },
+    shiftId: params.shiftId,
+  });
+
   return true;
 }
 
@@ -510,12 +1014,12 @@ export function normalizeUnitMatch(s: string | null | undefined): string {
     .replace(/\(\d+(?:[.,]\d+)?k?g?\)/g, '');
 }
 
-// 9. Lấy danh mục tất cả sản phẩm
+// 9. Lấy danh mục tất cả sản phẩm (Có cache offline)
 export async function getWarehouseProducts(): Promise<ShiftProductItem[]> {
-  const supabase = await getSupabaseClient();
   const baseSys = await getCurrentSystemCode();
 
   try {
+    const supabase = await getSupabaseClient();
     let productsQuery = (supabase as any)
       .from('products')
       .select('id, name, sku, unit, weight_kg, aliases, internal_code, internal_name')
@@ -525,18 +1029,21 @@ export async function getWarehouseProducts(): Promise<ShiftProductItem[]> {
       productsQuery = productsQuery.or(`system_code.eq.${baseSys},system_type.eq.${baseSys}`);
     }
 
-    const [productsRes, unitsRes, prodUnitsRes] = await Promise.all([
-      productsQuery.limit(2000),
-      supabase.from('units').select('id, name').limit(1000),
-      supabase.from('product_units').select('product_id, unit_id, conversion_rate').limit(5000),
-    ]);
+    const [productsRes, unitsRes, prodUnitsRes] = await withNetworkTimeout(
+      Promise.all([
+        productsQuery.limit(2000),
+        supabase.from('units').select('id, name').limit(1000),
+        supabase.from('product_units').select('product_id, unit_id, conversion_rate').limit(5000),
+      ]),
+      3000
+    );
 
     const products = productsRes.data || [];
     const unitsList = unitsRes.data || [];
     const prodUnitsList = prodUnitsRes.data || [];
 
     if (products.length > 0) {
-      return products.map((product: any) => {
+      const mapped = products.map((product: any) => {
         const baseUnit = (product.unit || '').trim();
         let baseWeight = Number(product.weight_kg) || 0;
         const normBase = baseUnit.toLowerCase();
@@ -582,12 +1089,25 @@ export async function getWarehouseProducts(): Promise<ShiftProductItem[]> {
           available_units: sortedUnits.length > 0 ? sortedUnits : [finalUnit, 'Kg'],
         };
       });
+
+      // Lưu cache sản phẩm
+      await AsyncStorage.setItem(OP_CACHE_PRODUCTS_KEY, JSON.stringify(mapped));
+      return mapped;
     }
   } catch (e) {
-    console.warn('Lỗi lấy danh mục sản phẩm từ Supabase:', e);
+    console.warn('Lỗi lấy danh mục sản phẩm từ Supabase, thử nạp từ cache:', e);
   }
 
-  // Fallback từ Cache SQLite nếu offline
+  // 1. Fallback đọc từ AsyncStorage
+  try {
+    const raw = await AsyncStorage.getItem(OP_CACHE_PRODUCTS_KEY);
+    if (raw) {
+      const list = JSON.parse(raw);
+      if (Array.isArray(list) && list.length > 0) return list;
+    }
+  } catch {}
+
+  // 2. Fallback từ Cache SQLite nếu có
   try {
     const cached = await getProductsFromCache();
     if (cached && cached.length > 0) {
@@ -606,24 +1126,171 @@ export async function getWarehouseProducts(): Promise<ShiftProductItem[]> {
   return [];
 }
 
-// 10. Tải danh sách các đợt chốt tạm (Sub-Shifts)
-export async function getSubShifts(shiftId: string): Promise<SubShift[]> {
+// ── TIẾN TRÌNH ĐỒNG BỘ TOÀN BỘ SỐ LIỆU OFFLINE LÊN MÁY CHỦ (SYNC ENGINE) ──
+export async function syncOperationsOfflineQueue(): Promise<{
+  success: boolean;
+  syncedCount: number;
+  message?: string;
+}> {
+  const queue = await getOfflineOperationsQueue();
+  if (queue.length === 0) {
+    return { success: true, syncedCount: 0, message: 'Không có dữ liệu chờ đồng bộ' };
+  }
+
   const supabase = await getSupabaseClient();
+  let syncedCount = 0;
+  const tempShiftIdMap: Record<string, string> = {};
+  const remainingQueue: OperationsQueueAction[] = [];
+
+  for (let i = 0; i < queue.length; i++) {
+    const action = queue[i];
+    try {
+      if (action.type === 'CREATE_SHIFT') {
+        const { params, tempShiftId } = action.payload;
+        const baseSys = await getCurrentSystemCode();
+        const shiftSys = getShiftSystemCode(baseSys);
+        const openedAtIso = params.openedAt ? new Date(params.openedAt).toISOString() : new Date().toISOString();
+
+        const insertPayload = {
+          system_code: shiftSys,
+          company_id: params.user?.company_id || null,
+          status: 'open',
+          opened_by: params.user?.id || null,
+          opened_by_name: params.user?.full_name || 'Nhân viên kho',
+          opened_at: openedAtIso,
+          notes: params.jobName.trim(),
+          summary_data: {
+            job_name: params.jobName.trim(),
+            job_notes: params.notes?.trim() || null,
+            template_id: params.templateId || null,
+            pinned_products: params.pinnedProducts || [],
+            order_type_id: params.orderTypeId || null,
+            order_type_name: params.orderTypeName || null,
+            order_type_code: params.orderTypeCode || null,
+          }
+        };
+
+        const { data: realShift, error: createErr } = await supabase
+          .from('delivery_shifts')
+          .insert([insertPayload])
+          .select()
+          .single();
+
+        if (createErr) throw createErr;
+
+        if (realShift) {
+          tempShiftIdMap[tempShiftId] = realShift.id;
+
+          // Cập nhật lại cache open shifts với ID thật
+          const openShifts = await getCachedOpenShifts();
+          const replaced = openShifts.map(s => (s.id === tempShiftId ? realShift : s));
+          await setCachedOpenShifts(replaced);
+
+          // Chuyển cache nhật ký sang ID thật
+          const jns = await getCachedJournals(tempShiftId);
+          await setCachedJournals(realShift.id, jns);
+          await AsyncStorage.removeItem(`${OP_CACHE_JOURNALS_PREFIX}${tempShiftId}`);
+
+          syncedCount++;
+        }
+      } else if (action.type === 'SUBMIT_JOURNAL') {
+        const { payload: origPayload, shiftId } = action.payload;
+        const realShiftId = tempShiftIdMap[shiftId] || shiftId;
+
+        // Thay thế CV_ID nếu ca này vừa được sync ID mới
+        let finalNotes = origPayload.notes;
+        if (finalNotes && finalNotes.includes(shiftId)) {
+          finalNotes = finalNotes.replace(`[CV_ID: ${shiftId}]`, `[CV_ID: ${realShiftId}]`);
+        }
+
+        const journalPayload = {
+          ...origPayload,
+          notes: finalNotes,
+        };
+
+        const { error: jnErr } = await supabase.from('delivery_journal').insert([journalPayload]);
+        if (jnErr) throw jnErr;
+        syncedCount++;
+      } else if (action.type === 'UPDATE_JOURNAL') {
+        const { id, payload } = action.payload;
+        const { error: upErr } = await supabase.from('delivery_journal').update(payload).eq('id', id);
+        if (upErr) throw upErr;
+        syncedCount++;
+      } else if (action.type === 'DELETE_JOURNAL') {
+        const { recordId } = action.payload;
+        const { error: delErr } = await supabase.from('delivery_journal').delete().eq('id', recordId);
+        if (delErr) throw delErr;
+        syncedCount++;
+      } else if (action.type === 'CLOSE_SHIFT') {
+        const { payload, shiftId } = action.payload;
+        const realShiftId = tempShiftIdMap[shiftId] || shiftId;
+
+        const { error: closeErr } = await supabase
+          .from('delivery_shifts')
+          .update(payload)
+          .eq('id', realShiftId);
+
+        if (closeErr) throw closeErr;
+        syncedCount++;
+      }
+    } catch (err: any) {
+      console.warn(`[Sync Error] Không thể đồng bộ action ${action.type}:`, err?.message);
+      remainingQueue.push({
+        ...action,
+        retryCount: (action.retryCount || 0) + 1,
+      });
+    }
+  }
+
+  await saveOfflineOperationsQueue(remainingQueue);
+
+  // Nạp lại danh sách ca online mới nhất
+  await getOpenShifts();
+  await getPastShifts();
+
+  return {
+    success: remainingQueue.length === 0,
+    syncedCount,
+    message: remainingQueue.length === 0
+      ? `Đã đồng bộ ${syncedCount} lượt số liệu lên máy chủ thành công!`
+      : `Đã đồng bộ ${syncedCount} lượt, còn ${remainingQueue.length} lượt đang chờ thử lại`,
+  };
+}
+
+// 10. Tải danh sách các đợt chốt tạm (Sub-Shifts - Siêu tốc có Cache & Offline)
+export async function getSubShifts(shiftId: string): Promise<SubShift[]> {
+  const cached = await getCachedSubShifts(shiftId);
+
+  // Nếu là ca offline hoặc đã phát hiện mất mạng: đọc cache ngay lập tức (0ms lag)
+  if (shiftId.startsWith('offline_shift_') || isOfflineDetected()) {
+    return cached;
+  }
+
   const baseSys = await getCurrentSystemCode();
   const shiftSys = getShiftSystemCode(baseSys);
 
-  const { data, error } = await supabase
-    .from('delivery_sub_shifts')
-    .select('*')
-    .eq('shift_id', shiftId)
-    .or(`system_code.eq.${shiftSys},system_code.eq.${baseSys}`)
-    .order('sub_shift_number', { ascending: true });
+  try {
+    const supabase = await getSupabaseClient();
+    const { data, error } = await withNetworkTimeout(
+      supabase
+        .from('delivery_sub_shifts')
+        .select('*')
+        .eq('shift_id', shiftId)
+        .or(`system_code.eq.${shiftSys},system_code.eq.${baseSys}`)
+        .order('sub_shift_number', { ascending: true }),
+      800
+    );
 
-  if (error) {
-    console.warn('Lỗi lấy danh sách chốt tạm:', error);
-    return [];
+    if (!error && Array.isArray(data)) {
+      await setCachedSubShifts(shiftId, data);
+      return data;
+    }
+  } catch (error) {
+    setKnownOffline(true);
+    console.warn('Lỗi lấy danh sách chốt tạm từ mạng, dùng cache nội bộ:', error);
   }
-  return data || [];
+
+  return cached;
 }
 
 // 11. Thực hiện Chốt Ca Tạm (Interim Close / Sub-Shift)

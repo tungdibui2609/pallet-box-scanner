@@ -36,6 +36,8 @@ import {
   aggregateShiftsUnits,
   AggregatedProductItem,
   AggregatedUnitItem,
+  getPendingOperationsCount,
+  syncOperationsOfflineQueue,
 } from '../services/operationsService';
 import OperationNumberPadModal from '../components/operations/OperationNumberPadModal';
 import OpenJobModal from '../components/operations/OpenJobModal';
@@ -233,11 +235,14 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
   const [loadingDailyJournals, setLoadingDailyJournals] = useState<boolean>(false);
   // Modal Lịch chọn ngày
   const [isCalendarModalVisible, setIsCalendarModalVisible] = useState<boolean>(false);
-  const [calendarTarget, setCalendarTarget] = useState<'multi' | 'from' | 'to'>('multi');
+  const [calendarTarget, setCalendarTarget] = useState<'multi' | 'from' | 'to' | 'prodFrom' | 'prodTo'>('multi');
 
   // Cho Báo Cáo Theo Sản Phẩm:
   const [prodSearchQuery, setProdSearchQuery] = useState<string>('');
-  const [prodTimeFilter, setProdTimeFilter] = useState<'7days' | '30days' | 'all'>('7days');
+  const [prodTimeFilter, setProdTimeFilter] = useState<'today' | 'yesterday' | '7days' | '30days' | 'range' | 'all'>('7days');
+  const [prodRangeFrom, setProdRangeFrom] = useState<string>('');
+  const [prodRangeTo, setProdRangeTo] = useState<string>('');
+  const [selectedProductFilter, setSelectedProductFilter] = useState<string>('all');
   const [prodJournals, setProdJournals] = useState<JournalRecord[]>([]);
   const [loadingProdJournals, setLoadingProdJournals] = useState<boolean>(false);
   const [expandProdProducts, setExpandProdProducts] = useState<boolean>(true);
@@ -256,6 +261,40 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
 
   // Ô tìm kiếm công việc trong tab Đã hoàn thành (áp dụng cho Tùy Chọn & Từng CV)
   const [doneSearchQuery, setDoneSearchQuery] = useState<string>('');
+
+  // ── TRẠNG THÁI OFFLINE & ĐỒNG BỘ DỮ LIỆU KHO ĐÔNG ──
+  const [pendingSyncCount, setPendingSyncCount] = useState<number>(0);
+  const [isSyncingOffline, setIsSyncingOffline] = useState<boolean>(false);
+
+  const refreshPendingCount = useCallback(async () => {
+    try {
+      const count = await getPendingOperationsCount();
+      setPendingSyncCount(count);
+    } catch {}
+  }, []);
+
+  const handleSyncOfflineNow = async () => {
+    if (isSyncingOffline) return;
+    setIsSyncingOffline(true);
+    try {
+      const res = await syncOperationsOfflineQueue();
+      await refreshPendingCount();
+      await handleRefresh();
+      Alert.alert('Đồng bộ số liệu', res.message || 'Đã đồng bộ thành công!');
+    } catch (err: any) {
+      Alert.alert('Đồng bộ thất bại', err?.message || 'Không thể kết nối đến máy chủ. Bạn vui lòng thử lại sau khi có mạng!');
+    } finally {
+      setIsSyncingOffline(false);
+    }
+  };
+
+  useEffect(() => {
+    refreshPendingCount();
+    const interval = setInterval(() => {
+      refreshPendingCount();
+    }, 10000);
+    return () => clearInterval(interval);
+  }, [refreshPendingCount]);
 
   // Mở xem chi tiết báo cáo ca đã hoàn thành
   const handleOpenPastShiftDetail = async (shift: DeliveryShift) => {
@@ -421,6 +460,8 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
         setSelectedDates([latest]);
         setDailyRangeFrom(latest);
         setDailyRangeTo(latest);
+        setProdRangeFrom(latest);
+        setProdRangeTo(latest);
       }
     }
   }, [availableDates]);
@@ -507,17 +548,77 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
   }, [dailyProductRows]);
 
   // ── LOGIC CHO BÁO CÁO THEO SẢN PHẨM ──
-  // Danh sách các ca theo mốc thời gian lọc
+  // Danh sách các ca theo mốc thời gian lọc cho Báo Cáo Sản Phẩm
   const prodShifts = useMemo(() => {
     if (prodTimeFilter === 'all') return pastShifts;
-    const now = new Date();
-    const daysAgo = prodTimeFilter === '7days' ? 7 : 30;
-    const cutoff = new Date(now.getTime() - daysAgo * 24 * 60 * 60 * 1000);
-    return pastShifts.filter(s => {
-      const t = new Date(s.closed_at || s.opened_at || 0);
-      return t >= cutoff;
-    });
-  }, [pastShifts, prodTimeFilter]);
+    const today = new Date();
+    const todayKey = getShiftDateString(today.toISOString());
+
+    if (prodTimeFilter === 'today') {
+      return pastShifts.filter(s => {
+        const op = getShiftDateString(s.opened_at);
+        const cl = getShiftDateString(s.closed_at);
+        return op === todayKey || cl === todayKey;
+      });
+    }
+
+    if (prodTimeFilter === 'yesterday') {
+      const yest = new Date();
+      yest.setDate(today.getDate() - 1);
+      const yestKey = getShiftDateString(yest.toISOString());
+      return pastShifts.filter(s => {
+        const op = getShiftDateString(s.opened_at);
+        const cl = getShiftDateString(s.closed_at);
+        return op === yestKey || cl === yestKey;
+      });
+    }
+
+    if (prodTimeFilter === '7days' || prodTimeFilter === '30days') {
+      const days = prodTimeFilter === '7days' ? 7 : 30;
+      const past = new Date();
+      past.setDate(today.getDate() - (days - 1));
+      const minD = getShiftDateString(past.toISOString());
+      const maxD = todayKey;
+      return pastShifts.filter(s => {
+        const op = getShiftDateString(s.opened_at);
+        const cl = getShiftDateString(s.closed_at);
+        const opMatch = op ? (op >= minD && op <= maxD) : false;
+        const clMatch = cl ? (cl >= minD && cl <= maxD) : false;
+        return opMatch || clMatch;
+      });
+    }
+
+    if (prodTimeFilter === 'range') {
+      if (!prodRangeFrom || !prodRangeTo) return pastShifts;
+      const minD = prodRangeFrom <= prodRangeTo ? prodRangeFrom : prodRangeTo;
+      const maxD = prodRangeFrom <= prodRangeTo ? prodRangeTo : prodRangeFrom;
+      return pastShifts.filter(s => {
+        const op = getShiftDateString(s.opened_at);
+        const cl = getShiftDateString(s.closed_at);
+        const opMatch = op ? (op >= minD && op <= maxD) : false;
+        const clMatch = cl ? (cl >= minD && cl <= maxD) : false;
+        return opMatch || clMatch;
+      });
+    }
+
+    return pastShifts;
+  }, [pastShifts, prodTimeFilter, prodRangeFrom, prodRangeTo]);
+
+  // Tiêu đề báo cáo theo sản phẩm
+  const prodReportTitle = useMemo(() => {
+    if (prodTimeFilter === 'today') return 'Hôm nay';
+    if (prodTimeFilter === 'yesterday') return 'Hôm qua';
+    if (prodTimeFilter === '7days') return '7 ngày qua';
+    if (prodTimeFilter === '30days') return '30 ngày qua';
+    if (prodTimeFilter === 'range') {
+      const minD = prodRangeFrom <= prodRangeTo ? prodRangeFrom : prodRangeTo;
+      const maxD = prodRangeFrom <= prodRangeTo ? prodRangeTo : prodRangeFrom;
+      if (!minD || !maxD) return 'Khoảng ngày';
+      if (minD === maxD) return formatDateDisplay(minD);
+      return `${formatDateDisplay(minD).slice(0, 5)} ➔ ${formatDateDisplay(maxD).slice(0, 5)}`;
+    }
+    return 'Tất cả';
+  }, [prodTimeFilter, prodRangeFrom, prodRangeTo]);
 
   // Tự động tải nhật ký các ca cho Báo Cáo Theo Sản Phẩm
   useEffect(() => {
@@ -540,18 +641,37 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
     }
   }, [activeTab, doneMode, prodShifts]);
 
-  // Tính số liệu mặt hàng tổng hợp cho Báo Cáo Theo Sản Phẩm có lọc từ khóa
-  const productReportRows = useMemo(() => {
-    const rows = aggregateShiftsProducts(prodShifts, prodJournals, allProducts);
-    if (!prodSearchQuery.trim()) return rows;
-    const q = prodSearchQuery.trim().toLowerCase();
-    return rows.filter(r => {
-      const name = (r.product_name || '').toLowerCase();
-      const sku = (r.sku || '').toLowerCase();
-      const jobs = (r.jobs || []).map(j => j.name.toLowerCase()).join(' ');
-      return name.includes(q) || sku.includes(q) || jobs.includes(q);
+  // Danh sách tất cả các mặt hàng thô đã gom được
+  const rawProductReportRows = useMemo(() => {
+    return aggregateShiftsProducts(prodShifts, prodJournals, allProducts);
+  }, [prodShifts, prodJournals, allProducts]);
+
+  // Danh sách các tên sản phẩm độc nhất để làm thanh chip lọc nhanh
+  const uniqueProductNames = useMemo(() => {
+    const names = new Set<string>();
+    rawProductReportRows.forEach(r => {
+      if (r.product_name) names.add(r.product_name.trim());
     });
-  }, [prodShifts, prodJournals, allProducts, prodSearchQuery]);
+    return Array.from(names);
+  }, [rawProductReportRows]);
+
+  // Lọc theo từ khóa tìm kiếm và chip sản phẩm đã chọn
+  const productReportRows = useMemo(() => {
+    let rows = rawProductReportRows;
+    if (selectedProductFilter !== 'all') {
+      rows = rows.filter(r => (r.product_name || '').trim() === selectedProductFilter);
+    }
+    if (prodSearchQuery.trim()) {
+      const q = prodSearchQuery.trim().toLowerCase();
+      rows = rows.filter(r => {
+        const name = (r.product_name || '').toLowerCase();
+        const sku = (r.sku || '').toLowerCase();
+        const jobs = (r.jobs || []).map(j => j.name.toLowerCase()).join(' ');
+        return name.includes(q) || sku.includes(q) || jobs.includes(q);
+      });
+    }
+    return rows;
+  }, [rawProductReportRows, selectedProductFilter, prodSearchQuery]);
 
   const productReportUnits = useMemo(() => {
     return aggregateShiftsUnits(productReportRows);
@@ -765,9 +885,31 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
     setIsPadVisible(true);
   };
 
-  // Ghi nhận lượt bấm từ Bàn phím số
+  // Ghi nhận lượt bấm từ Bàn phím số (Siêu tốc 0ms lag - Optimistic Update cho Kho Đông)
   const handlePadSubmit = async ({ quantity, unit, type, note }: { quantity: number; unit: string; type: 'in' | 'out'; note?: string }) => {
     if (!selectedShift || !padProduct) return;
+
+    // 1. CẬP NHẬT TỨC THỜI TRÊN GIAO DIỆN (OPTIMISTIC UI UPDATE - 0ms phản hồi tức thì)
+    const tempId = `opt_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+    const optRecord: JournalRecord = {
+      id: tempId,
+      delivery_code: `SO-LIEU-${Date.now().toString().slice(-6)}`,
+      item_name: padProduct.name,
+      quantity_sent: quantity,
+      unit: unit,
+      from_department: type === 'in' ? 'Sản xuất' : 'Kho',
+      to_department: type === 'in' ? 'Kho' : 'Sản xuất',
+      status: type === 'in' ? 'received_by_warehouse' : 'received_by_production',
+      notes: `[CV_ID: ${selectedShift.id}] [PID: ${padProduct.id}] [SKU: ${padProduct.sku || ''}] ${type === 'in' ? 'Nhập kho' : 'Xuất kho'}${note ? ` - ${note}` : ''}`,
+      sent_by_name: user?.full_name || 'Nhân viên kho',
+      sent_at: new Date().toISOString(),
+      system_code: selectedShift.system_code,
+      is_offline: true,
+    };
+
+    setAllJournals(prev => [optRecord, ...prev]);
+
+    // 2. GHI NHẬN VÀO BỘ NHỚ LOCAL & HÀNG ĐỢI OFFLINE
     try {
       await submitJournalEntry({
         shift: selectedShift,
@@ -778,12 +920,11 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
         user,
         userNote: note,
       });
-      // Nạp lại dữ liệu ca ngay sau khi bấm
-      await reloadShiftData(selectedShift.id);
+      refreshPendingCount();
+      // Nạp ngầm để đồng bộ dữ liệu chuẩn
+      reloadShiftData(selectedShift.id);
     } catch (err: any) {
-      console.warn('Lỗi ghi nhật ký:', err);
-      Alert.alert('Lỗi ghi nhận', err?.message || 'Không thể lưu lượt nhập/xuất này.');
-      throw err;
+      console.warn('Lỗi ghi nhật ký ngầm:', err);
     }
   };
 
@@ -805,6 +946,7 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
       shiftId: selectedShift.id,
     });
     await reloadShiftData(selectedShift.id);
+    refreshPendingCount();
   };
 
   // Xóa lượt ghi nhận
@@ -819,10 +961,11 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
           style: 'destructive',
           onPress: async () => {
             try {
-              await deleteJournalEntry(recordId);
+              await deleteJournalEntry(recordId, selectedShift?.id);
               if (selectedShift) {
                 await reloadShiftData(selectedShift.id);
               }
+              refreshPendingCount();
             } catch (err: any) {
               Alert.alert('Lỗi xóa', err?.message || 'Không thể xóa lượt ghi nhận này.');
             }
@@ -844,6 +987,39 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
 
   return (
     <View style={styles.container}>
+      {/* ── BANNER NGOẠI TUYẾN / ĐỒNG BỘ DỮ LIỆU KHO ĐÔNG ── */}
+      {pendingSyncCount > 0 && (
+        <View style={styles.offlineSyncBanner}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7, flex: 1 }}>
+            <Ionicons name="cloud-offline" size={20} color="#fbbf24" />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.offlineSyncTitle} numberOfLines={1}>
+                Chế độ Ngoại Tuyến (Kho Đông Lạnh)
+              </Text>
+              <Text style={styles.offlineSyncSub} numberOfLines={1}>
+                {pendingSyncCount} thao tác đang lưu trong máy, sẵn sàng đẩy lên mạng
+              </Text>
+            </View>
+          </View>
+
+          <TouchableOpacity
+            onPress={handleSyncOfflineNow}
+            disabled={isSyncingOffline}
+            style={styles.offlineSyncBtn}
+            activeOpacity={0.7}
+          >
+            {isSyncingOffline ? (
+              <ActivityIndicator size="small" color="#fff" />
+            ) : (
+              <>
+                <Ionicons name="cloud-upload" size={14} color="#fff" />
+                <Text style={styles.offlineSyncBtnText}>Đồng bộ ngay</Text>
+              </>
+            )}
+          </TouchableOpacity>
+        </View>
+      )}
+
       {/* ── TOP NAV BAR: TABS ĐANG LÀM / ĐÃ HOÀN THÀNH ── */}
       <View style={styles.topTabBar}>
         <TouchableOpacity
@@ -2326,26 +2502,97 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
           {/* ── CHẾ ĐỘ 2.5: BÁO CÁO THEO SẢN PHẨM ── */}
           {doneMode === 'product' && (
             <View style={{ flex: 1 }}>
-              {/* Thanh chọn thời gian cho sản phẩm */}
-              <View style={styles.dailySubModeBar}>
-                {(['7days', '30days', 'all'] as const).map(tf => {
-                  const label = tf === '7days' ? '7 ngày qua' : tf === '30days' ? '30 ngày' : 'Tất cả';
-                  const isActive = prodTimeFilter === tf;
-                  return (
-                    <TouchableOpacity
-                      key={tf}
-                      onPress={() => setProdTimeFilter(tf)}
-                      style={[styles.dailySubModeBtn, isActive && styles.dailySubModeBtnActive]}
-                      activeOpacity={0.7}
-                    >
-                      <Ionicons name="time-outline" size={13} color={isActive ? '#818cf8' : '#94a3b8'} />
-                      <Text style={[styles.dailySubModeBtnText, isActive && styles.dailySubModeBtnTextActive]}>
-                        {label}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })}
+              {/* Thanh chọn mốc thời gian cuộn ngang */}
+              <View style={styles.dailyDateBar}>
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={{ paddingHorizontal: 12, gap: 6, alignItems: 'center' }}
+                >
+                  {(
+                    [
+                      { id: 'today', label: 'Hôm nay', icon: 'today-outline' },
+                      { id: 'yesterday', label: 'Hôm qua', icon: 'time-outline' },
+                      { id: '7days', label: '7 ngày qua', icon: 'calendar-outline' },
+                      { id: '30days', label: '30 ngày', icon: 'calendar-outline' },
+                      { id: 'range', label: 'Khoảng ngày', icon: 'swap-horizontal' },
+                      { id: 'all', label: 'Tất cả', icon: 'infinite-outline' },
+                    ] as const
+                  ).map(item => {
+                    const isActive = prodTimeFilter === item.id;
+                    return (
+                      <TouchableOpacity
+                        key={item.id}
+                        onPress={() => setProdTimeFilter(item.id)}
+                        style={[styles.datePill, isActive && styles.datePillActive]}
+                        activeOpacity={0.7}
+                      >
+                        <Ionicons
+                          name={item.icon as any}
+                          size={12}
+                          color={isActive ? '#fff' : '#818cf8'}
+                        />
+                        <Text style={[styles.datePillText, isActive && styles.datePillTextActive]}>
+                          {item.label}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </ScrollView>
               </View>
+
+              {/* Nếu chọn chế độ Khoảng ngày (range): hiển thị thanh chọn Từ ngày ➔ Đến ngày */}
+              {prodTimeFilter === 'range' && (
+                <View style={styles.dailyRangeBar}>
+                  <View style={styles.dailyRangeInputsRow}>
+                    <View style={styles.dailyRangeInputBox}>
+                      <Text style={styles.dailyRangeLabel}>Từ ngày (YYYY-MM-DD):</Text>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                        <TextInput
+                          style={[styles.dailyRangeInput, { flex: 1 }]}
+                          value={prodRangeFrom}
+                          onChangeText={setProdRangeFrom}
+                          placeholder="2026-11-01"
+                          placeholderTextColor="#64748b"
+                        />
+                        <TouchableOpacity
+                          onPress={() => {
+                            setCalendarTarget('prodFrom');
+                            setIsCalendarModalVisible(true);
+                          }}
+                          style={styles.calendarPickIconBtn}
+                          activeOpacity={0.7}
+                        >
+                          <Ionicons name="calendar" size={16} color="#818cf8" />
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+                    <Ionicons name="arrow-forward" size={14} color="#64748b" style={{ marginTop: 14 }} />
+                    <View style={styles.dailyRangeInputBox}>
+                      <Text style={styles.dailyRangeLabel}>Đến ngày (YYYY-MM-DD):</Text>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                        <TextInput
+                          style={[styles.dailyRangeInput, { flex: 1 }]}
+                          value={prodRangeTo}
+                          onChangeText={setProdRangeTo}
+                          placeholder="2026-11-12"
+                          placeholderTextColor="#64748b"
+                        />
+                        <TouchableOpacity
+                          onPress={() => {
+                            setCalendarTarget('prodTo');
+                            setIsCalendarModalVisible(true);
+                          }}
+                          style={styles.calendarPickIconBtn}
+                          activeOpacity={0.7}
+                        >
+                          <Ionicons name="calendar" size={16} color="#818cf8" />
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+                  </View>
+                </View>
+              )}
 
               {/* Ô tìm kiếm mặt hàng */}
               <View style={styles.customSearchBar}>
@@ -2363,6 +2610,59 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
                   </TouchableOpacity>
                 ) : null}
               </View>
+
+              {/* Thanh chip lọc nhanh theo từng sản phẩm cụ thể nếu có nhiều SP */}
+              {uniqueProductNames.length > 1 && (
+                <View style={{ paddingVertical: 4, backgroundColor: '#0f172a' }}>
+                  <ScrollView
+                    horizontal
+                    showsHorizontalScrollIndicator={false}
+                    contentContainerStyle={{ paddingHorizontal: 12, gap: 6 }}
+                  >
+                    <TouchableOpacity
+                      onPress={() => setSelectedProductFilter('all')}
+                      style={[
+                        styles.dailyQuickBtn,
+                        selectedProductFilter === 'all' && { backgroundColor: '#4f46e5', borderColor: '#6366f1' },
+                      ]}
+                      activeOpacity={0.7}
+                    >
+                      <Text
+                        style={[
+                          styles.dailyQuickBtnText,
+                          selectedProductFilter === 'all' && { color: '#fff', fontWeight: '800' },
+                        ]}
+                      >
+                        Tất cả SP ({uniqueProductNames.length})
+                      </Text>
+                    </TouchableOpacity>
+                    {uniqueProductNames.map(pName => {
+                      const isSelected = selectedProductFilter === pName;
+                      return (
+                        <TouchableOpacity
+                          key={pName}
+                          onPress={() => setSelectedProductFilter(isSelected ? 'all' : pName)}
+                          style={[
+                            styles.dailyQuickBtn,
+                            isSelected && { backgroundColor: '#4f46e5', borderColor: '#6366f1' },
+                          ]}
+                          activeOpacity={0.7}
+                        >
+                          <Text
+                            style={[
+                              styles.dailyQuickBtnText,
+                              isSelected && { color: '#fff', fontWeight: '800' },
+                            ]}
+                            numberOfLines={1}
+                          >
+                            {pName}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </ScrollView>
+                </View>
+              )}
 
               {/* Nội dung báo cáo theo sản phẩm */}
               {loadingProdJournals ? (
@@ -2392,7 +2692,7 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
                       </View>
                       <View style={{ flex: 1 }}>
                         <Text style={styles.reportHeaderTitle}>
-                          Báo Cáo Theo Mặt Hàng
+                          Báo Cáo Sản Phẩm: {prodReportTitle}
                         </Text>
                         <Text style={styles.reportHeaderSub}>
                           Phát sinh: <Text style={{ color: '#38bdf8', fontWeight: '700' }}>{productReportRows.length} mặt hàng</Text> • Gom từ: <Text style={{ color: '#818cf8', fontWeight: '700' }}>{prodShifts.length} công việc</Text>
@@ -2792,7 +3092,7 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
         title={
           calendarTarget === 'multi'
             ? 'Chọn các ngày cần xem báo cáo'
-            : calendarTarget === 'from'
+            : calendarTarget === 'from' || calendarTarget === 'prodFrom'
               ? 'Chọn mốc Từ ngày'
               : 'Chọn mốc Đến ngày'
         }
@@ -2801,7 +3101,11 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
             ? selectedDates
             : calendarTarget === 'from'
               ? [dailyRangeFrom].filter(Boolean)
-              : [dailyRangeTo].filter(Boolean)
+              : calendarTarget === 'to'
+                ? [dailyRangeTo].filter(Boolean)
+                : calendarTarget === 'prodFrom'
+                  ? [prodRangeFrom].filter(Boolean)
+                  : [prodRangeTo].filter(Boolean)
         }
         availableDateKeys={availableDates.map(d => d.dateKey)}
         onConfirm={dates => {
@@ -2811,6 +3115,10 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
             if (dates[0]) setDailyRangeFrom(dates[0]);
           } else if (calendarTarget === 'to') {
             if (dates[0]) setDailyRangeTo(dates[0]);
+          } else if (calendarTarget === 'prodFrom') {
+            if (dates[0]) setProdRangeFrom(dates[0]);
+          } else if (calendarTarget === 'prodTo') {
+            if (dates[0]) setProdRangeTo(dates[0]);
           }
         }}
       />
@@ -4288,6 +4596,45 @@ const styles = StyleSheet.create({
   customFloatingBtnText: {
     color: '#fff',
     fontSize: 13,
+    fontWeight: '800',
+  },
+  offlineSyncBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: 'rgba(245, 158, 11, 0.12)',
+    borderColor: 'rgba(245, 158, 11, 0.35)',
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    marginHorizontal: 10,
+    marginTop: 6,
+    marginBottom: 4,
+    gap: 8,
+  },
+  offlineSyncTitle: {
+    color: '#fbbf24',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  offlineSyncSub: {
+    color: '#94a3b8',
+    fontSize: 11,
+    marginTop: 2,
+  },
+  offlineSyncBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#d97706',
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+  },
+  offlineSyncBtnText: {
+    color: '#fff',
+    fontSize: 11,
     fontWeight: '800',
   },
 });
