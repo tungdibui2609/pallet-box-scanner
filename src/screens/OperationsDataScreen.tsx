@@ -6,6 +6,7 @@ import {
   TouchableOpacity,
   TextInput,
   FlatList,
+  ScrollView,
   ActivityIndicator,
   Alert,
   RefreshControl,
@@ -21,6 +22,7 @@ import {
   getOpenShifts,
   getPastShifts,
   getShiftJournals,
+  getMultiShiftJournals,
   submitJournalEntry,
   updateJournalEntry,
   deleteJournalEntry,
@@ -30,6 +32,10 @@ import {
   getSubShifts,
   reopenShift,
   deleteShift,
+  aggregateShiftsProducts,
+  aggregateShiftsUnits,
+  AggregatedProductItem,
+  AggregatedUnitItem,
 } from '../services/operationsService';
 import OperationNumberPadModal from '../components/operations/OperationNumberPadModal';
 import OpenJobModal from '../components/operations/OpenJobModal';
@@ -37,10 +43,44 @@ import CloseJobModal from '../components/operations/CloseJobModal';
 import InterimCloseModal from '../components/operations/InterimCloseModal';
 import ProductHistoryModal from '../components/operations/ProductHistoryModal';
 import EditJournalModal from '../components/operations/EditJournalModal';
+import PastShiftDetailModal from '../components/operations/PastShiftDetailModal';
+import AggregatedReportModal from '../components/operations/AggregatedReportModal';
+import { CalendarPickerModal } from '../components/operations/CalendarPickerModal';
 import { matchSearch, calculateSearchScore } from '../utils/searchUtils';
 
 interface OperationsDataScreenProps {
   isActive?: boolean;
+}
+
+// Helper lấy date key (YYYY-MM-DD) từ ISO string
+function getShiftDateString(isoString?: string | null): string {
+  if (!isoString) return '';
+  try {
+    const d = new Date(isoString);
+    if (isNaN(d.getTime())) return '';
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  } catch {
+    return '';
+  }
+}
+
+// Helper định dạng ngày hiển thị (DD/MM/YYYY)
+function formatDateDisplay(dateKey: string): string {
+  if (!dateKey) return '';
+  const parts = dateKey.split('-');
+  if (parts.length === 3) {
+    return `${parts[2]}/${parts[1]}/${parts[0]}`;
+  }
+  return dateKey;
+}
+
+// Helper kiểm tra ca có đóng sang ngày hôm sau không
+function isOvernightShift(shift?: DeliveryShift | null): boolean {
+  if (!shift?.opened_at || !shift?.closed_at) return false;
+  return getShiftDateString(shift.opened_at) !== getShiftDateString(shift.closed_at);
 }
 
 // Helper kiểm tra đơn vị có phải là Thùng không
@@ -182,6 +222,59 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
   const [pastShiftJournals, setPastShiftJournals] = useState<JournalRecord[]>([]);
   const [loadingPastDetail, setLoadingPastDetail] = useState(false);
 
+  // Chế độ xem trong Tab Đã Hoàn Thành: 'single' (Từng CV) | 'daily' (Theo Ngày) | 'product' (Theo Sản Phẩm) | 'custom' (Tùy Chọn)
+  const [doneMode, setDoneMode] = useState<'single' | 'daily' | 'product' | 'custom'>('single');
+  // Chế độ lọc trong tab Theo Ngày: 'multi' (Tùy chọn nhiều ngày) | 'range' (Mốc thời gian Từ - Đến)
+  const [dailyFilterType, setDailyFilterType] = useState<'multi' | 'range'>('multi');
+  const [selectedDates, setSelectedDates] = useState<string[]>([]);
+  const [dailyRangeFrom, setDailyRangeFrom] = useState<string>('');
+  const [dailyRangeTo, setDailyRangeTo] = useState<string>('');
+  const [dailyJournals, setDailyJournals] = useState<JournalRecord[]>([]);
+  const [loadingDailyJournals, setLoadingDailyJournals] = useState<boolean>(false);
+  // Modal Lịch chọn ngày
+  const [isCalendarModalVisible, setIsCalendarModalVisible] = useState<boolean>(false);
+  const [calendarTarget, setCalendarTarget] = useState<'multi' | 'from' | 'to'>('multi');
+
+  // Cho Báo Cáo Theo Sản Phẩm:
+  const [prodSearchQuery, setProdSearchQuery] = useState<string>('');
+  const [prodTimeFilter, setProdTimeFilter] = useState<'7days' | '30days' | 'all'>('7days');
+  const [prodJournals, setProdJournals] = useState<JournalRecord[]>([]);
+  const [loadingProdJournals, setLoadingProdJournals] = useState<boolean>(false);
+  const [expandProdProducts, setExpandProdProducts] = useState<boolean>(true);
+  const [expandProdUnits, setExpandProdUnits] = useState<boolean>(true);
+
+  // Danh sách công việc được tích chọn trong chế độ Tùy Chọn
+  const [selectedCustomShiftIds, setSelectedCustomShiftIds] = useState<string[]>([]);
+  const [isCustomReportModalVisible, setIsCustomReportModalVisible] = useState<boolean>(false);
+  const [customJournals, setCustomJournals] = useState<JournalRecord[]>([]);
+  const [loadingCustomJournals, setLoadingCustomJournals] = useState<boolean>(false);
+
+  // Trạng thái mở rộng các khối trong Báo Cáo Theo Ngày (Mặc định đều Mở)
+  const [expandDailyProducts, setExpandDailyProducts] = useState<boolean>(true);
+  const [expandDailyUnits, setExpandDailyUnits] = useState<boolean>(true);
+  const [expandDailyShifts, setExpandDailyShifts] = useState<boolean>(true);
+
+  // Ô tìm kiếm công việc trong tab Đã hoàn thành (áp dụng cho Tùy Chọn & Từng CV)
+  const [doneSearchQuery, setDoneSearchQuery] = useState<string>('');
+
+  // Mở xem chi tiết báo cáo ca đã hoàn thành
+  const handleOpenPastShiftDetail = async (shift: DeliveryShift) => {
+    setSelectedPastShift(shift);
+    setLoadingPastDetail(true);
+    try {
+      const [jList, sList] = await Promise.all([
+        getShiftJournals(shift.id),
+        getSubShifts(shift.id),
+      ]);
+      setPastShiftJournals(jList);
+      setPastSubShifts(sList);
+    } catch (e) {
+      console.warn('Lỗi lấy chi tiết ca hoàn thành:', e);
+    } finally {
+      setLoadingPastDetail(false);
+    }
+  };
+
   const enrichProducts = useCallback((list: ShiftProductItem[], catalog: ShiftProductItem[]): ShiftProductItem[] => {
     if (!catalog || catalog.length === 0) return list;
     return list.map(item => {
@@ -245,7 +338,7 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
       const [shifts, prods, past] = await Promise.all([
         getOpenShifts(),
         getWarehouseProducts(),
-        getPastShifts(20),
+        getPastShifts(100),
       ]);
       setOpenShifts(shifts);
       setAllProducts(prods);
@@ -272,7 +365,7 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
       const [shifts, prods, past] = await Promise.all([
         getOpenShifts(),
         getWarehouseProducts(),
-        getPastShifts(20),
+        getPastShifts(100),
       ]);
       setOpenShifts(shifts);
       setAllProducts(prods);
@@ -295,6 +388,228 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
       setRefreshing(false);
     }
   }, [selectedShift, selectShift]);
+
+  // Danh sách các ngày phát sinh từ pastShifts (Gom cả ngày mở và ngày đóng ca như Web)
+  const availableDates = useMemo(() => {
+    const dateMap: Record<string, number> = {};
+    pastShifts.forEach(s => {
+      const op = getShiftDateString(s.opened_at);
+      const cl = getShiftDateString(s.closed_at);
+      const shiftDates = new Set<string>();
+      if (op) shiftDates.add(op);
+      if (cl) shiftDates.add(cl);
+
+      shiftDates.forEach(d => {
+        dateMap[d] = (dateMap[d] || 0) + 1;
+      });
+    });
+
+    return Object.keys(dateMap)
+      .sort((a, b) => b.localeCompare(a))
+      .map(key => ({
+        dateKey: key,
+        label: formatDateDisplay(key),
+        count: dateMap[key],
+      }));
+  }, [pastShifts]);
+
+  // Tự động gán ngày mặc định khi chuyển sang tab daily hoặc khi danh sách ngày thay đổi
+  useEffect(() => {
+    if (availableDates.length > 0) {
+      if (selectedDates.length === 0) {
+        const latest = availableDates[0].dateKey;
+        setSelectedDates([latest]);
+        setDailyRangeFrom(latest);
+        setDailyRangeTo(latest);
+      }
+    }
+  }, [availableDates]);
+
+  // Danh sách các công việc trong các ngày được chọn hoặc khoảng ngày (Khớp chuẩn 100% như Web)
+  const dailyShifts = useMemo(() => {
+    if (dailyFilterType === 'multi') {
+      if (selectedDates.length === 0) return [];
+      return pastShifts.filter(s => {
+        const op = getShiftDateString(s.opened_at);
+        const cl = getShiftDateString(s.closed_at);
+        return (op && selectedDates.includes(op)) || (cl && selectedDates.includes(cl));
+      });
+    } else {
+      if (!dailyRangeFrom || !dailyRangeTo) return [];
+      const minD = dailyRangeFrom <= dailyRangeTo ? dailyRangeFrom : dailyRangeTo;
+      const maxD = dailyRangeFrom <= dailyRangeTo ? dailyRangeTo : dailyRangeFrom;
+      return pastShifts.filter(s => {
+        const op = getShiftDateString(s.opened_at);
+        const cl = getShiftDateString(s.closed_at);
+        const opMatch = op ? (op >= minD && op <= maxD) : false;
+        const clMatch = cl ? (cl >= minD && cl <= maxD) : false;
+        return opMatch || clMatch;
+      });
+    }
+  }, [pastShifts, dailyFilterType, selectedDates, dailyRangeFrom, dailyRangeTo]);
+
+  // Tiêu đề báo cáo theo ngày hiển thị thông minh
+  const dailyReportTitle = useMemo(() => {
+    if (dailyFilterType === 'multi') {
+      if (selectedDates.length === 0) return 'Chưa chọn ngày nào';
+      if (selectedDates.length === 1) return `Báo Cáo Ngày: ${formatDateDisplay(selectedDates[0])}`;
+      const sorted = [...selectedDates].sort().reverse();
+      const listStr = sorted.slice(0, 3).map(d => formatDateDisplay(d).slice(0, 5)).join(', ');
+      return `Báo Cáo ${selectedDates.length} Ngày: ${listStr}${sorted.length > 3 ? '...' : ''}`;
+    } else {
+      const minD = dailyRangeFrom <= dailyRangeTo ? dailyRangeFrom : dailyRangeTo;
+      const maxD = dailyRangeFrom <= dailyRangeTo ? dailyRangeTo : dailyRangeFrom;
+      if (!minD || !maxD) return 'Chưa chọn mốc thời gian';
+      if (minD === maxD) return `Báo Cáo Ngày: ${formatDateDisplay(minD)}`;
+      return `Báo Cáo: ${formatDateDisplay(minD)} ➔ ${formatDateDisplay(maxD)}`;
+    }
+  }, [dailyFilterType, selectedDates, dailyRangeFrom, dailyRangeTo]);
+
+  const toggleSelectDate = (dateKey: string) => {
+    setSelectedDates(prev => {
+      if (prev.includes(dateKey)) {
+        if (prev.length === 1) return prev; // giữ lại ít nhất 1 ngày
+        return prev.filter(d => d !== dateKey);
+      } else {
+        return [...prev, dateKey];
+      }
+    });
+  };
+
+  // Tự động tải nhật ký các ca trong ngày khi đổi ngày hoặc danh sách ca đổi
+  useEffect(() => {
+    if (activeTab === 'done' && doneMode === 'daily' && dailyShifts.length > 0) {
+      let cancelled = false;
+      setLoadingDailyJournals(true);
+      getMultiShiftJournals(dailyShifts.map(s => s.id))
+        .then(lines => {
+          if (!cancelled) setDailyJournals(lines);
+        })
+        .catch(err => {
+          console.warn('Lỗi tải nhật ký ca trong ngày:', err);
+        })
+        .finally(() => {
+          if (!cancelled) setLoadingDailyJournals(false);
+        });
+      return () => { cancelled = true; };
+    } else if (dailyShifts.length === 0) {
+      setDailyJournals([]);
+    }
+  }, [activeTab, doneMode, dailyShifts]);
+
+  // Tính số liệu tổng hợp cho ngày
+  const dailyProductRows = useMemo(() => {
+    return aggregateShiftsProducts(dailyShifts, dailyJournals, allProducts);
+  }, [dailyShifts, dailyJournals, allProducts]);
+
+  const dailyUnitRows = useMemo(() => {
+    return aggregateShiftsUnits(dailyProductRows);
+  }, [dailyProductRows]);
+
+  // ── LOGIC CHO BÁO CÁO THEO SẢN PHẨM ──
+  // Danh sách các ca theo mốc thời gian lọc
+  const prodShifts = useMemo(() => {
+    if (prodTimeFilter === 'all') return pastShifts;
+    const now = new Date();
+    const daysAgo = prodTimeFilter === '7days' ? 7 : 30;
+    const cutoff = new Date(now.getTime() - daysAgo * 24 * 60 * 60 * 1000);
+    return pastShifts.filter(s => {
+      const t = new Date(s.closed_at || s.opened_at || 0);
+      return t >= cutoff;
+    });
+  }, [pastShifts, prodTimeFilter]);
+
+  // Tự động tải nhật ký các ca cho Báo Cáo Theo Sản Phẩm
+  useEffect(() => {
+    if (activeTab === 'done' && doneMode === 'product' && prodShifts.length > 0) {
+      let cancelled = false;
+      setLoadingProdJournals(true);
+      getMultiShiftJournals(prodShifts.map(s => s.id))
+        .then(lines => {
+          if (!cancelled) setProdJournals(lines);
+        })
+        .catch(err => {
+          console.warn('Lỗi tải nhật ký ca theo sản phẩm:', err);
+        })
+        .finally(() => {
+          if (!cancelled) setLoadingProdJournals(false);
+        });
+      return () => { cancelled = true; };
+    } else if (prodShifts.length === 0) {
+      setProdJournals([]);
+    }
+  }, [activeTab, doneMode, prodShifts]);
+
+  // Tính số liệu mặt hàng tổng hợp cho Báo Cáo Theo Sản Phẩm có lọc từ khóa
+  const productReportRows = useMemo(() => {
+    const rows = aggregateShiftsProducts(prodShifts, prodJournals, allProducts);
+    if (!prodSearchQuery.trim()) return rows;
+    const q = prodSearchQuery.trim().toLowerCase();
+    return rows.filter(r => {
+      const name = (r.product_name || '').toLowerCase();
+      const sku = (r.sku || '').toLowerCase();
+      const jobs = (r.jobs || []).map(j => j.name.toLowerCase()).join(' ');
+      return name.includes(q) || sku.includes(q) || jobs.includes(q);
+    });
+  }, [prodShifts, prodJournals, allProducts, prodSearchQuery]);
+
+  const productReportUnits = useMemo(() => {
+    return aggregateShiftsUnits(productReportRows);
+  }, [productReportRows]);
+
+  // Danh sách công việc đã hoàn thành sau khi lọc tìm kiếm
+  const filteredPastShifts = useMemo(() => {
+    if (!doneSearchQuery.trim()) return pastShifts;
+    const q = doneSearchQuery.trim().toLowerCase();
+    return pastShifts.filter(s => {
+      const name = (s.summary_data?.job_name || s.notes || '').toLowerCase();
+      const user = (s.closed_by_name || s.opened_by_name || '').toLowerCase();
+      const orderType = (s.summary_data?.order_type_name || s.summary_data?.order_type_code || '').toLowerCase();
+      const notes = (s.summary_data?.job_notes || s.notes || '').toLowerCase();
+      const prods = Object.values(s.summary_data?.products_summary || {})
+        .map((p: any) => (p.product_name || '').toLowerCase())
+        .join(' ');
+      return name.includes(q) || user.includes(q) || orderType.includes(q) || notes.includes(q) || prods.includes(q);
+    });
+  }, [pastShifts, doneSearchQuery]);
+
+  // Các ca được chọn trong chế độ Tùy Chọn
+  const selectedCustomShifts = useMemo(() => {
+    return pastShifts.filter(s => selectedCustomShiftIds.includes(s.id));
+  }, [pastShifts, selectedCustomShiftIds]);
+
+  const toggleSelectAllCustom = () => {
+    const visibleIds = filteredPastShifts.map(s => s.id);
+    const isAllVisibleSelected = visibleIds.length > 0 && visibleIds.every(id => selectedCustomShiftIds.includes(id));
+    if (isAllVisibleSelected) {
+      setSelectedCustomShiftIds(prev => prev.filter(id => !visibleIds.includes(id)));
+    } else {
+      setSelectedCustomShiftIds(prev => Array.from(new Set([...prev, ...visibleIds])));
+    }
+  };
+
+  const toggleSelectCustomShift = (shiftId: string) => {
+    setSelectedCustomShiftIds(prev =>
+      prev.includes(shiftId) ? prev.filter(id => id !== shiftId) : [...prev, shiftId]
+    );
+  };
+
+  const handleOpenCustomReport = async () => {
+    if (selectedCustomShiftIds.length === 0) {
+      Alert.alert('Chưa chọn công việc', 'Vui lòng tích chọn ít nhất 1 công việc để xem báo cáo gộp.');
+      return;
+    }
+    setIsCustomReportModalVisible(true);
+    setLoadingCustomJournals(true);
+    try {
+      const lines = await getMultiShiftJournals(selectedCustomShiftIds);
+      setCustomJournals(lines);
+    } catch (e) {
+      console.warn('Lỗi tải nhật ký báo cáo tùy chọn:', e);
+    } finally {
+      setLoadingCustomJournals(false);
+    }
+  };
 
   // Nạp dữ liệu ban đầu duy nhất 1 lần khi mount
   useEffect(() => {
@@ -1173,70 +1488,7 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
                     {/* ── NỘI DUNG TAB 2: BÁO CÁO TỔNG HỢP (THU & MỞ RỘNG THEO CARD, MẶC ĐỊNH LÀ THU) ── */}
                     {reportTab === 'summary' && (
                       <View style={styles.summaryTabContainer}>
-                        {/* 1. Tổng hợp theo Đơn vị tính */}
-                        {(() => {
-                          const unitMap: Record<string, { unit: string; inQty: number; outQty: number }> = {};
-                          allJournals.forEach(j => {
-                            const rawUnit = (j.unit || 'Thùng (20kg)').trim();
-                            const u = standardizeUnitLabel(rawUnit);
-                            if (!unitMap[u]) unitMap[u] = { unit: u, inQty: 0, outQty: 0 };
-                            const isImport = j.to_department === 'Kho' || (j.notes && j.notes.includes('Nhập kho'));
-                            const qty = Number(j.quantity_sent || (j as any).result_quantity || 0);
-                            if (isImport) unitMap[u].inQty += qty;
-                            else unitMap[u].outQty += qty;
-                          });
-                          const list = Object.values(unitMap);
-
-                          return (
-                            <View style={styles.accordionCard}>
-                              <TouchableOpacity
-                                onPress={() => setExpandUnitSummary(prev => !prev)}
-                                style={styles.accordionHeader}
-                                activeOpacity={0.7}
-                              >
-                                <View style={styles.accordionHeaderLeft}>
-                                  <Ionicons name="layers-outline" size={16} color="#818cf8" />
-                                  <Text style={styles.accordionTitle}>1. Tổng hợp theo Đơn Vị Tính</Text>
-                                  <View style={styles.accordionBadge}>
-                                    <Text style={styles.accordionBadgeText}>{list.length} ĐVT</Text>
-                                  </View>
-                                </View>
-                                <Ionicons
-                                  name={expandUnitSummary ? 'chevron-up' : 'chevron-down'}
-                                  size={18}
-                                  color="#94a3b8"
-                                />
-                              </TouchableOpacity>
-
-                              {expandUnitSummary && (
-                                <View style={styles.accordionBody}>
-                                  {list.length === 0 ? (
-                                    <Text style={styles.summaryEmptyText}>Chưa có phát sinh số liệu trong ca.</Text>
-                                  ) : (
-                                    <View style={styles.summaryTable}>
-                                      <View style={styles.summaryTableHeader}>
-                                        <Text style={[styles.summaryTh, { flex: 2 }]}>Đơn vị</Text>
-                                        <Text style={[styles.summaryTh, { flex: 1, textAlign: 'right', color: '#4ade80' }]}>Nhập (+)</Text>
-                                        <Text style={[styles.summaryTh, { flex: 1, textAlign: 'right', color: '#f87171' }]}>Xuất (-)</Text>
-                                        <Text style={[styles.summaryTh, { flex: 1, textAlign: 'right', color: '#818cf8' }]}>Tồn ca</Text>
-                                      </View>
-                                      {list.map(row => (
-                                        <View key={row.unit} style={styles.summaryTableRow}>
-                                          <Text style={[styles.summaryTd, { flex: 2, fontWeight: '700', color: '#f8fafc' }]}>{row.unit}</Text>
-                                          <Text style={[styles.summaryTd, { flex: 1, textAlign: 'right', color: '#4ade80', fontWeight: '800' }]}>+{row.inQty}</Text>
-                                          <Text style={[styles.summaryTd, { flex: 1, textAlign: 'right', color: '#f87171', fontWeight: '800' }]}>-{row.outQty}</Text>
-                                          <Text style={[styles.summaryTd, { flex: 1, textAlign: 'right', color: '#818cf8', fontWeight: '800' }]}>{row.inQty - row.outQty}</Text>
-                                        </View>
-                                      ))}
-                                    </View>
-                                  )}
-                                </View>
-                              )}
-                            </View>
-                          );
-                        })()}
-
-                        {/* 2. Tổng hợp theo Sản phẩm */}
+                        {/* 1. Chi tiết theo Mặt hàng */}
                         {(() => {
                           const prodMap: Record<string, { name: string; unit: string; inQty: number; outQty: number }> = {};
                           allJournals.forEach(j => {
@@ -1262,7 +1514,7 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
                               >
                                 <View style={styles.accordionHeaderLeft}>
                                   <Ionicons name="cube-outline" size={16} color="#38bdf8" />
-                                  <Text style={styles.accordionTitle}>2. Chi tiết theo Mặt Hàng</Text>
+                                  <Text style={styles.accordionTitle}>1. Chi tiết theo Mặt Hàng</Text>
                                   <View style={styles.accordionBadge}>
                                     <Text style={styles.accordionBadgeText}>{list.length} SP</Text>
                                   </View>
@@ -1297,6 +1549,69 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
                                           </View>
                                           <Text style={[styles.summaryTd, { flex: 1, textAlign: 'right', color: '#4ade80', fontWeight: '800' }]}>+{row.inQty}</Text>
                                           <Text style={[styles.summaryTd, { flex: 1, textAlign: 'right', color: '#f87171', fontWeight: '800' }]}>-{row.outQty}</Text>
+                                        </View>
+                                      ))}
+                                    </View>
+                                  )}
+                                </View>
+                              )}
+                            </View>
+                          );
+                        })()}
+
+                        {/* 2. Tổng hợp theo Đơn vị tính */}
+                        {(() => {
+                          const unitMap: Record<string, { unit: string; inQty: number; outQty: number }> = {};
+                          allJournals.forEach(j => {
+                            const rawUnit = (j.unit || 'Thùng (20kg)').trim();
+                            const u = standardizeUnitLabel(rawUnit);
+                            if (!unitMap[u]) unitMap[u] = { unit: u, inQty: 0, outQty: 0 };
+                            const isImport = j.to_department === 'Kho' || (j.notes && j.notes.includes('Nhập kho'));
+                            const qty = Number(j.quantity_sent || (j as any).result_quantity || 0);
+                            if (isImport) unitMap[u].inQty += qty;
+                            else unitMap[u].outQty += qty;
+                          });
+                          const list = Object.values(unitMap);
+
+                          return (
+                            <View style={styles.accordionCard}>
+                              <TouchableOpacity
+                                onPress={() => setExpandUnitSummary(prev => !prev)}
+                                style={styles.accordionHeader}
+                                activeOpacity={0.7}
+                              >
+                                <View style={styles.accordionHeaderLeft}>
+                                  <Ionicons name="layers-outline" size={16} color="#818cf8" />
+                                  <Text style={styles.accordionTitle}>2. Tổng hợp theo Đơn Vị Tính</Text>
+                                  <View style={styles.accordionBadge}>
+                                    <Text style={styles.accordionBadgeText}>{list.length} ĐVT</Text>
+                                  </View>
+                                </View>
+                                <Ionicons
+                                  name={expandUnitSummary ? 'chevron-up' : 'chevron-down'}
+                                  size={18}
+                                  color="#94a3b8"
+                                />
+                              </TouchableOpacity>
+
+                              {expandUnitSummary && (
+                                <View style={styles.accordionBody}>
+                                  {list.length === 0 ? (
+                                    <Text style={styles.summaryEmptyText}>Chưa có phát sinh số liệu trong ca.</Text>
+                                  ) : (
+                                    <View style={styles.summaryTable}>
+                                      <View style={styles.summaryTableHeader}>
+                                        <Text style={[styles.summaryTh, { flex: 2 }]}>Đơn vị</Text>
+                                        <Text style={[styles.summaryTh, { flex: 1, textAlign: 'right', color: '#4ade80' }]}>Nhập (+)</Text>
+                                        <Text style={[styles.summaryTh, { flex: 1, textAlign: 'right', color: '#f87171' }]}>Xuất (-)</Text>
+                                        <Text style={[styles.summaryTh, { flex: 1, textAlign: 'right', color: '#818cf8' }]}>Tồn ca</Text>
+                                      </View>
+                                      {list.map(row => (
+                                        <View key={row.unit} style={styles.summaryTableRow}>
+                                          <Text style={[styles.summaryTd, { flex: 2, fontWeight: '700', color: '#f8fafc' }]}>{row.unit}</Text>
+                                          <Text style={[styles.summaryTd, { flex: 1, textAlign: 'right', color: '#4ade80', fontWeight: '800' }]}>+{row.inQty}</Text>
+                                          <Text style={[styles.summaryTd, { flex: 1, textAlign: 'right', color: '#f87171', fontWeight: '800' }]}>-{row.outQty}</Text>
+                                          <Text style={[styles.summaryTd, { flex: 1, textAlign: 'right', color: '#818cf8', fontWeight: '800' }]}>{row.inQty - row.outQty}</Text>
                                         </View>
                                       ))}
                                     </View>
@@ -1361,48 +1676,1025 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
         </>
       ) : (
         /* ── TAB ĐÃ HOÀN THÀNH ── */
-        <FlatList
-          data={pastShifts}
-          keyExtractor={item => item.id}
-          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor="#6366f1" />}
-          contentContainerStyle={{ padding: 12, paddingBottom: 100 }}
-          ListEmptyComponent={
-            <View style={styles.centerBox}>
-              <Text style={{ color: '#64748b', fontSize: 13 }}>Chưa có công việc nào hoàn thành.</Text>
-            </View>
-          }
-          renderItem={({ item }) => {
-            const name = item.summary_data?.job_name || item.notes || 'Công việc';
-            const closeTime = item.closed_at ? new Date(item.closed_at).toLocaleDateString('vi-VN', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit' }) : '-';
-            const orderType = item.summary_data?.order_type_name;
-            const recordsCount = item.summary_data?.total_records || 0;
+        <View style={{ flex: 1 }}>
+          {/* Thanh chuyển chế độ: Từng CV | Theo Ngày | Tùy Chọn */}
+          <View style={styles.doneModeBar}>
+            <TouchableOpacity
+              style={[styles.doneModeBtn, doneMode === 'single' && styles.doneModeBtnActive]}
+              onPress={() => setDoneMode('single')}
+              activeOpacity={0.7}
+            >
+              <Ionicons
+                name="document-text-outline"
+                size={14}
+                color={doneMode === 'single' ? '#818cf8' : '#94a3b8'}
+              />
+              <Text style={[styles.doneModeBtnText, doneMode === 'single' && styles.doneModeBtnTextActive]}>
+                Từng CV ({pastShifts.length})
+              </Text>
+            </TouchableOpacity>
 
-            return (
-              <View style={styles.doneCard}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-                  <Text style={styles.doneJobName} numberOfLines={1}>{name}</Text>
-                  <View style={styles.doneBadge}>
-                    <Text style={styles.doneBadgeText}>Hoàn thành</Text>
-                  </View>
-                </View>
+            <TouchableOpacity
+              style={[styles.doneModeBtn, doneMode === 'daily' && styles.doneModeBtnActive]}
+              onPress={() => setDoneMode('daily')}
+              activeOpacity={0.7}
+            >
+              <Ionicons
+                name="calendar-outline"
+                size={14}
+                color={doneMode === 'daily' ? '#818cf8' : '#94a3b8'}
+              />
+              <Text style={[styles.doneModeBtnText, doneMode === 'daily' && styles.doneModeBtnTextActive]}>
+                Theo Ngày
+              </Text>
+            </TouchableOpacity>
 
-                <View style={{ marginTop: 6, gap: 3 }}>
-                  <Text style={styles.doneDetailText}>
-                    <Ionicons name="time-outline" size={12} color="#94a3b8" /> Đóng lúc: {closeTime} • Bởi: {item.closed_by_name || 'Nhân viên'}
-                  </Text>
-                  {orderType && (
-                    <Text style={[styles.doneDetailText, { color: '#818cf8', fontWeight: '700' }]}>
-                      <Ionicons name="document-text-outline" size={12} color="#818cf8" /> Loại phiếu: {item.summary_data?.order_type_code ? `${item.summary_data.order_type_code} - ` : ''}{orderType}
-                    </Text>
-                  )}
-                  <Text style={styles.doneDetailText}>
-                    <Ionicons name="layers-outline" size={12} color="#94a3b8" /> Tổng phát sinh: {recordsCount} lượt
-                  </Text>
-                </View>
+            <TouchableOpacity
+              style={[styles.doneModeBtn, doneMode === 'product' && styles.doneModeBtnActive]}
+              onPress={() => setDoneMode('product')}
+              activeOpacity={0.7}
+            >
+              <Ionicons
+                name="cube-outline"
+                size={14}
+                color={doneMode === 'product' ? '#818cf8' : '#94a3b8'}
+              />
+              <Text style={[styles.doneModeBtnText, doneMode === 'product' && styles.doneModeBtnTextActive]}>
+                Theo SP
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.doneModeBtn, doneMode === 'custom' && styles.doneModeBtnActive]}
+              onPress={() => setDoneMode('custom')}
+              activeOpacity={0.7}
+            >
+              <Ionicons
+                name="checkbox-outline"
+                size={14}
+                color={doneMode === 'custom' ? '#818cf8' : '#94a3b8'}
+              />
+              <Text style={[styles.doneModeBtnText, doneMode === 'custom' && styles.doneModeBtnTextActive]}>
+                Tùy Chọn {selectedCustomShiftIds.length > 0 ? `(${selectedCustomShiftIds.length})` : ''}
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* ── CHẾ ĐỘ 1: TỪNG CÔNG VIỆC ── */}
+          {doneMode === 'single' && (
+            <View style={{ flex: 1 }}>
+              {/* Ô TÌM KIẾM CÔNG VIỆC */}
+              <View style={styles.customSearchBar}>
+                <Ionicons name="search" size={15} color="#818cf8" />
+                <TextInput
+                  style={styles.customSearchInput}
+                  value={doneSearchQuery}
+                  onChangeText={setDoneSearchQuery}
+                  placeholder="Tìm tên công việc, người làm, loại phiếu..."
+                  placeholderTextColor="#64748b"
+                />
+                {doneSearchQuery ? (
+                  <TouchableOpacity onPress={() => setDoneSearchQuery('')} style={styles.doneClearSearchBtn}>
+                    <Ionicons name="close-circle" size={16} color="#94a3b8" />
+                  </TouchableOpacity>
+                ) : null}
               </View>
-            );
-          }}
-        />
+
+              <FlatList
+                data={filteredPastShifts}
+                keyExtractor={item => item.id}
+                refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor="#6366f1" />}
+                contentContainerStyle={{ padding: 12, paddingBottom: 100 }}
+                ListEmptyComponent={
+                  <View style={styles.centerBox}>
+                    <Text style={{ color: '#64748b', fontSize: 13 }}>
+                      {doneSearchQuery.trim()
+                        ? `Không tìm thấy công việc nào khớp với "${doneSearchQuery}".`
+                        : 'Chưa có công việc nào hoàn thành.'}
+                    </Text>
+                  </View>
+                }
+                renderItem={({ item }) => {
+                  const name = item.summary_data?.job_name || item.notes || 'Công việc';
+                  const closeTime = item.closed_at ? new Date(item.closed_at).toLocaleDateString('vi-VN', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit' }) : '-';
+                  const orderType = item.summary_data?.order_type_name;
+                  const recordsCount = item.summary_data?.total_records || 0;
+
+                  return (
+                    <TouchableOpacity
+                      style={styles.doneCard}
+                      onPress={() => handleOpenPastShiftDetail(item)}
+                      activeOpacity={0.7}
+                    >
+                      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                        <Text style={styles.doneJobName} numberOfLines={1}>{name}</Text>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                          <View style={styles.doneBadge}>
+                            <Text style={styles.doneBadgeText}>Hoàn thành</Text>
+                          </View>
+                          <Ionicons name="chevron-forward" size={16} color="#94a3b8" />
+                        </View>
+                      </View>
+
+                      <View style={{ marginTop: 6, gap: 3 }}>
+                        {isOvernightShift(item) && (
+                          <View style={styles.overnightBadge}>
+                            <Ionicons name="moon" size={10} color="#fbbf24" />
+                            <Text style={styles.overnightBadgeText}>
+                              Đóng ca vào ngày hôm sau ({formatDateTime(item.closed_at)})
+                            </Text>
+                          </View>
+                        )}
+                        <Text style={styles.doneDetailText}>
+                          <Ionicons name="time-outline" size={12} color="#94a3b8" /> Đóng lúc: {closeTime} • Bởi: {item.closed_by_name || 'Nhân viên'}
+                        </Text>
+                        {orderType && (
+                          <Text style={[styles.doneDetailText, { color: '#818cf8', fontWeight: '700' }]}>
+                            <Ionicons name="document-text-outline" size={12} color="#818cf8" /> Loại phiếu: {item.summary_data?.order_type_code ? `${item.summary_data.order_type_code} - ` : ''}{orderType}
+                          </Text>
+                        )}
+                        <Text style={styles.doneDetailText}>
+                          <Ionicons name="layers-outline" size={12} color="#94a3b8" /> Tổng phát sinh: {recordsCount} lượt (Bấm để xem chi tiết)
+                        </Text>
+                      </View>
+                    </TouchableOpacity>
+                  );
+                }}
+              />
+            </View>
+          )}
+
+          {/* ── CHẾ ĐỘ 2: BÁO CÁO THEO NGÀY / KHOẢNG NGÀY / NHIỀU NGÀY ── */}
+          {doneMode === 'daily' && (
+            <View style={{ flex: 1 }}>
+              {/* Thanh chuyển chế độ: Tùy chọn nhiều ngày HOẶC Khoảng ngày */}
+              <View style={styles.dailySubModeBar}>
+                <TouchableOpacity
+                  onPress={() => setDailyFilterType('multi')}
+                  style={[styles.dailySubModeBtn, dailyFilterType === 'multi' && styles.dailySubModeBtnActive]}
+                  activeOpacity={0.7}
+                >
+                  <Ionicons name="calendar" size={13} color={dailyFilterType === 'multi' ? '#818cf8' : '#94a3b8'} />
+                  <Text style={[styles.dailySubModeBtnText, dailyFilterType === 'multi' && styles.dailySubModeBtnTextActive]}>
+                    Chọn nhiều ngày {selectedDates.length > 0 && `(${selectedDates.length})`}
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  onPress={() => setDailyFilterType('range')}
+                  style={[styles.dailySubModeBtn, dailyFilterType === 'range' && styles.dailySubModeBtnActive]}
+                  activeOpacity={0.7}
+                >
+                  <Ionicons name="swap-horizontal" size={13} color={dailyFilterType === 'range' ? '#818cf8' : '#94a3b8'} />
+                  <Text style={[styles.dailySubModeBtnText, dailyFilterType === 'range' && styles.dailySubModeBtnTextActive]}>
+                    Khoảng ngày (Từ - Đến)
+                  </Text>
+                </TouchableOpacity>
+              </View>
+
+              {/* Điều khiển thời gian chi tiết */}
+              {dailyFilterType === 'multi' ? (
+                <View style={styles.dailyDateBar}>
+                  {/* Hàng nút bấm nhanh */}
+                  <View style={styles.dailyQuickActionsRow}>
+                    <Text style={styles.dailyQuickLabel}>
+                      Bấm ngày để chọn/bỏ chọn:
+                    </Text>
+                    <View style={{ flexDirection: 'row', gap: 6, alignItems: 'center' }}>
+                      <TouchableOpacity
+                        onPress={() => setSelectedDates(availableDates.map(d => d.dateKey))}
+                        style={styles.dailyQuickBtn}
+                        activeOpacity={0.7}
+                      >
+                        <Text style={styles.dailyQuickBtnText}>Tất cả ({availableDates.length})</Text>
+                      </TouchableOpacity>
+                      {availableDates.length > 0 && (
+                        <TouchableOpacity
+                          onPress={() => setSelectedDates([availableDates[0].dateKey])}
+                          style={styles.dailyQuickBtn}
+                          activeOpacity={0.7}
+                        >
+                          <Text style={styles.dailyQuickBtnText}>Gần nhất</Text>
+                        </TouchableOpacity>
+                      )}
+                      {/* Nút Thêm ngày khác mở Modal Lịch */}
+                      <TouchableOpacity
+                        onPress={() => {
+                          setCalendarTarget('multi');
+                          setIsCalendarModalVisible(true);
+                        }}
+                        style={[styles.dailyQuickBtn, { backgroundColor: '#4f46e5', borderColor: '#6366f1', flexDirection: 'row', alignItems: 'center', gap: 4 }]}
+                        activeOpacity={0.7}
+                      >
+                        <Ionicons name="calendar" size={11} color="#fff" />
+                        <Text style={[styles.dailyQuickBtnText, { color: '#fff', fontWeight: '800' }]}>+ Thêm ngày</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+
+                  {/* Thanh cuộn chọn nhiều ngày */}
+                  <ScrollView
+                    horizontal
+                    showsHorizontalScrollIndicator={false}
+                    contentContainerStyle={{ paddingHorizontal: 12, gap: 8, paddingVertical: 4 }}
+                  >
+                    {/* Thẻ Thêm ngày luôn nằm đầu danh sách để bấm ngay */}
+                    <TouchableOpacity
+                      onPress={() => {
+                        setCalendarTarget('multi');
+                        setIsCalendarModalVisible(true);
+                      }}
+                      style={[styles.datePill, { borderColor: '#818cf8', borderStyle: 'dashed' }]}
+                      activeOpacity={0.7}
+                    >
+                      <Ionicons name="add-circle" size={14} color="#818cf8" />
+                      <Text style={[styles.datePillText, { color: '#818cf8', fontWeight: '800' }]}>
+                        + Thêm ngày
+                      </Text>
+                    </TouchableOpacity>
+
+                    {/* Các ngày người dùng tự chọn từ lịch ngoài danh sách availableDates */}
+                    {selectedDates
+                      .filter(d => !availableDates.some(ad => ad.dateKey === d))
+                      .map(d => (
+                        <TouchableOpacity
+                          key={d}
+                          onPress={() => toggleSelectDate(d)}
+                          style={[styles.datePill, styles.datePillActive]}
+                          activeOpacity={0.7}
+                        >
+                          <Ionicons name="checkmark-circle" size={13} color="#fff" />
+                          <Text style={[styles.datePillText, styles.datePillTextActive]}>
+                            {formatDateDisplay(d)}
+                          </Text>
+                          <View style={[styles.datePillBadge, styles.datePillBadgeActive]}>
+                            <Text style={[styles.datePillBadgeText, styles.datePillBadgeTextActive]}>
+                              Tùy chọn
+                            </Text>
+                          </View>
+                        </TouchableOpacity>
+                      ))}
+
+                    {/* Danh sách các ngày có dữ liệu phát sinh */}
+                    {availableDates.map(d => {
+                      const isSelected = selectedDates.includes(d.dateKey);
+                      return (
+                        <TouchableOpacity
+                          key={d.dateKey}
+                          onPress={() => toggleSelectDate(d.dateKey)}
+                          style={[styles.datePill, isSelected && styles.datePillActive]}
+                          activeOpacity={0.7}
+                        >
+                          <Ionicons
+                            name={isSelected ? 'checkmark-circle' : 'calendar-outline'}
+                            size={13}
+                            color={isSelected ? '#fff' : '#818cf8'}
+                          />
+                          <Text style={[styles.datePillText, isSelected && styles.datePillTextActive]}>
+                            {d.label}
+                          </Text>
+                          <View style={[styles.datePillBadge, isSelected && styles.datePillBadgeActive]}>
+                            <Text style={[styles.datePillBadgeText, isSelected && styles.datePillBadgeTextActive]}>
+                              {d.count}
+                            </Text>
+                          </View>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </ScrollView>
+                </View>
+              ) : (
+                /* Chế độ Khoảng ngày Từ - Đến */
+                <View style={styles.dailyRangeBar}>
+                  <View style={styles.dailyRangeInputsRow}>
+                    <View style={styles.dailyRangeInputBox}>
+                      <Text style={styles.dailyRangeLabel}>Từ ngày (YYYY-MM-DD):</Text>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                        <TextInput
+                          style={[styles.dailyRangeInput, { flex: 1 }]}
+                          value={dailyRangeFrom}
+                          onChangeText={setDailyRangeFrom}
+                          placeholder="2026-11-01"
+                          placeholderTextColor="#64748b"
+                        />
+                        <TouchableOpacity
+                          onPress={() => {
+                            setCalendarTarget('from');
+                            setIsCalendarModalVisible(true);
+                          }}
+                          style={styles.calendarPickIconBtn}
+                          activeOpacity={0.7}
+                        >
+                          <Ionicons name="calendar" size={16} color="#818cf8" />
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+                    <Ionicons name="arrow-forward" size={14} color="#64748b" style={{ marginTop: 14 }} />
+                    <View style={styles.dailyRangeInputBox}>
+                      <Text style={styles.dailyRangeLabel}>Đến ngày (YYYY-MM-DD):</Text>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                        <TextInput
+                          style={[styles.dailyRangeInput, { flex: 1 }]}
+                          value={dailyRangeTo}
+                          onChangeText={setDailyRangeTo}
+                          placeholder="2026-11-12"
+                          placeholderTextColor="#64748b"
+                        />
+                        <TouchableOpacity
+                          onPress={() => {
+                            setCalendarTarget('to');
+                            setIsCalendarModalVisible(true);
+                          }}
+                          style={styles.calendarPickIconBtn}
+                          activeOpacity={0.7}
+                        >
+                          <Ionicons name="calendar" size={16} color="#818cf8" />
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+                  </View>
+
+                  {/* Nút bấm nhanh cho khoảng ngày */}
+                  <ScrollView
+                    horizontal
+                    showsHorizontalScrollIndicator={false}
+                    contentContainerStyle={{ gap: 6, paddingTop: 4 }}
+                  >
+                    {availableDates.length > 0 && (
+                      <TouchableOpacity
+                        onPress={() => {
+                          const today = availableDates[0].dateKey;
+                          setDailyRangeFrom(today);
+                          setDailyRangeTo(today);
+                        }}
+                        style={styles.dailyQuickBtn}
+                      >
+                        <Text style={styles.dailyQuickBtnText}>Gần nhất</Text>
+                      </TouchableOpacity>
+                    )}
+                    <TouchableOpacity
+                      onPress={() => {
+                        const today = new Date();
+                        const past7 = new Date();
+                        past7.setDate(today.getDate() - 6);
+                        const format = (dt: Date) => dt.toISOString().split('T')[0];
+                        setDailyRangeFrom(format(past7));
+                        setDailyRangeTo(format(today));
+                      }}
+                      style={styles.dailyQuickBtn}
+                    >
+                      <Text style={styles.dailyQuickBtnText}>7 ngày qua</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      onPress={() => {
+                        const today = new Date();
+                        const past30 = new Date();
+                        past30.setDate(today.getDate() - 29);
+                        const format = (dt: Date) => dt.toISOString().split('T')[0];
+                        setDailyRangeFrom(format(past30));
+                        setDailyRangeTo(format(today));
+                      }}
+                      style={styles.dailyQuickBtn}
+                    >
+                      <Text style={styles.dailyQuickBtnText}>30 ngày qua</Text>
+                    </TouchableOpacity>
+                    {availableDates.slice(0, 4).map(d => (
+                      <TouchableOpacity
+                        key={d.dateKey}
+                        onPress={() => {
+                          setDailyRangeFrom(d.dateKey);
+                          setDailyRangeTo(d.dateKey);
+                        }}
+                        style={styles.dailyQuickBtn}
+                      >
+                        <Text style={styles.dailyQuickBtnText}>{d.label.slice(0, 5)}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </ScrollView>
+                </View>
+              )}
+
+              {/* Nội dung báo cáo của ngày */}
+              {loadingDailyJournals ? (
+                <View style={styles.centerBox}>
+                  <ActivityIndicator size="large" color="#6366f1" />
+                  <Text style={styles.loadingText}>Đang tổng hợp {dailyReportTitle.toLowerCase()}...</Text>
+                </View>
+              ) : dailyShifts.length === 0 ? (
+                <View style={styles.centerBox}>
+                  <Text style={{ color: '#64748b', fontSize: 13 }}>Không có công việc nào trong mốc thời gian này.</Text>
+                </View>
+              ) : (
+                <ScrollView
+                  style={{ flex: 1 }}
+                  contentContainerStyle={{ padding: 12, paddingBottom: 100 }}
+                  refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor="#6366f1" />}
+                >
+                  {/* Card thông tin Header */}
+                  <View style={styles.reportSummaryHeaderCard}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                      <View style={styles.reportHeaderIconBox}>
+                        <Ionicons name="bar-chart" size={18} color="#6366f1" />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.reportHeaderTitle}>
+                          {dailyReportTitle}
+                        </Text>
+                        <Text style={styles.reportHeaderSub}>
+                          Tổng số: <Text style={{ color: '#818cf8', fontWeight: '700' }}>{dailyShifts.length} công việc</Text> • Phát sinh: <Text style={{ color: '#34d399', fontWeight: '700' }}>{dailyProductRows.length} mặt hàng</Text>
+                        </Text>
+                      </View>
+                    </View>
+                  </View>
+
+                  {/* 1. Chi tiết theo Mặt hàng */}
+                  <View style={styles.dailyCard}>
+                    <TouchableOpacity
+                      onPress={() => setExpandDailyProducts(prev => !prev)}
+                      style={styles.dailyCardHeader}
+                      activeOpacity={0.7}
+                    >
+                      <View style={styles.dailyCardHeaderLeft}>
+                        <Ionicons name="cube-outline" size={16} color="#38bdf8" />
+                        <Text style={styles.dailyCardTitle}>1. Chi tiết theo Mặt Hàng</Text>
+                        <View style={styles.reportBadge}>
+                          <Text style={styles.reportBadgeText}>{dailyProductRows.length} SP</Text>
+                        </View>
+                      </View>
+                      <Ionicons
+                        name={expandDailyProducts ? 'chevron-up' : 'chevron-down'}
+                        size={18}
+                        color="#94a3b8"
+                      />
+                    </TouchableOpacity>
+
+                    {expandDailyProducts && (
+                      <View style={styles.dailyCardBody}>
+                        {dailyProductRows.length === 0 ? (
+                          <Text style={styles.reportEmptyText}>Không có phát sinh sản phẩm nào trong ngày.</Text>
+                        ) : (
+                          <View style={styles.reportTable}>
+                            <View style={styles.reportTableHeader}>
+                              <Text style={[styles.reportTh, { width: 28, textAlign: 'center' }]}>STT</Text>
+                              <Text style={[styles.reportTh, { flex: 3 }]}>Sản phẩm & Công việc</Text>
+                              <Text style={[styles.reportTh, { flex: 1.1, textAlign: 'right', color: '#4ade80' }]}>Nhập (+)</Text>
+                              <Text style={[styles.reportTh, { flex: 1.1, textAlign: 'right', color: '#f87171' }]}>Xuất (-)</Text>
+                              <Text style={[styles.reportTh, { width: 38, textAlign: 'right' }]}>Đợt</Text>
+                            </View>
+                            {dailyProductRows.map((r, idx) => (
+                              <View key={`${r.product_name}___${r.unit}`} style={styles.reportTableRow}>
+                                <Text style={[styles.reportTd, { width: 28, textAlign: 'center', color: '#64748b', fontSize: 11 }]}>
+                                  {idx + 1}
+                                </Text>
+                                <View style={{ flex: 3, paddingRight: 4 }}>
+                                  <Text style={styles.reportProdName} numberOfLines={2}>
+                                    {r.product_name}
+                                  </Text>
+                                  <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 2, flexWrap: 'wrap', gap: 4 }}>
+                                    <View style={styles.reportUnitBadge}>
+                                      <Text style={styles.reportUnitBadgeText}>{r.unit}</Text>
+                                    </View>
+                                  </View>
+
+                                  {/* Tên công việc phát sinh sản phẩm này */}
+                                  <View style={styles.reportJobsList}>
+                                    {r.jobs && r.jobs.length > 0 ? (
+                                      r.jobs.map(j => (
+                                        <View key={j.id} style={styles.reportJobItem}>
+                                          <Ionicons name="briefcase-outline" size={10} color="#818cf8" />
+                                          <Text style={styles.reportJobNameText} numberOfLines={1}>
+                                            {j.name}
+                                          </Text>
+                                          {r.jobs.length > 1 && (
+                                            <Text style={styles.reportJobQtyBreakdown}>
+                                              ({j.in_qty > 0 ? `+${j.in_qty}` : '0'}{j.out_qty > 0 ? ` / -${j.out_qty}` : ''})
+                                            </Text>
+                                          )}
+                                        </View>
+                                      ))
+                                    ) : (
+                                      <Text style={{ fontSize: 10, color: '#64748b', fontStyle: 'italic' }}>
+                                        Từ chốt ca
+                                      </Text>
+                                    )}
+                                  </View>
+                                </View>
+
+                                <Text style={[styles.reportTd, { flex: 1.1, textAlign: 'right', color: '#4ade80', fontWeight: '800' }]}>
+                                  {r.in_qty > 0 ? `+${r.in_qty}` : '0'}
+                                </Text>
+                                <Text style={[styles.reportTd, { flex: 1.1, textAlign: 'right', color: '#f87171', fontWeight: '800' }]}>
+                                  {r.out_qty > 0 ? `-${r.out_qty}` : '0'}
+                                </Text>
+                                <Text style={[styles.reportTd, { width: 38, textAlign: 'right', color: '#cbd5e1', fontSize: 11 }]}>
+                                  {r.count}
+                                </Text>
+                              </View>
+                            ))}
+                          </View>
+                        )}
+                      </View>
+                    )}
+                  </View>
+
+                  {/* 2. Tổng hợp theo Đơn vị tính */}
+                  <View style={styles.dailyCard}>
+                    <TouchableOpacity
+                      onPress={() => setExpandDailyUnits(prev => !prev)}
+                      style={styles.dailyCardHeader}
+                      activeOpacity={0.7}
+                    >
+                      <View style={styles.dailyCardHeaderLeft}>
+                        <Ionicons name="layers-outline" size={16} color="#818cf8" />
+                        <Text style={styles.dailyCardTitle}>2. Tổng hợp theo Đơn Vị Tính</Text>
+                        <View style={styles.reportBadge}>
+                          <Text style={styles.reportBadgeText}>{dailyUnitRows.length} ĐVT</Text>
+                        </View>
+                      </View>
+                      <Ionicons
+                        name={expandDailyUnits ? 'chevron-up' : 'chevron-down'}
+                        size={18}
+                        color="#94a3b8"
+                      />
+                    </TouchableOpacity>
+
+                    {expandDailyUnits && (
+                      <View style={styles.dailyCardBody}>
+                        {dailyUnitRows.length === 0 ? (
+                          <Text style={styles.reportEmptyText}>Chưa có phát sinh số liệu theo ĐVT.</Text>
+                        ) : (
+                          <View style={styles.reportTable}>
+                            <View style={styles.reportTableHeader}>
+                              <Text style={[styles.reportTh, { flex: 2 }]}>Đơn vị tính</Text>
+                              <Text style={[styles.reportTh, { flex: 1, textAlign: 'right', color: '#4ade80' }]}>Nhập (+)</Text>
+                              <Text style={[styles.reportTh, { flex: 1, textAlign: 'right', color: '#f87171' }]}>Xuất (-)</Text>
+                              <Text style={[styles.reportTh, { width: 44, textAlign: 'right' }]}>Số đợt</Text>
+                            </View>
+                            {dailyUnitRows.map(u => (
+                              <View key={u.unit} style={styles.reportTableRow}>
+                                <Text style={[styles.reportTd, { flex: 2, fontWeight: '700', color: '#f8fafc' }]}>
+                                  {u.unit}
+                                </Text>
+                                <Text style={[styles.reportTd, { flex: 1, textAlign: 'right', color: '#4ade80', fontWeight: '800' }]}>
+                                  +{u.in_qty}
+                                </Text>
+                                <Text style={[styles.reportTd, { flex: 1, textAlign: 'right', color: '#f87171', fontWeight: '800' }]}>
+                                  -{u.out_qty}
+                                </Text>
+                                <Text style={[styles.reportTd, { width: 44, textAlign: 'right', color: '#cbd5e1' }]}>
+                                  {u.count}
+                                </Text>
+                              </View>
+                            ))}
+                          </View>
+                        )}
+                      </View>
+                    )}
+                  </View>
+
+                  {/* 3. Danh sách các công việc trong ngày */}
+                  <View style={styles.dailyCard}>
+                    <TouchableOpacity
+                      onPress={() => setExpandDailyShifts(prev => !prev)}
+                      style={styles.dailyCardHeader}
+                      activeOpacity={0.7}
+                    >
+                      <View style={styles.dailyCardHeaderLeft}>
+                        <Ionicons name="folder-open-outline" size={16} color="#fbbf24" />
+                        <Text style={styles.dailyCardTitle}>3. Danh sách các Công Việc</Text>
+                        <View style={[styles.reportBadge, { backgroundColor: 'rgba(251, 191, 36, 0.2)' }]}>
+                          <Text style={[styles.reportBadgeText, { color: '#fbbf24' }]}>{dailyShifts.length} CV</Text>
+                        </View>
+                      </View>
+                      <Ionicons
+                        name={expandDailyShifts ? 'chevron-up' : 'chevron-down'}
+                        size={18}
+                        color="#94a3b8"
+                      />
+                    </TouchableOpacity>
+
+                    {expandDailyShifts && (
+                      <View style={styles.dailyCardBody}>
+                        {dailyShifts.map((s, sIdx) => {
+                          const name = s.summary_data?.job_name || s.notes || `Công việc #${sIdx + 1}`;
+                          const prodCount = Object.keys(s.summary_data?.products_summary || {}).length;
+                          const recordsCount = s.summary_data?.total_records || 0;
+
+                          return (
+                            <View key={s.id} style={styles.reportShiftRow}>
+                              <View style={{ flex: 1 }}>
+                                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                                  <Text style={styles.reportShiftName} numberOfLines={1}>
+                                    {name}
+                                  </Text>
+                                  <View style={styles.reportShiftBadge}>
+                                    <Text style={styles.reportShiftBadgeText}>Đã chốt</Text>
+                                  </View>
+                                  {isOvernightShift(s) && (
+                                    <View style={styles.overnightBadge}>
+                                      <Ionicons name="moon" size={9} color="#fbbf24" />
+                                      <Text style={styles.overnightBadgeText}>
+                                        Đóng ca ngày hôm sau ({formatDateTime(s.closed_at)})
+                                      </Text>
+                                    </View>
+                                  )}
+                                </View>
+                                <Text style={styles.reportShiftMeta}>
+                                  Chốt bởi: {s.closed_by_name || 'Nhân viên'} • {prodCount} SP • {recordsCount} đợt
+                                </Text>
+                              </View>
+
+                              <TouchableOpacity
+                                onPress={() => handleOpenPastShiftDetail(s)}
+                                style={styles.reportShiftDetailBtn}
+                                activeOpacity={0.7}
+                              >
+                                <Ionicons name="eye-outline" size={13} color="#818cf8" />
+                                <Text style={styles.reportShiftDetailBtnText}>Chi tiết ca</Text>
+                              </TouchableOpacity>
+                            </View>
+                          );
+                        })}
+                      </View>
+                    )}
+                  </View>
+                </ScrollView>
+              )}
+            </View>
+          )}
+
+          {/* ── CHẾ ĐỘ 2.5: BÁO CÁO THEO SẢN PHẨM ── */}
+          {doneMode === 'product' && (
+            <View style={{ flex: 1 }}>
+              {/* Thanh chọn thời gian cho sản phẩm */}
+              <View style={styles.dailySubModeBar}>
+                {(['7days', '30days', 'all'] as const).map(tf => {
+                  const label = tf === '7days' ? '7 ngày qua' : tf === '30days' ? '30 ngày' : 'Tất cả';
+                  const isActive = prodTimeFilter === tf;
+                  return (
+                    <TouchableOpacity
+                      key={tf}
+                      onPress={() => setProdTimeFilter(tf)}
+                      style={[styles.dailySubModeBtn, isActive && styles.dailySubModeBtnActive]}
+                      activeOpacity={0.7}
+                    >
+                      <Ionicons name="time-outline" size={13} color={isActive ? '#818cf8' : '#94a3b8'} />
+                      <Text style={[styles.dailySubModeBtnText, isActive && styles.dailySubModeBtnTextActive]}>
+                        {label}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+
+              {/* Ô tìm kiếm mặt hàng */}
+              <View style={styles.customSearchBar}>
+                <Ionicons name="search" size={15} color="#818cf8" />
+                <TextInput
+                  style={styles.customSearchInput}
+                  value={prodSearchQuery}
+                  onChangeText={setProdSearchQuery}
+                  placeholder="Tìm theo tên sản phẩm hoặc công việc..."
+                  placeholderTextColor="#64748b"
+                />
+                {prodSearchQuery ? (
+                  <TouchableOpacity onPress={() => setProdSearchQuery('')} style={styles.doneClearSearchBtn}>
+                    <Ionicons name="close-circle" size={16} color="#94a3b8" />
+                  </TouchableOpacity>
+                ) : null}
+              </View>
+
+              {/* Nội dung báo cáo theo sản phẩm */}
+              {loadingProdJournals ? (
+                <View style={styles.centerBox}>
+                  <ActivityIndicator size="large" color="#6366f1" />
+                  <Text style={styles.loadingText}>Đang tổng hợp báo cáo theo mặt hàng...</Text>
+                </View>
+              ) : productReportRows.length === 0 ? (
+                <View style={styles.centerBox}>
+                  <Text style={{ color: '#64748b', fontSize: 13 }}>
+                    {prodSearchQuery.trim()
+                      ? `Không tìm thấy mặt hàng nào khớp với "${prodSearchQuery}".`
+                      : 'Không có phát sinh sản phẩm nào trong mốc thời gian này.'}
+                  </Text>
+                </View>
+              ) : (
+                <ScrollView
+                  style={{ flex: 1 }}
+                  contentContainerStyle={{ padding: 12, paddingBottom: 100 }}
+                  refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor="#6366f1" />}
+                >
+                  {/* Card thông tin Header */}
+                  <View style={styles.reportSummaryHeaderCard}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                      <View style={styles.reportHeaderIconBox}>
+                        <Ionicons name="layers" size={18} color="#6366f1" />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.reportHeaderTitle}>
+                          Báo Cáo Theo Mặt Hàng
+                        </Text>
+                        <Text style={styles.reportHeaderSub}>
+                          Phát sinh: <Text style={{ color: '#38bdf8', fontWeight: '700' }}>{productReportRows.length} mặt hàng</Text> • Gom từ: <Text style={{ color: '#818cf8', fontWeight: '700' }}>{prodShifts.length} công việc</Text>
+                        </Text>
+                      </View>
+                    </View>
+                  </View>
+
+                  {/* 1. Chi tiết theo Mặt hàng */}
+                  <View style={styles.dailyCard}>
+                    <TouchableOpacity
+                      onPress={() => setExpandProdProducts(prev => !prev)}
+                      style={styles.dailyCardHeader}
+                      activeOpacity={0.7}
+                    >
+                      <View style={styles.dailyCardHeaderLeft}>
+                        <Ionicons name="cube-outline" size={16} color="#38bdf8" />
+                        <Text style={styles.dailyCardTitle}>1. Chi tiết từng Mặt Hàng</Text>
+                        <View style={styles.reportBadge}>
+                          <Text style={styles.reportBadgeText}>{productReportRows.length} SP</Text>
+                        </View>
+                      </View>
+                      <Ionicons
+                        name={expandProdProducts ? 'chevron-up' : 'chevron-down'}
+                        size={18}
+                        color="#94a3b8"
+                      />
+                    </TouchableOpacity>
+
+                    {expandProdProducts && (
+                      <View style={styles.dailyCardBody}>
+                        {productReportRows.length === 0 ? (
+                          <Text style={styles.reportEmptyText}>Không có phát sinh sản phẩm nào.</Text>
+                        ) : (
+                          <View style={styles.reportTable}>
+                            <View style={styles.reportTableHeader}>
+                              <Text style={[styles.reportTh, { width: 28, textAlign: 'center' }]}>STT</Text>
+                              <Text style={[styles.reportTh, { flex: 3 }]}>Sản phẩm & Công việc</Text>
+                              <Text style={[styles.reportTh, { flex: 1.1, textAlign: 'right', color: '#4ade80' }]}>Nhập (+)</Text>
+                              <Text style={[styles.reportTh, { flex: 1.1, textAlign: 'right', color: '#f87171' }]}>Xuất (-)</Text>
+                              <Text style={[styles.reportTh, { width: 38, textAlign: 'right' }]}>Đợt</Text>
+                            </View>
+                            {productReportRows.map((r, idx) => (
+                              <View key={`${r.product_name}___${r.unit}___${idx}`} style={styles.reportTableRow}>
+                                <Text style={[styles.reportTd, { width: 28, textAlign: 'center', color: '#64748b', fontSize: 11 }]}>
+                                  {idx + 1}
+                                </Text>
+                                <View style={{ flex: 3, paddingRight: 4 }}>
+                                  <Text style={styles.reportProdName} numberOfLines={2}>
+                                    {r.product_name}
+                                  </Text>
+                                  <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 2, flexWrap: 'wrap', gap: 4 }}>
+                                    <View style={styles.reportUnitBadge}>
+                                      <Text style={styles.reportUnitBadgeText}>{r.unit}</Text>
+                                    </View>
+                                  </View>
+
+                                  {/* Tên công việc phát sinh sản phẩm này */}
+                                  <View style={styles.reportJobsList}>
+                                    {r.jobs && r.jobs.length > 0 ? (
+                                      r.jobs.map(j => (
+                                        <View key={j.id} style={styles.reportJobItem}>
+                                          <Ionicons name="briefcase-outline" size={10} color="#818cf8" />
+                                          <Text style={styles.reportJobNameText} numberOfLines={1}>
+                                            {j.name}
+                                          </Text>
+                                          {r.jobs.length > 1 && (
+                                            <Text style={styles.reportJobQtyBreakdown}>
+                                              ({j.in_qty > 0 ? `+${j.in_qty}` : '0'}{j.out_qty > 0 ? ` / -${j.out_qty}` : ''})
+                                            </Text>
+                                          )}
+                                        </View>
+                                      ))
+                                    ) : (
+                                      <Text style={{ fontSize: 10, color: '#64748b', fontStyle: 'italic' }}>
+                                        Từ chốt ca
+                                      </Text>
+                                    )}
+                                  </View>
+                                </View>
+
+                                <Text style={[styles.reportTd, { flex: 1.1, textAlign: 'right', color: '#4ade80', fontWeight: '800' }]}>
+                                  +{r.in_qty}
+                                </Text>
+                                <Text style={[styles.reportTd, { flex: 1.1, textAlign: 'right', color: '#f87171', fontWeight: '800' }]}>
+                                  -{r.out_qty}
+                                </Text>
+                                <Text style={[styles.reportTd, { width: 38, textAlign: 'right', color: '#cbd5e1' }]}>
+                                  {r.count}
+                                </Text>
+                              </View>
+                            ))}
+                          </View>
+                        )}
+                      </View>
+                    )}
+                  </View>
+
+                  {/* 2. Tổng hợp theo ĐVT */}
+                  <View style={styles.dailyCard}>
+                    <TouchableOpacity
+                      onPress={() => setExpandProdUnits(prev => !prev)}
+                      style={styles.dailyCardHeader}
+                      activeOpacity={0.7}
+                    >
+                      <View style={styles.dailyCardHeaderLeft}>
+                        <Ionicons name="layers-outline" size={16} color="#818cf8" />
+                        <Text style={styles.dailyCardTitle}>2. Tổng hợp theo Đơn Vị Tính</Text>
+                        <View style={styles.reportBadge}>
+                          <Text style={styles.reportBadgeText}>{productReportUnits.length} ĐVT</Text>
+                        </View>
+                      </View>
+                      <Ionicons
+                        name={expandProdUnits ? 'chevron-up' : 'chevron-down'}
+                        size={18}
+                        color="#94a3b8"
+                      />
+                    </TouchableOpacity>
+
+                    {expandProdUnits && (
+                      <View style={styles.dailyCardBody}>
+                        {productReportUnits.length === 0 ? (
+                          <Text style={styles.reportEmptyText}>Chưa có phát sinh số liệu theo ĐVT.</Text>
+                        ) : (
+                          <View style={styles.reportTable}>
+                            <View style={styles.reportTableHeader}>
+                              <Text style={[styles.reportTh, { flex: 2 }]}>Đơn vị tính</Text>
+                              <Text style={[styles.reportTh, { flex: 1, textAlign: 'right', color: '#4ade80' }]}>Nhập (+)</Text>
+                              <Text style={[styles.reportTh, { flex: 1, textAlign: 'right', color: '#f87171' }]}>Xuất (-)</Text>
+                              <Text style={[styles.reportTh, { width: 44, textAlign: 'right' }]}>Số đợt</Text>
+                            </View>
+                            {productReportUnits.map(u => (
+                              <View key={u.unit} style={styles.reportTableRow}>
+                                <Text style={[styles.reportTd, { flex: 2, fontWeight: '700', color: '#f8fafc' }]}>
+                                  {u.unit}
+                                </Text>
+                                <Text style={[styles.reportTd, { flex: 1, textAlign: 'right', color: '#4ade80', fontWeight: '800' }]}>
+                                  +{u.in_qty}
+                                </Text>
+                                <Text style={[styles.reportTd, { flex: 1, textAlign: 'right', color: '#f87171', fontWeight: '800' }]}>
+                                  -{u.out_qty}
+                                </Text>
+                                <Text style={[styles.reportTd, { width: 44, textAlign: 'right', color: '#cbd5e1' }]}>
+                                  {u.count}
+                                </Text>
+                              </View>
+                            ))}
+                          </View>
+                        )}
+                      </View>
+                    )}
+                  </View>
+                </ScrollView>
+              )}
+            </View>
+          )}
+
+          {/* ── CHẾ ĐỘ 3: BÁO CÁO TÙY CHỌN ── */}
+          {doneMode === 'custom' && (
+            <View style={{ flex: 1 }}>
+              {/* Ô TÌM KIẾM CÔNG VIỆC ĐỂ TÍCH CHỌN */}
+              <View style={styles.customSearchBar}>
+                <Ionicons name="search" size={15} color="#818cf8" />
+                <TextInput
+                  style={styles.customSearchInput}
+                  value={doneSearchQuery}
+                  onChangeText={setDoneSearchQuery}
+                  placeholder="Tìm công việc, người làm, sản phẩm để tích chọn..."
+                  placeholderTextColor="#64748b"
+                />
+                {doneSearchQuery ? (
+                  <TouchableOpacity onPress={() => setDoneSearchQuery('')} style={styles.doneClearSearchBtn}>
+                    <Ionicons name="close-circle" size={16} color="#94a3b8" />
+                  </TouchableOpacity>
+                ) : null}
+              </View>
+
+              {/* Thanh công cụ Chọn tất cả / Bỏ chọn */}
+              <View style={styles.customToolBar}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                  <TouchableOpacity
+                    onPress={toggleSelectAllCustom}
+                    style={styles.customToolBtn}
+                    activeOpacity={0.7}
+                  >
+                    <Ionicons
+                      name={
+                        filteredPastShifts.length > 0 && filteredPastShifts.every(s => selectedCustomShiftIds.includes(s.id))
+                          ? 'close-circle-outline'
+                          : 'checkmark-done-outline'
+                      }
+                      size={14}
+                      color="#818cf8"
+                    />
+                    <Text style={styles.customToolBtnText}>
+                      {filteredPastShifts.length > 0 && filteredPastShifts.every(s => selectedCustomShiftIds.includes(s.id))
+                        ? 'Bỏ chọn tất cả'
+                        : 'Chọn tất cả'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+
+                <Text style={styles.customSelectedCount}>
+                  Đã chọn: <Text style={{ color: '#818cf8', fontWeight: '800' }}>{selectedCustomShiftIds.length}</Text> / {pastShifts.length}
+                </Text>
+              </View>
+
+              {/* Danh sách các công việc có checkbox */}
+              <FlatList
+                data={filteredPastShifts}
+                keyExtractor={item => item.id}
+                refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor="#6366f1" />}
+                contentContainerStyle={{ padding: 12, paddingBottom: 110 }}
+                ListEmptyComponent={
+                  <View style={styles.centerBox}>
+                    <Text style={{ color: '#64748b', fontSize: 13 }}>
+                      {doneSearchQuery.trim()
+                        ? `Không tìm thấy công việc nào khớp với "${doneSearchQuery}".`
+                        : 'Chưa có công việc nào hoàn thành.'}
+                    </Text>
+                  </View>
+                }
+                renderItem={({ item }) => {
+                  const isChecked = selectedCustomShiftIds.includes(item.id);
+                  const name = item.summary_data?.job_name || item.notes || 'Công việc';
+                  const closeTime = item.closed_at ? new Date(item.closed_at).toLocaleDateString('vi-VN', { hour: '2-digit', minute: '2-digit', day: '2-digit', month: '2-digit' }) : '-';
+                  const orderType = item.summary_data?.order_type_name;
+                  const recordsCount = item.summary_data?.total_records || 0;
+
+                  return (
+                    <TouchableOpacity
+                      style={[styles.customCard, isChecked && styles.customCardSelected]}
+                      onPress={() => toggleSelectCustomShift(item.id)}
+                      activeOpacity={0.7}
+                    >
+                      {/* Checkbox tròn bên trái */}
+                      <View style={{ marginRight: 10 }}>
+                        <Ionicons
+                          name={isChecked ? 'checkbox' : 'square-outline'}
+                          size={24}
+                          color={isChecked ? '#6366f1' : '#64748b'}
+                        />
+                      </View>
+
+                      <View style={{ flex: 1 }}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                          <Text style={[styles.doneJobName, isChecked && { color: '#a5b4fc' }]} numberOfLines={1}>
+                            {name}
+                          </Text>
+                          <TouchableOpacity
+                            onPress={() => handleOpenPastShiftDetail(item)}
+                            style={{ padding: 4 }}
+                          >
+                            <Ionicons name="information-circle-outline" size={18} color="#94a3b8" />
+                          </TouchableOpacity>
+                        </View>
+
+                        <View style={{ marginTop: 4, gap: 2 }}>
+                          {isOvernightShift(item) && (
+                            <View style={styles.overnightBadge}>
+                              <Ionicons name="moon" size={10} color="#fbbf24" />
+                              <Text style={styles.overnightBadgeText}>
+                                Đóng ca vào ngày hôm sau ({formatDateTime(item.closed_at)})
+                              </Text>
+                            </View>
+                          )}
+                          <Text style={styles.doneDetailText}>
+                            <Ionicons name="time-outline" size={11} color="#94a3b8" /> {closeTime} • {item.closed_by_name || 'Nhân viên'}
+                          </Text>
+                          {orderType && (
+                            <Text style={[styles.doneDetailText, { color: '#818cf8', fontWeight: '700' }]}>
+                              <Ionicons name="document-text-outline" size={11} color="#818cf8" /> {orderType}
+                            </Text>
+                          )}
+                          <Text style={styles.doneDetailText}>
+                            <Ionicons name="layers-outline" size={11} color="#94a3b8" /> {recordsCount} lượt ghi nhận
+                          </Text>
+                        </View>
+                      </View>
+                    </TouchableOpacity>
+                  );
+                }}
+              />
+
+              {/* Thanh nút nổi cố định ở đáy: XEM BÁO CÁO GỘP */}
+              {selectedCustomShiftIds.length > 0 && (
+                <View style={styles.customFloatingBar}>
+                  <TouchableOpacity
+                    style={styles.customFloatingBtn}
+                    onPress={handleOpenCustomReport}
+                    activeOpacity={0.8}
+                  >
+                    <Ionicons name="bar-chart" size={18} color="#fff" />
+                    <Text style={styles.customFloatingBtnText}>
+                      Xem Báo Cáo Gộp ({selectedCustomShiftIds.length} Công Việc)
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+            </View>
+          )}
+        </View>
       )}
 
       {/* ── CÁC MODAL THAO TÁC ── */}
@@ -1464,6 +2756,63 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
           setEditingRecord(null);
         }}
         onSubmit={handleUpdateJournalSubmit}
+      />
+
+      {/* 7. Modal Xem chi tiết báo cáo công việc đã hoàn thành */}
+      <PastShiftDetailModal
+        visible={selectedPastShift !== null}
+        shift={selectedPastShift}
+        journals={pastShiftJournals}
+        subShifts={pastSubShifts}
+        loading={loadingPastDetail}
+        onClose={() => setSelectedPastShift(null)}
+        onRefreshAll={handleRefresh}
+      />
+
+      {/* 8. Modal Báo Cáo Tổng Hợp Tùy Chọn */}
+      <AggregatedReportModal
+        visible={isCustomReportModalVisible}
+        title={`Báo Cáo Tùy Chọn (${selectedCustomShifts.length} công việc)`}
+        shifts={selectedCustomShifts}
+        journals={customJournals}
+        allProducts={allProducts}
+        loading={loadingCustomJournals}
+        onClose={() => setIsCustomReportModalVisible(false)}
+        onOpenShiftDetail={(s) => {
+          setIsCustomReportModalVisible(false);
+          handleOpenPastShiftDetail(s);
+        }}
+      />
+
+      {/* 9. Modal Lịch chọn ngày linh hoạt */}
+      <CalendarPickerModal
+        visible={isCalendarModalVisible}
+        onClose={() => setIsCalendarModalVisible(false)}
+        isMultiSelect={calendarTarget === 'multi'}
+        title={
+          calendarTarget === 'multi'
+            ? 'Chọn các ngày cần xem báo cáo'
+            : calendarTarget === 'from'
+              ? 'Chọn mốc Từ ngày'
+              : 'Chọn mốc Đến ngày'
+        }
+        selectedDates={
+          calendarTarget === 'multi'
+            ? selectedDates
+            : calendarTarget === 'from'
+              ? [dailyRangeFrom].filter(Boolean)
+              : [dailyRangeTo].filter(Boolean)
+        }
+        availableDateKeys={availableDates.map(d => d.dateKey)}
+        onConfirm={dates => {
+          if (calendarTarget === 'multi') {
+            setSelectedDates(dates.length > 0 ? dates : selectedDates);
+          } else if (calendarTarget === 'from') {
+            if (dates[0]) setDailyRangeFrom(dates[0]);
+          } else if (calendarTarget === 'to') {
+            if (dates[0]) setDailyRangeTo(dates[0]);
+          }
+        }}
       />
     </View>
   );
@@ -2435,6 +3784,511 @@ const styles = StyleSheet.create({
     fontSize: 10,
     color: '#94a3b8',
     marginTop: 2,
+  },
+
+  // ── PHONG CÁCH BÁO CÁO MỚI (THEO NGÀY & TÙY CHỌN) ──
+  doneModeBar: {
+    flexDirection: 'row',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    backgroundColor: '#1e293b',
+    borderBottomWidth: 1,
+    borderBottomColor: '#334155',
+    gap: 8,
+  },
+  doneModeBtn: {
+    flex: 1,
+    height: 32,
+    borderRadius: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    backgroundColor: '#0f172a',
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  doneModeBtnActive: {
+    backgroundColor: 'rgba(99, 102, 241, 0.25)',
+    borderColor: '#6366f1',
+  },
+  doneModeBtnText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#94a3b8',
+  },
+  doneModeBtnTextActive: {
+    color: '#a5b4fc',
+    fontWeight: '800',
+  },
+
+  // Ô tìm kiếm công việc tab Đã hoàn thành
+  customSearchBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#1e293b',
+    borderWidth: 1,
+    borderColor: '#334155',
+    borderRadius: 10,
+    marginHorizontal: 12,
+    marginTop: 8,
+    marginBottom: 4,
+    paddingHorizontal: 12,
+    height: 38,
+  },
+  customSearchInput: {
+    flex: 1,
+    color: '#f8fafc',
+    fontSize: 12,
+    fontWeight: '600',
+    paddingVertical: 0,
+  },
+  doneClearSearchBtn: {
+    padding: 4,
+  },
+
+  // Thanh chọn ngày & khoảng ngày
+  dailySubModeBar: {
+    flexDirection: 'row',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    backgroundColor: '#0f172a',
+    borderBottomWidth: 1,
+    borderBottomColor: '#1e293b',
+    gap: 8,
+  },
+  dailySubModeBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 7,
+    borderRadius: 8,
+    backgroundColor: '#1e293b',
+  },
+  dailySubModeBtnActive: {
+    backgroundColor: 'rgba(99, 102, 241, 0.2)',
+    borderWidth: 1,
+    borderColor: '#6366f1',
+  },
+  dailySubModeBtnText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#94a3b8',
+  },
+  dailySubModeBtnTextActive: {
+    color: '#818cf8',
+    fontWeight: '800',
+  },
+  dailyQuickActionsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 12,
+    marginBottom: 6,
+  },
+  dailyQuickLabel: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#94a3b8',
+  },
+  dailyQuickBtn: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+    backgroundColor: '#1e293b',
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  dailyQuickBtnText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#cbd5e1',
+  },
+  dailyRangeBar: {
+    padding: 10,
+    paddingHorizontal: 12,
+    backgroundColor: '#0f172a',
+    borderBottomWidth: 1,
+    borderBottomColor: '#1e293b',
+    gap: 8,
+  },
+  dailyRangeInputsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  dailyRangeInputBox: {
+    flex: 1,
+  },
+  dailyRangeLabel: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#94a3b8',
+    marginBottom: 4,
+  },
+  dailyRangeInput: {
+    backgroundColor: '#1e293b',
+    borderWidth: 1,
+    borderColor: '#334155',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    height: 34,
+    color: '#f8fafc',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  calendarPickIconBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 8,
+    backgroundColor: '#1e293b',
+    borderWidth: 1,
+    borderColor: '#334155',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  // Thanh chọn ngày
+  dailyDateBar: {
+    paddingVertical: 10,
+    backgroundColor: '#0f172a',
+    borderBottomWidth: 1,
+    borderBottomColor: '#1e293b',
+  },
+  datePill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 20,
+    backgroundColor: '#1e293b',
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  datePillActive: {
+    backgroundColor: '#6366f1',
+    borderColor: '#818cf8',
+  },
+  datePillText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#cbd5e1',
+  },
+  datePillTextActive: {
+    color: '#fff',
+    fontWeight: '800',
+  },
+  datePillBadge: {
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 8,
+    backgroundColor: '#0f172a',
+  },
+  datePillBadgeActive: {
+    backgroundColor: 'rgba(255, 255, 255, 0.25)',
+  },
+  datePillBadgeText: {
+    fontSize: 9,
+    fontWeight: '800',
+    color: '#a5b4fc',
+  },
+  datePillBadgeTextActive: {
+    color: '#fff',
+  },
+
+  overnightBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    alignSelf: 'flex-start',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+    backgroundColor: 'rgba(245, 158, 11, 0.15)',
+    borderWidth: 1,
+    borderColor: 'rgba(245, 158, 11, 0.35)',
+    marginTop: 2,
+  },
+  overnightBadgeText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#fbbf24',
+  },
+
+  // Card Header tổng hợp ngày
+  reportSummaryHeaderCard: {
+    backgroundColor: '#1e293b',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#334155',
+    padding: 12,
+    marginBottom: 10,
+  },
+  reportHeaderIconBox: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    backgroundColor: 'rgba(99, 102, 241, 0.2)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  reportHeaderTitle: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: '#f8fafc',
+  },
+  reportHeaderSub: {
+    fontSize: 11,
+    color: '#94a3b8',
+    marginTop: 2,
+  },
+
+  // Card báo cáo (Khối Accordion)
+  dailyCard: {
+    backgroundColor: '#1e293b',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#334155',
+    marginBottom: 10,
+    overflow: 'hidden',
+  },
+  dailyCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    backgroundColor: '#1e293b',
+  },
+  dailyCardHeaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  dailyCardTitle: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#f1f5f9',
+  },
+  reportBadge: {
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 8,
+    backgroundColor: 'rgba(99, 102, 241, 0.2)',
+  },
+  reportBadgeText: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: '#818cf8',
+  },
+  dailyCardBody: {
+    padding: 8,
+    borderTopWidth: 1,
+    borderTopColor: '#334155',
+  },
+  reportEmptyText: {
+    color: '#64748b',
+    fontSize: 12,
+    textAlign: 'center',
+    paddingVertical: 12,
+    fontStyle: 'italic',
+  },
+
+  // Bảng chi tiết
+  reportTable: {
+    borderRadius: 6,
+    overflow: 'hidden',
+  },
+  reportTableHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 7,
+    paddingHorizontal: 6,
+    backgroundColor: 'rgba(51, 65, 85, 0.6)',
+    borderBottomWidth: 1,
+    borderBottomColor: '#475569',
+  },
+  reportTh: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: '#94a3b8',
+    textTransform: 'uppercase',
+  },
+  reportTableRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    paddingVertical: 8,
+    paddingHorizontal: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(51, 65, 85, 0.4)',
+  },
+  reportTd: {
+    fontSize: 11,
+    color: '#e2e8f0',
+  },
+  reportProdName: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#f8fafc',
+    lineHeight: 16,
+  },
+  reportUnitBadge: {
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 4,
+    backgroundColor: 'rgba(99, 102, 241, 0.25)',
+  },
+  reportUnitBadgeText: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: '#a5b4fc',
+  },
+  reportJobsList: {
+    marginTop: 4,
+    gap: 2,
+  },
+  reportJobItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  reportJobNameText: {
+    fontSize: 10,
+    color: '#94a3b8',
+    fontWeight: '600',
+    flexShrink: 1,
+  },
+  reportJobQtyBreakdown: {
+    fontSize: 9,
+    fontWeight: '800',
+    color: '#cbd5e1',
+  },
+
+  // Danh sách ca trong báo cáo ngày
+  reportShiftRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 8,
+    paddingHorizontal: 8,
+    backgroundColor: 'rgba(15, 23, 42, 0.5)',
+    borderRadius: 8,
+    marginBottom: 6,
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  reportShiftName: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#f8fafc',
+    flexShrink: 1,
+  },
+  reportShiftBadge: {
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 4,
+    backgroundColor: 'rgba(34, 197, 94, 0.2)',
+  },
+  reportShiftBadgeText: {
+    fontSize: 9,
+    fontWeight: '700',
+    color: '#4ade80',
+  },
+  reportShiftMeta: {
+    fontSize: 10,
+    color: '#94a3b8',
+    marginTop: 2,
+  },
+  reportShiftDetailBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+    backgroundColor: 'rgba(99, 102, 241, 0.15)',
+    borderWidth: 1,
+    borderColor: 'rgba(99, 102, 241, 0.3)',
+  },
+  reportShiftDetailBtnText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#a5b4fc',
+  },
+
+  // Chế độ Tùy Chọn
+  customToolBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    backgroundColor: '#0f172a',
+    borderBottomWidth: 1,
+    borderBottomColor: '#1e293b',
+  },
+  customToolBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 8,
+    backgroundColor: '#1e293b',
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  customToolBtnText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#a5b4fc',
+  },
+  customSelectedCount: {
+    fontSize: 11,
+    color: '#94a3b8',
+  },
+  customCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#1e293b',
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  customCardSelected: {
+    borderColor: '#6366f1',
+    backgroundColor: 'rgba(99, 102, 241, 0.1)',
+  },
+  customFloatingBar: {
+    position: 'absolute',
+    bottom: 20,
+    left: 14,
+    right: 14,
+  },
+  customFloatingBtn: {
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: '#6366f1',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    shadowColor: '#6366f1',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.4,
+    shadowRadius: 8,
+    elevation: 8,
+  },
+  customFloatingBtnText: {
+    color: '#fff',
+    fontSize: 13,
+    fontWeight: '800',
   },
 });
 

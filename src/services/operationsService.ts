@@ -88,6 +88,31 @@ export interface JobTemplate {
   order_index?: number;
 }
 
+export interface AggregatedProductJob {
+  id: string;
+  name: string;
+  in_qty: number;
+  out_qty: number;
+}
+
+export interface AggregatedProductItem {
+  product_id?: string;
+  sku?: string;
+  product_name: string;
+  unit: string;
+  in_qty: number;
+  out_qty: number;
+  count: number;
+  jobs: AggregatedProductJob[];
+}
+
+export interface AggregatedUnitItem {
+  unit: string;
+  in_qty: number;
+  out_qty: number;
+  count: number;
+}
+
 // Lấy system_code kho hiện tại
 export async function getCurrentSystemCode(): Promise<string> {
   const code = await AsyncStorage.getItem('config_system_code');
@@ -703,5 +728,165 @@ export async function deleteShift(shiftId: string): Promise<boolean> {
 
   if (error) throw error;
   return true;
+}
+
+// 14. Tải nhật ký số liệu của nhiều ca (Dùng cho Báo cáo theo ngày & Báo cáo tùy chọn)
+export async function getMultiShiftJournals(shiftIds: string[]): Promise<JournalRecord[]> {
+  if (!shiftIds || shiftIds.length === 0) return [];
+  try {
+    const list = await Promise.all(shiftIds.map(id => getShiftJournals(id)));
+    return list.flat();
+  } catch (e) {
+    console.warn('Lỗi getMultiShiftJournals:', e);
+    return [];
+  }
+}
+
+// Helper tổng hợp các dòng nhật ký của 1 ca
+function summarizeShiftLines(
+  lines: JournalRecord[],
+  shift?: DeliveryShift,
+  catalog?: ShiftProductItem[]
+): {
+  product_id?: string;
+  sku?: string;
+  product_name: string;
+  unit: string;
+  in_qty: number;
+  out_qty: number;
+  count: number;
+}[] {
+  const pinnedList: ShiftProductItem[] = shift?.summary_data?.pinned_products || [];
+  const allProds: ShiftProductItem[] = catalog || [];
+  const map: Record<string, {
+    product_id?: string;
+    sku?: string;
+    product_name: string;
+    unit: string;
+    in_qty: number;
+    out_qty: number;
+    count: number;
+  }> = {};
+
+  lines.forEach(l => {
+    // Trích xuất product_id từ tag [PID: ...] nếu có trong ghi chú
+    const pidMatch = (l.notes || '').match(/\[PID:\s*([^\]]+)\]/i);
+    const extractedPid = pidMatch ? pidMatch[1].trim() : undefined;
+
+    // Đối soát trong pinned_products hoặc catalog
+    const matched = (extractedPid ? pinnedList.find(p => p.id === extractedPid) : null) ||
+      pinnedList.find(p => (p.name || '').trim().toLowerCase() === (l.item_name || '').trim().toLowerCase()) ||
+      (extractedPid ? allProds.find(p => p.id === extractedPid) : null) ||
+      allProds.find(p => (p.name || '').trim().toLowerCase() === (l.item_name || '').trim().toLowerCase());
+
+    const finalPid = extractedPid || matched?.id;
+    const finalSku = matched?.sku;
+    const productName = matched?.name || l.item_name;
+
+    const u = l.unit || 'ĐVT';
+    const key = finalPid ? `${finalPid}___${u}` : `${l.item_name}___${u}`;
+    if (!map[key]) {
+      map[key] = {
+        product_id: finalPid,
+        sku: finalSku || undefined,
+        product_name: productName,
+        unit: u,
+        in_qty: 0,
+        out_qty: 0,
+        count: 0,
+      };
+    }
+    const qty = Number(l.quantity_sent) || 0;
+    if (l.to_department === 'Kho') {
+      map[key].in_qty += qty;
+    } else {
+      map[key].out_qty += qty;
+    }
+    map[key].count += 1;
+  });
+
+  return Object.values(map);
+}
+
+// 15. Hàm gom số liệu mặt hàng tổng hợp từ nhiều công việc (Chuẩn xác 100% như Web)
+export function aggregateShiftsProducts(
+  shifts: DeliveryShift[],
+  lines: JournalRecord[],
+  allProducts?: ShiftProductItem[]
+): AggregatedProductItem[] {
+  const prodMap: Record<string, AggregatedProductItem> = {};
+
+  shifts.forEach((s, sIdx) => {
+    const jobName = s.summary_data?.job_name ||
+      s.notes?.replace(/\[CV:[^\]]*\]/g, '').replace(/\[CV_ID:[^\]]*\]/g, '').trim() ||
+      `Công việc #${sIdx + 1}`;
+
+    const sLines = lines.filter(l => (l.notes || '').includes(`[CV_ID: ${s.id}]`));
+    const rawProds = sLines.length > 0
+      ? summarizeShiftLines(sLines, s, allProducts)
+      : Object.values(s.summary_data?.products_summary || {}).map((p: any) => ({
+          product_id: p.product_id,
+          sku: p.sku || '',
+          product_name: p.product_name,
+          unit: p.unit,
+          in_qty: Number(p.in_qty) || 0,
+          out_qty: Number(p.out_qty) || 0,
+          count: (Number(p.in_count) || 0) + (Number(p.out_count) || 0),
+        }));
+
+    rawProds.forEach(p => {
+      const u = p.unit || 'ĐVT';
+      const key = `${(p.product_name || '').trim()}___${u}`;
+      const inQ = Number(p.in_qty) || 0;
+      const outQ = Number(p.out_qty) || 0;
+
+      if (!prodMap[key]) {
+        prodMap[key] = {
+          product_id: p.product_id,
+          sku: p.sku || '',
+          product_name: p.product_name,
+          unit: u,
+          in_qty: 0,
+          out_qty: 0,
+          count: 0,
+          jobs: [],
+        };
+      }
+      prodMap[key].in_qty += inQ;
+      prodMap[key].out_qty += outQ;
+      prodMap[key].count += Number(p.count) || 1;
+
+      // Ghi nhận tên công việc chứa sản phẩm này
+      const existingJob = prodMap[key].jobs.find(j => j.id === s.id);
+      if (!existingJob) {
+        prodMap[key].jobs.push({
+          id: s.id,
+          name: jobName,
+          in_qty: inQ,
+          out_qty: outQ,
+        });
+      } else {
+        existingJob.in_qty += inQ;
+        existingJob.out_qty += outQ;
+      }
+    });
+  });
+
+  return Object.values(prodMap);
+}
+
+// 16. Gom nhóm tổng hợp theo ĐVT
+export function aggregateShiftsUnits(products: AggregatedProductItem[]): AggregatedUnitItem[] {
+  const unitMap: Record<string, AggregatedUnitItem> = {};
+  products.forEach(r => {
+    const u = r.unit || 'ĐVT';
+    if (!unitMap[u]) {
+      unitMap[u] = { unit: u, in_qty: 0, out_qty: 0, count: 0 };
+    }
+    unitMap[u].in_qty += r.in_qty;
+    unitMap[u].out_qty += r.out_qty;
+    unitMap[u].count += r.count;
+  });
+  return Object.values(unitMap);
 }
 
