@@ -300,8 +300,11 @@ export function matchPalletSearch(pallet: any, query: string): boolean {
     if (normAlias.includes(qNorm) || unaccAlias.includes(qUnacc)) return true;
   }
 
-  // 3. Khớp chuỗi trên toàn bộ thông tin gộp
-  const fullText = [stt, lotCode, prodName, sku, aliases, locationCode, tag, notes].filter(Boolean).join(' ');
+  // 3. Khớp chuỗi trên toàn bộ thông tin gộp (bao gồm cả danh sách từng dòng sản phẩm con nếu là Pallet hỗn hợp)
+  const itemsText = Array.isArray(pallet.items)
+    ? pallet.items.map((it: any) => `${it.product_name || ''} ${it.sku || ''}`).join(' ')
+    : '';
+  const fullText = [stt, lotCode, prodName, sku, aliases, locationCode, tag, notes, itemsText].filter(Boolean).join(' ');
   const fullNorm = fullText.toLowerCase().normalize('NFC');
   const fullUnacc = normalizeSearchString(fullText, true);
 

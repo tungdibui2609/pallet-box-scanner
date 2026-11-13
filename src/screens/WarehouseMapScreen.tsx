@@ -24,6 +24,16 @@ import {
 import { decodeSTT } from '../utils/numberUtils';
 import { groupWarehouseData } from '../utils/warehouseUtils';
 import HallLotInputModal, { HallOption } from '../components/HallLotInputModal';
+import WarehouseAdjustmentDraftModal from '../components/warehouse/WarehouseAdjustmentDraftModal';
+import WarehouseDraftListModal from '../components/warehouse/WarehouseDraftListModal';
+import {
+  getLocalDraftProposal,
+  upsertDraftItem,
+  removeDraftItem,
+  DraftProposal,
+  ProposalItem,
+  syncOfflineAdjustmentProposals,
+} from '../services/warehouseAdjustmentService';
 import { matchPalletSearch, calculateSearchScore, matchSearch, normalizeSearchString } from '../utils/searchUtils';
 import { formatMaterialZoneList } from '../utils/provinces';
 
@@ -172,6 +182,60 @@ export const formatPositionQtyUnit = (qty?: number | null, unit?: string | null)
     : Number(qty.toFixed(2)).toLocaleString('vi-VN');
   return `${numStr} ${shortU}`;
 };
+
+export interface PositionProductSubItem {
+  name: string;
+  sku: string | null;
+  aliases: string | null;
+  quantity: number;
+  unit: string;
+}
+
+/**
+ * Trích xuất từng dòng sản phẩm chi tiết kèm số lượng thực tế của một vị trí (Pallet đơn hoặc Pallet hỗn hợp nhiều dòng SP)
+ */
+export function getPositionProductItems(pos: PositionItem): PositionProductSubItem[] {
+  if (!pos.lot_id || !pos.product_name) return [];
+
+  // 1. Nếu có items chi tiết từ lot_items
+  if (Array.isArray(pos.items) && pos.items.length > 0) {
+    const validItems = pos.items.filter(it => it && (it.product_name || '').trim());
+    if (validItems.length > 0) {
+      return validItems.map(it => ({
+        name: (it.product_name || '').trim(),
+        sku: it.sku || pos.sku || null,
+        aliases: pos.aliases || null,
+        quantity: it.quantity != null ? Number(it.quantity) : 0,
+        unit: getCleanUnitCategory(it.unit || pos.unit),
+      }));
+    }
+  }
+
+  // 2. Nếu không có items nhưng tên có dấu phẩy (nhiều sản phẩm gộp chuỗi)
+  const rawNames = pos.product_name.split(',').map(s => s.trim()).filter(Boolean);
+  const rawSkus = (pos.sku || '').split(',').map(s => s.trim()).filter(Boolean);
+  if (rawNames.length > 1) {
+    const eachQty = pos.quantity ? Number((pos.quantity / rawNames.length).toFixed(2)) : 0;
+    return rawNames.map((name, i) => ({
+      name,
+      sku: rawSkus[i] || pos.sku || null,
+      aliases: pos.aliases || null,
+      quantity: eachQty,
+      unit: getCleanUnitCategory(pos.unit),
+    }));
+  }
+
+  // 3. Sản phẩm đơn thông thường
+  return [
+    {
+      name: pos.product_name.trim(),
+      sku: pos.sku || null,
+      aliases: pos.aliases || null,
+      quantity: pos.quantity || 0,
+      unit: getCleanUnitCategory(pos.unit),
+    },
+  ];
+}
 
 /**
  * Sắp xếp các vị trí trong cùng 1 Ô / Tầng theo quy chuẩn thực tế kho:
@@ -981,8 +1045,8 @@ export default function WarehouseMapScreen({
           }));
           setModalLotItemsMap(prev => ({ ...prev, [lotId]: items }));
         })
-        .catch(() => {});
-    }).catch(() => {});
+        .catch(() => { });
+    }).catch(() => { });
   }, [selectedPosDetail]);
 
   // Modal Cập nhật LOT ở Sảnh
@@ -990,10 +1054,46 @@ export default function WarehouseMapScreen({
   const [hallModalInitial, setHallModalInitial] = useState<HallOption | null>(null);
   const [toastMsg, setToastMsg] = useState<{ text: string; type: 'success' | 'error' | 'warning' | 'info' } | null>(null);
 
+  // ── DRAFT ADJUSTMENT PROPOSAL STATE ──
+  const [isDraftMode, setIsDraftMode] = useState<boolean>(false);
+  const [draftProposal, setDraftProposal] = useState<DraftProposal>({
+    title: '',
+    notes: '',
+    items: [],
+    updated_at: new Date().toISOString(),
+  });
+  const [draftTargetPos, setDraftTargetPos] = useState<PositionItem | null>(null);
+  const [editingDraftItem, setEditingDraftItem] = useState<ProposalItem | null>(null);
+  const [isDraftListVisible, setIsDraftListVisible] = useState<boolean>(false);
+
+  // Map nhanh để kiểm tra vị trí nào đang có trong bản nháp
+  const draftItemsMap = useMemo(() => {
+    const map = new Map<string, ProposalItem>();
+    (draftProposal.items || []).forEach(it => {
+      map.set(it.position_id, it);
+    });
+    return map;
+  }, [draftProposal.items]);
+
+  // Tải bản nháp lưu trong máy khi mở màn hình
+  const refreshDraft = useCallback(async () => {
+    try {
+      const d = await getLocalDraftProposal();
+      setDraftProposal(d);
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshDraft();
+    syncOfflineAdjustmentProposals().catch(() => { });
+  }, [refreshDraft]);
+
   // Danh sách các sảnh có kèm theo kho cha (VD: Kho Đông 1 › SẢNH 1)
   const availableHalls = useMemo<HallOption[]>(() => {
     const rzMap = new Map(zones.map(z => [z.id, z]));
-    
+
     // Tìm kho gốc của 1 zone
     const findWarehouse = (zoneId: string): ZoneItem | null => {
       let curr = rzMap.get(zoneId);
@@ -1345,36 +1445,43 @@ export default function WarehouseMapScreen({
     [zonePathMap]
   );
 
-  // ── Danh sách sản phẩm duy nhất đang có trong kho (Pre-indexed cho gợi ý 0ms) ──────────────
+  // ── Danh sách sản phẩm duy nhất đang có trong kho (Pre-indexed cho gợi ý 0ms, hỗ trợ Pallet hỗn hợp nhiều dòng SP) ──────────────
   const uniqueProducts = useMemo(() => {
     const prodMap = new Map<string, UniqueProductItem>();
 
     for (let i = 0; i < positions.length; i++) {
       const p = positions[i];
-      if (p.product_name && p.lot_id) {
-        const name = p.product_name.trim();
-        const qty = p.quantity || 0;
-        const unitCat = getCleanUnitCategory(p.unit);
+      if (!p.lot_id) continue;
+
+      const subItems = getPositionProductItems(p);
+      for (let j = 0; j < subItems.length; j++) {
+        const sub = subItems[j];
+        const name = sub.name;
+        if (!name) continue;
+
+        const qty = sub.quantity || 0;
+        const unitCat = sub.unit;
         const existing = prodMap.get(name);
+
         if (existing) {
           existing.positionCount++;
           existing.totalQuantity += qty;
           existing.unitsMap.set(unitCat, (existing.unitsMap.get(unitCat) || 0) + qty);
-          if (!existing.aliases && p.aliases) {
-            existing.aliases = p.aliases;
-            existing.aliasList = p.aliases.split(',').map(a => a.trim()).filter(Boolean).map(a => ({
+          if (!existing.aliases && sub.aliases) {
+            existing.aliases = sub.aliases;
+            existing.aliasList = sub.aliases.split(',').map(a => a.trim()).filter(Boolean).map(a => ({
               raw: a,
               norm: normalizeSearchString(a),
               unacc: normalizeSearchString(a, true)
             }));
           }
-          if (!existing.sku && p.sku) {
-            existing.sku = p.sku;
-            existing.normSku = normalizeSearchString(p.sku);
-            existing.unaccSku = normalizeSearchString(p.sku, true);
+          if (!existing.sku && sub.sku) {
+            existing.sku = sub.sku;
+            existing.normSku = normalizeSearchString(sub.sku);
+            existing.unaccSku = normalizeSearchString(sub.sku, true);
           }
         } else {
-          const aliasList = (p.aliases || '').split(',').map(a => a.trim()).filter(Boolean).map(a => ({
+          const aliasList = (sub.aliases || '').split(',').map(a => a.trim()).filter(Boolean).map(a => ({
             raw: a,
             norm: normalizeSearchString(a),
             unacc: normalizeSearchString(a, true)
@@ -1383,16 +1490,16 @@ export default function WarehouseMapScreen({
           if (qty > 0) uMap.set(unitCat, qty);
           prodMap.set(name, {
             name,
-            sku: p.sku || null,
-            aliases: p.aliases || null,
+            sku: sub.sku || null,
+            aliases: sub.aliases || null,
             unit: unitCat,
             positionCount: 1,
             totalQuantity: qty,
             unitsMap: uMap,
             normName: normalizeSearchString(name),
             unaccName: normalizeSearchString(name, true),
-            normSku: normalizeSearchString(p.sku || ''),
-            unaccSku: normalizeSearchString(p.sku || '', true),
+            normSku: normalizeSearchString(sub.sku || ''),
+            unaccSku: normalizeSearchString(sub.sku || '', true),
             aliasList
           });
         }
@@ -1451,8 +1558,8 @@ export default function WarehouseMapScreen({
         p.material_zones && p.material_zones.length > 0
           ? p.material_zones
           : p.material_zone
-          ? p.material_zone.split(',').map(s => s.trim()).filter(Boolean)
-          : [];
+            ? p.material_zone.split(',').map(s => s.trim()).filter(Boolean)
+            : [];
       zonesList.forEach(z => {
         if (z && z !== '---') {
           regionCountMap.set(z, (regionCountMap.get(z) || 0) + 1);
@@ -1646,8 +1753,8 @@ export default function WarehouseMapScreen({
           p.material_zones && p.material_zones.length > 0
             ? p.material_zones
             : p.material_zone
-            ? p.material_zone.split(',').map(s => s.trim()).filter(Boolean)
-            : [];
+              ? p.material_zone.split(',').map(s => s.trim()).filter(Boolean)
+              : [];
         if (pZones.length === 0) continue;
 
         const matchedRegion = pZones.some(z => {
@@ -1659,9 +1766,11 @@ export default function WarehouseMapScreen({
 
       // 3. Lọc theo Từ khóa tìm kiếm
       if (hasQuery) {
-        // FAST-PATH 1 (0ms): Khi người dùng bấm chọn trực tiếp dòng sản phẩm gợi ý
+        // FAST-PATH 1 (0ms): Khi người dùng bấm chọn trực tiếp dòng sản phẩm gợi ý (hỗ trợ cả Pallet hỗn hợp nhiều dòng SP)
         if (isExactProductQuery) {
-          if (p.product_name && p.product_name.trim() === q) {
+          const subItems = getPositionProductItems(p);
+          const hasExact = subItems.some(sub => sub.name === q);
+          if (hasExact) {
             matched.push({ pos: p, score: 2000 });
           }
           continue;
@@ -1766,9 +1875,32 @@ export default function WarehouseMapScreen({
     const whMap = new Map<string, WhAcc>();
     const grandUnitsMap = new Map<string, number>();
 
+    const qClean = searchQuery.trim();
+    const isExactProduct = exactProductNamesSet.has(qClean);
+
     matchingPositions.forEach(p => {
-      const qty = p.quantity || 0;
-      const unitCat = getCleanUnitCategory(p.unit);
+      const subItems = getPositionProductItems(p);
+
+      let qty = p.quantity || 0;
+      let unitCat = getCleanUnitCategory(p.unit);
+
+      // Nếu pallet hỗn hợp nhiều dòng sản phẩm và đang có từ khóa tìm kiếm -> chỉ tính số lượng của sản phẩm khớp
+      if (subItems.length > 1 && qClean) {
+        if (isExactProduct) {
+          const matchedSub = subItems.find(s => s.name === qClean);
+          if (matchedSub) {
+            qty = matchedSub.quantity;
+            unitCat = matchedSub.unit;
+          }
+        } else {
+          const matchedSubs = subItems.filter(s => matchSearch(s.name, qClean) || (s.sku && matchSearch(s.sku, qClean)));
+          if (matchedSubs.length > 0) {
+            qty = matchedSubs.reduce((sum, s) => sum + s.quantity, 0);
+            unitCat = matchedSubs[0].unit;
+          }
+        }
+      }
+
       addQtyToMap(grandUnitsMap, unitCat, qty);
 
       let hier: { wh: ZoneItem; aisle: ZoneItem; slot: ZoneItem; tier?: ZoneItem } | undefined;
@@ -2194,6 +2326,76 @@ export default function WarehouseMapScreen({
     return map;
   }, [selectedSlotId, selectedTierId, tiers, positions, getDescendantZoneIds, onlyShowMatches, isSearchActive, matchingPosIds]);
 
+  // ── Render nội dung thẻ vị trí (Hỗ trợ hiển thị rõ ràng từng dòng sản phẩm cho Pallet hỗn hợp) ──
+  const renderPositionCardBody = useCallback((pos: PositionItem) => {
+    const subItems = getPositionProductItems(pos);
+    const qClean = searchQuery.trim().toLowerCase();
+
+    if (subItems.length > 1) {
+      return (
+        <View style={{ gap: 3, marginTop: 3 }}>
+          {subItems.map((sub, sIdx) => {
+            const isSubMatched = qClean.length > 0 && (
+              sub.name.toLowerCase().includes(qClean) ||
+              (sub.sku && sub.sku.toLowerCase().includes(qClean))
+            );
+            return (
+              <View
+                key={sIdx}
+                style={[
+                  { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 4 },
+                  isSubMatched ? { backgroundColor: '#78350f44', paddingHorizontal: 3, paddingVertical: 1, borderRadius: 3 } : null
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.posProdTitle,
+                    { flex: 1, fontSize: 10.5, lineHeight: 14 },
+                    isSubMatched && { color: '#fbbf24', fontWeight: '800' }
+                  ]}
+                  numberOfLines={1}
+                >
+                  • {sub.name}
+                </Text>
+                <Text style={[styles.posQtyText, { fontSize: 10, color: isSubMatched ? '#fef08a' : '#6ee7b7' }]}>
+                  {sub.quantity} {sub.unit?.toLowerCase().startsWith('thùng') ? 'th' : sub.unit}
+                </Text>
+              </View>
+            );
+          })}
+          <View style={styles.posBottomMeta}>
+            {getPositionTag(pos) ? (
+              <Text style={styles.posTagText} numberOfLines={1}>TAG: {getPositionTag(pos)}</Text>
+            ) : <View style={{ flex: 1 }} />}
+            {pos.quantity ? (
+              <Text style={[styles.posQtyText, { color: '#38bdf8', fontSize: 10.5, fontWeight: '800' }]}>
+                Tổng: {pos.quantity} {pos.unit?.toLowerCase().startsWith('thùng') ? 'th' : (pos.unit || 'th')}
+              </Text>
+            ) : null}
+          </View>
+        </View>
+      );
+    }
+
+    return (
+      <View style={{ gap: 2 }}>
+        <Text style={styles.posProdTitle} numberOfLines={2}>
+          {pos.product_name || 'Hàng đông lạnh'}
+        </Text>
+        <View style={styles.posBottomMeta}>
+          {getPositionTag(pos) ? (
+            <Text style={styles.posTagText} numberOfLines={1}>TAG: {getPositionTag(pos)}</Text>
+          ) : <View style={{ flex: 1 }} />}
+          {pos.quantity ? (
+            <Text style={styles.posQtyText}>
+              {pos.quantity} {pos.unit?.toLowerCase().startsWith('thùng') ? 'th' : (pos.unit || 'th')}
+            </Text>
+          ) : null}
+        </View>
+      </View>
+    );
+  }, [searchQuery]);
+
   // ── Jump to Position on Map ──
   const handleSelectSearchResult = (pos: PositionItem) => {
     const leafZoneId = pos.zone_ids[0];
@@ -2278,6 +2480,56 @@ export default function WarehouseMapScreen({
         </View>
 
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+          {/* Nút bật / tắt Chế độ Ghi Nháp Điều Chỉnh Vị Trí */}
+          <TouchableOpacity
+            style={[
+              styles.downloadOfflineBtn,
+              {
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 4,
+                paddingHorizontal: 9,
+                backgroundColor: isDraftMode ? '#78350f' : '#1e293b',
+                borderColor: isDraftMode ? '#f59e0b' : '#f59e0b44',
+                borderWidth: 1,
+              },
+            ]}
+            onPress={() => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+              setIsDraftMode(prev => !prev);
+            }}
+          >
+            <Ionicons
+              name={isDraftMode ? 'pencil' : 'pencil-outline'}
+              size={15}
+              color={isDraftMode ? '#fef08a' : '#f59e0b'}
+            />
+            <Text
+              style={{
+                color: isDraftMode ? '#fef08a' : '#f59e0b',
+                fontSize: 11,
+                fontWeight: '800',
+              }}
+            >
+              {isDraftMode ? 'Đang Nháp' : 'Ghi Nháp'}
+            </Text>
+            {draftProposal.items.length > 0 && (
+              <View
+                style={{
+                  backgroundColor: '#f59e0b',
+                  borderRadius: 10,
+                  paddingHorizontal: 5,
+                  paddingVertical: 1,
+                  marginLeft: 2,
+                }}
+              >
+                <Text style={{ color: '#000', fontSize: 9.5, fontWeight: '900' }}>
+                  {draftProposal.items.length}
+                </Text>
+              </View>
+            )}
+          </TouchableOpacity>
+
           <TouchableOpacity
             style={[styles.downloadOfflineBtn, { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10 }]}
             onPress={handleDownloadOffline}
@@ -2316,6 +2568,36 @@ export default function WarehouseMapScreen({
           >
             <Text style={styles.retryBtnText}>Thử lại</Text>
           </TouchableOpacity>
+        </View>
+      )}
+
+      {/* ── DRAFT MODE ACTIVE BANNER ── */}
+      {isDraftMode && (
+        <View style={styles.draftModeBanner}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 }}>
+            <Ionicons name="pencil" size={16} color="#fbbf24" />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.draftModeBannerTitle}>
+                Chế độ Ghi Nháp Vị Trí đang BẬT
+              </Text>
+              <Text style={styles.draftModeBannerSub}>
+                Chạm vào bất kỳ ô nào để Xuất rỗng (X), Sửa SL lẻ hoặc Chuyển ô
+              </Text>
+            </View>
+          </View>
+          {draftProposal.items.length > 0 && (
+            <TouchableOpacity
+              onPress={() => {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                setIsDraftListVisible(true);
+              }}
+              style={styles.draftModeViewBtn}
+            >
+              <Text style={styles.draftModeViewBtnText}>
+                Xem ({draftProposal.items.length})
+              </Text>
+            </TouchableOpacity>
+          )}
         </View>
       )}
 
@@ -3259,673 +3541,653 @@ export default function WarehouseMapScreen({
                 </View>
               </View>
 
-          {/* Switch Warehouse Pills */}
-          {visibleWarehouses.length > 0 && (
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 12 }}>
-              {/* TẤT CẢ KHO Pill */}
-              <TouchableOpacity
-                style={[
-                  styles.whPill,
-                  (!selectedWarehouseId || selectedWarehouseId === 'all') && styles.whPillActive
-                ]}
-                onPress={() => {
-                  setSelectedWarehouseId('all');
-                  setSelectedAisleId(null);
-                  setSelectedSlotId(null);
-                  setSelectedTierId(null);
-                }}
-              >
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                  <Text
-                    style={[
-                      styles.whPillText,
-                      (!selectedWarehouseId || selectedWarehouseId === 'all') && styles.whPillTextActive
-                    ]}
-                  >
-                    🌐 TẤT CẢ KHO
-                  </Text>
-                  {isSearchActive && matchingPositions.length > 0 && (
-                    <View style={styles.whMatchBadge}>
-                      <Text style={styles.whMatchBadgeText}>{matchingPositions.length}</Text>
-                    </View>
-                  )}
-                </View>
-              </TouchableOpacity>
-
-              {visibleWarehouses.map(wh => {
-                const whMatchCount = isSearchActive ? zoneMatchCountMap.get(wh.id) || 0 : 0;
-                const isAct = selectedWarehouseId === wh.id;
-                return (
+              {/* Switch Warehouse Pills */}
+              {visibleWarehouses.length > 0 && (
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 12 }}>
+                  {/* TẤT CẢ KHO Pill */}
                   <TouchableOpacity
-                    key={wh.id}
-                    style={[styles.whPill, isAct && styles.whPillActive]}
+                    style={[
+                      styles.whPill,
+                      (!selectedWarehouseId || selectedWarehouseId === 'all') && styles.whPillActive
+                    ]}
                     onPress={() => {
-                      setSelectedWarehouseId(wh.id);
+                      setSelectedWarehouseId('all');
                       setSelectedAisleId(null);
                       setSelectedSlotId(null);
                       setSelectedTierId(null);
                     }}
                   >
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                      <Text style={[styles.whPillText, isAct && styles.whPillTextActive]}>
-                        🏢 {wh.name}
+                      <Text
+                        style={[
+                          styles.whPillText,
+                          (!selectedWarehouseId || selectedWarehouseId === 'all') && styles.whPillTextActive
+                        ]}
+                      >
+                        🌐 TẤT CẢ KHO
                       </Text>
-                      {whMatchCount > 0 && (
+                      {isSearchActive && matchingPositions.length > 0 && (
                         <View style={styles.whMatchBadge}>
-                          <Text style={styles.whMatchBadgeText}>{whMatchCount}</Text>
+                          <Text style={styles.whMatchBadgeText}>{matchingPositions.length}</Text>
                         </View>
                       )}
                     </View>
                   </TouchableOpacity>
-                );
-              })}
+
+                  {visibleWarehouses.map(wh => {
+                    const whMatchCount = isSearchActive ? zoneMatchCountMap.get(wh.id) || 0 : 0;
+                    const isAct = selectedWarehouseId === wh.id;
+                    return (
+                      <TouchableOpacity
+                        key={wh.id}
+                        style={[styles.whPill, isAct && styles.whPillActive]}
+                        onPress={() => {
+                          setSelectedWarehouseId(wh.id);
+                          setSelectedAisleId(null);
+                          setSelectedSlotId(null);
+                          setSelectedTierId(null);
+                        }}
+                      >
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                          <Text style={[styles.whPillText, isAct && styles.whPillTextActive]}>
+                            🏢 {wh.name}
+                          </Text>
+                          {whMatchCount > 0 && (
+                            <View style={styles.whMatchBadge}>
+                              <Text style={styles.whMatchBadgeText}>{whMatchCount}</Text>
+                            </View>
+                          )}
+                        </View>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </ScrollView>
+              )}
+
+              <View style={styles.aislesList}>
+                {aisles.map(aisle => {
+                  const stats = zoneStatsMap.get(aisle.id) || { total: 0, occupied: 0, empty: 0 };
+                  const pct = stats.total > 0 ? Math.round((stats.occupied / stats.total) * 100) : 0;
+                  const matchCount = isSearchActive ? zoneMatchCountMap.get(aisle.id) || 0 : 0;
+                  const whName = (!selectedWarehouseId || selectedWarehouseId === 'all')
+                    ? getZoneName(aisle.parent_id)
+                    : '';
+                  const isHall = isHallZone(aisle);
+
+                  return (
+                    <TouchableOpacity
+                      key={aisle.id}
+                      style={[
+                        styles.aisleCard,
+                        isHall && styles.hallCard,
+                        matchCount > 0 && styles.aisleCardMatched
+                      ]}
+                      onPress={() => {
+                        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                        setSelectedAisleId(aisle.id);
+                        setSelectedSlotId(null);
+                        setSelectedTierId(null);
+                      }}
+                    >
+                      <View style={styles.aisleCardHeader}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 }}>
+                          <Text style={styles.aisleCardTitle}>
+                            {isHall ? '🚚 ' : '🚪 '}{aisle.name}
+                          </Text>
+                          {whName ? (
+                            <View style={styles.whTag}>
+                              <Text style={styles.whTagText}>{whName}</Text>
+                            </View>
+                          ) : null}
+                        </View>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                          {matchCount > 0 && (
+                            <View style={styles.matchCountBadge}>
+                              <Text style={styles.matchCountText}>🔥 {matchCount} khớp</Text>
+                            </View>
+                          )}
+                          {isHall && (
+                            <TouchableOpacity
+                              onPress={(e) => {
+                                e.stopPropagation();
+                                const matched = availableHalls.find(h => h.id === aisle.id);
+                                const currWh = aisle.parent_id
+                                  ? activeZones.find(z => z.id === aisle.parent_id)
+                                  : null;
+                                const whId = matched?.warehouse_id || aisle.parent_id || currWh?.id || null;
+                                const whName = matched?.warehouse_name || currWh?.name || null;
+                                const fullP = matched?.full_path || (whName ? `${whName} › ${aisle.name}` : aisle.name);
+
+                                setHallModalInitial({
+                                  id: aisle.id,
+                                  name: aisle.name,
+                                  warehouse_id: whId,
+                                  warehouse_name: whName,
+                                  full_path: fullP,
+                                });
+                                setIsHallLotModalVisible(true);
+                              }}
+                              style={styles.hallCardUpdateBtn}
+                            >
+                              <Feather name="truck" size={11} color="#ffffff" />
+                              <Text style={{ color: '#ffffff', fontSize: 10, fontWeight: '800' }}>Cập nhật</Text>
+                            </TouchableOpacity>
+                          )}
+                          <Text style={styles.aisleCardAction}>
+                            {isHall ? 'Xem Sảnh →' : 'Xem Ô →'}
+                          </Text>
+                        </View>
+                      </View>
+
+                      <View style={styles.aisleStatsRow}>
+                        <Text style={styles.statLabel}>Tổng: <Text style={styles.statValWhite}>{stats.total}</Text></Text>
+                        <Text style={styles.statLabel}>Có hàng: <Text style={styles.statValAmber}>{stats.occupied}</Text></Text>
+                        <Text style={styles.statLabel}>Trống: <Text style={styles.statValEmerald}>{stats.empty}</Text></Text>
+                      </View>
+
+                      <View style={styles.progressBarBg}>
+                        <View
+                          style={[
+                            styles.progressBarFill,
+                            {
+                              width: `${pct}%`,
+                              backgroundColor: isHall
+                                ? (pct >= 90 ? '#f59e0b' : '#38bdf8')
+                                : (pct >= 90 ? '#f59e0b' : '#10b981')
+                            }
+                          ]}
+                        />
+                      </View>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
             </ScrollView>
-          )}
-
-          <View style={styles.aislesList}>
-            {aisles.map(aisle => {
-              const stats = zoneStatsMap.get(aisle.id) || { total: 0, occupied: 0, empty: 0 };
-              const pct = stats.total > 0 ? Math.round((stats.occupied / stats.total) * 100) : 0;
-              const matchCount = isSearchActive ? zoneMatchCountMap.get(aisle.id) || 0 : 0;
-              const whName = (!selectedWarehouseId || selectedWarehouseId === 'all')
-                ? getZoneName(aisle.parent_id)
-                : '';
-              const isHall = isHallZone(aisle);
-
-              return (
+          ) : isSelectedAisleHall ? (
+            /* ── LEVEL 2-HALL: LƯỚI VỊ TRÍ TRONG SẢNH (CHUẨN GIAO DIỆN WEB) ── */
+            <ScrollView style={styles.contentScroll} contentContainerStyle={styles.scrollPadding}>
+              <View style={styles.sectionTitleRow}>
                 <TouchableOpacity
-                  key={aisle.id}
-                  style={[
-                    styles.aisleCard,
-                    isHall && styles.hallCard,
-                    matchCount > 0 && styles.aisleCardMatched
-                  ]}
+                  style={styles.backLevelBtn}
                   onPress={() => {
-                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                    setSelectedAisleId(aisle.id);
+                    setSelectedAisleId(null);
                     setSelectedSlotId(null);
                     setSelectedTierId(null);
                   }}
                 >
-                  <View style={styles.aisleCardHeader}>
-                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 }}>
-                      <Text style={styles.aisleCardTitle}>
-                        {isHall ? '🚚 ' : '🚪 '}{aisle.name}
-                      </Text>
-                      {whName ? (
-                        <View style={styles.whTag}>
-                          <Text style={styles.whTagText}>{whName}</Text>
-                        </View>
-                      ) : null}
-                    </View>
-                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                      {matchCount > 0 && (
-                        <View style={styles.matchCountBadge}>
-                          <Text style={styles.matchCountText}>🔥 {matchCount} khớp</Text>
-                        </View>
-                      )}
-                      {isHall && (
-                        <TouchableOpacity
-                          onPress={(e) => {
-                            e.stopPropagation();
-                            const matched = availableHalls.find(h => h.id === aisle.id);
-                            const currWh = aisle.parent_id
-                              ? activeZones.find(z => z.id === aisle.parent_id)
-                              : null;
-                            const whId = matched?.warehouse_id || aisle.parent_id || currWh?.id || null;
-                            const whName = matched?.warehouse_name || currWh?.name || null;
-                            const fullP = matched?.full_path || (whName ? `${whName} › ${aisle.name}` : aisle.name);
-
-                            setHallModalInitial({
-                              id: aisle.id,
-                              name: aisle.name,
-                              warehouse_id: whId,
-                              warehouse_name: whName,
-                              full_path: fullP,
-                            });
-                            setIsHallLotModalVisible(true);
-                          }}
-                          style={styles.hallCardUpdateBtn}
-                        >
-                          <Feather name="truck" size={11} color="#ffffff" />
-                          <Text style={{ color: '#ffffff', fontSize: 10, fontWeight: '800' }}>Cập nhật</Text>
-                        </TouchableOpacity>
-                      )}
-                      <Text style={styles.aisleCardAction}>
-                        {isHall ? 'Xem Sảnh →' : 'Xem Ô →'}
-                      </Text>
-                    </View>
-                  </View>
-
-                  <View style={styles.aisleStatsRow}>
-                    <Text style={styles.statLabel}>Tổng: <Text style={styles.statValWhite}>{stats.total}</Text></Text>
-                    <Text style={styles.statLabel}>Có hàng: <Text style={styles.statValAmber}>{stats.occupied}</Text></Text>
-                    <Text style={styles.statLabel}>Trống: <Text style={styles.statValEmerald}>{stats.empty}</Text></Text>
-                  </View>
-
-                  <View style={styles.progressBarBg}>
-                    <View
-                      style={[
-                        styles.progressBarFill,
-                        {
-                          width: `${pct}%`,
-                          backgroundColor: isHall
-                            ? (pct >= 90 ? '#f59e0b' : '#38bdf8')
-                            : (pct >= 90 ? '#f59e0b' : '#10b981')
-                        }
-                      ]}
-                    />
-                  </View>
+                  <Ionicons name="arrow-back" size={14} color="#38bdf8" />
+                  <Text style={styles.backLevelText}>Quay lại Dãy / Sảnh</Text>
                 </TouchableOpacity>
-              );
-            })}
-          </View>
-        </ScrollView>
-      ) : isSelectedAisleHall ? (
-        /* ── LEVEL 2-HALL: LƯỚI VỊ TRÍ TRONG SẢNH (CHUẨN GIAO DIỆN WEB) ── */
-        <ScrollView style={styles.contentScroll} contentContainerStyle={styles.scrollPadding}>
-          <View style={styles.sectionTitleRow}>
-            <TouchableOpacity
-              style={styles.backLevelBtn}
-              onPress={() => {
-                setSelectedAisleId(null);
-                setSelectedSlotId(null);
-                setSelectedTierId(null);
-              }}
-            >
-              <Ionicons name="arrow-back" size={14} color="#38bdf8" />
-              <Text style={styles.backLevelText}>Quay lại Dãy / Sảnh</Text>
-            </TouchableOpacity>
 
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-              {isSearchActive && (
-                <TouchableOpacity
-                  style={[styles.onlyMatchToggle, onlyShowMatches && styles.onlyMatchToggleActive]}
-                  onPress={() => setOnlyShowMatches(!onlyShowMatches)}
-                >
-                  <Text style={[styles.onlyMatchToggleText, onlyShowMatches && styles.onlyMatchToggleTextActive]}>
-                    ⭐ {onlyShowMatches ? 'Hiện tất cả' : 'Chỉ khớp'}
-                  </Text>
-                </TouchableOpacity>
-              )}
-              <Text style={styles.sectionCount}>{currentPositions.length} vị trí</Text>
-            </View>
-          </View>
-
-          {/* Hall Banner với Nút Cập Nhật LOT Sảnh */}
-          <View style={styles.hallBanner}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-              <View style={{ flex: 1, marginRight: 8 }}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                  <View style={styles.hallBadge}>
-                    <Text style={styles.hallBadgeText}>SẢNH</Text>
-                  </View>
-                  <Text style={styles.hallTitle}>{getZoneName(selectedAisleId)}</Text>
-                </View>
-                {/* Đường dẫn phân cấp: Kho > Sảnh */}
-                <Text style={{ color: '#38bdf8', fontSize: 11, fontWeight: '700', marginTop: 3 }}>
-                  📍 {zonePathMap.get(selectedAisleId || '') || getZoneName(selectedAisleId)}
-                </Text>
-              </View>
-
-              {/* Nút Cập nhật LOT Sảnh */}
-              <TouchableOpacity
-                onPress={() => {
-                  const matched = availableHalls.find(h => h.id === selectedAisleId);
-                  const currWh = selectedWarehouseId && selectedWarehouseId !== 'all'
-                    ? activeZones.find(z => z.id === selectedWarehouseId)
-                    : (selectedAisle?.parent_id ? activeZones.find(z => z.id === selectedAisle.parent_id) : null);
-                  const whId = matched?.warehouse_id || currWh?.id || selectedWarehouseId || null;
-                  const whName = matched?.warehouse_name || currWh?.name || null;
-                  const aisleName = selectedAisle?.name || getZoneName(selectedAisleId);
-                  const fullP = matched?.full_path || (whName ? `${whName} › ${aisleName}` : aisleName);
-
-                  setHallModalInitial({
-                    id: selectedAisleId || '',
-                    name: aisleName,
-                    warehouse_id: whId,
-                    warehouse_name: whName,
-                    full_path: fullP,
-                  });
-                  setIsHallLotModalVisible(true);
-                }}
-                style={{
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  gap: 6,
-                  backgroundColor: '#0284c7',
-                  paddingHorizontal: 12,
-                  paddingVertical: 8,
-                  borderRadius: 12,
-                  borderWidth: 1,
-                  borderColor: '#38bdf8',
-                }}
-              >
-                <Feather name="truck" size={14} color="#ffffff" />
-                <Text style={{ color: '#ffffff', fontSize: 11, fontWeight: '900' }}>Cập nhật LOT</Text>
-              </TouchableOpacity>
-            </View>
-
-            <Text style={[styles.hallSub, { marginTop: 6 }]}>
-              <Text style={{ color: '#fbbf24', fontWeight: '800' }}>
-                {currentPositions.filter(p => p.lot_id).length} có hàng
-              </Text>
-              {' · '}
-              <Text style={{ color: '#34d399', fontWeight: '800' }}>
-                {currentPositions.filter(p => !p.lot_id).length} trống
-              </Text>
-            </Text>
-          </View>
-
-          {/* Lưới 2 cột các vị trí */}
-          {currentPositions.length === 0 ? (
-            <View style={{ paddingVertical: 40, alignItems: 'center' }}>
-              <Text style={{ color: '#64748b', fontSize: 13 }}>Chưa có dữ liệu vị trí nào trong sảnh này.</Text>
-            </View>
-          ) : (
-            <View style={styles.hallPositionsGrid}>
-              {currentPositions.map(pos => {
-                const isOccupied = !!pos.lot_id;
-                const isHighlighted = pos.id === highlightedPosId;
-                const isMatched = matchingPosIds.has(pos.id);
-
-                return (
-                  <TouchableOpacity
-                    key={pos.id}
-                    style={[
-                      styles.hallPosCard,
-                      isOccupied ? styles.hallPosCardOccupied : styles.hallPosCardEmpty,
-                      isMatched && styles.hallPosCardMatched,
-                      isHighlighted && styles.hallPosCardHighlighted
-                    ]}
-                    onPress={() => {
-                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                      setSelectedPosDetail(pos);
-                    }}
-                    activeOpacity={0.8}
-                  >
-                    <View style={styles.hallPosCardHeader}>
-                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 3, flex: 1, minWidth: 0, paddingRight: 2 }}>
-                        <Text style={styles.hallPosCode} numberOfLines={1}>{pos.code}</Text>
-                        {pos.inbound_date ? (
-                          <View style={styles.posDateBadge}>
-                            <Text style={styles.posDateBadgeText} numberOfLines={1}>
-                              {formatDateShortVN(pos.inbound_date)}
-                            </Text>
-                          </View>
-                        ) : null}
-                      </View>
-                      {isOccupied ? (
-                        <View style={styles.hallSttBadge}>
-                          <Text style={styles.hallSttBadgeText}>#{pos.stt || 'LOT'}</Text>
-                        </View>
-                      ) : (
-                        <View style={styles.hallEmptyBadge}>
-                          <Text style={styles.hallEmptyBadgeText}>TRỐNG</Text>
-                        </View>
-                      )}
-                    </View>
-
-                    {isOccupied ? (
-                      <View style={{ marginTop: 4, gap: 2 }}>
-                        <Text style={styles.hallProductName}>
-                          {pos.product_name || 'Hàng đông lạnh'}
-                        </Text>
-                        <View style={styles.hallPosMetaRow}>
-                          {getPositionTag(pos) ? (
-                            <Text style={styles.hallTagText} numberOfLines={1}>TAG: {getPositionTag(pos)}</Text>
-                          ) : <View style={{ flex: 1 }} />}
-                          {pos.quantity ? (
-                            <Text style={styles.hallQtyText}>
-                              {pos.quantity} {pos.unit?.toLowerCase().startsWith('thùng') ? 'th' : (pos.unit || 'th')}
-                            </Text>
-                          ) : null}
-                        </View>
-                      </View>
-                    ) : (
-                      <View style={styles.hallEmptyPlaceholder}>
-                        <Text style={styles.hallEmptyPlaceholderText}>+ Vị trí trống</Text>
-                      </View>
-                    )}
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
-          )}
-        </ScrollView>
-      ) : !selectedSlotId ? (
-        /* ── LEVEL 2: DANH SÁCH Ô KỆ TRONG DÃY ─────────────────── */
-        <ScrollView style={styles.contentScroll} contentContainerStyle={styles.scrollPadding}>
-          <View style={styles.sectionTitleRow}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-              <TouchableOpacity
-                style={styles.backLevelBtn}
-                onPress={() => setSelectedAisleId(null)}
-              >
-                <Ionicons name="arrow-back" size={14} color="#38bdf8" />
-                <Text style={styles.backLevelText}>Quay lại Dãy</Text>
-              </TouchableOpacity>
-              <Text style={{ color: '#34d399', fontSize: 11, fontWeight: '800', textTransform: 'uppercase' }}>
-                Bước 3: Chọn Ô ({getZoneName(selectedAisleId)})
-              </Text>
-            </View>
-            <Text style={styles.sectionCount}>{slots.length} ô gộp</Text>
-          </View>
-
-          <View style={styles.slotsGrid}>
-            {slots.map(slot => {
-              const stats = zoneStatsMap.get(slot.id) || { total: 0, occupied: 0, empty: 0 };
-              const pct = stats.total > 0 ? Math.round((stats.occupied / stats.total) * 100) : 0;
-              const matchCount = isSearchActive ? zoneMatchCountMap.get(slot.id) || 0 : 0;
-
-              return (
-                <TouchableOpacity
-                  key={slot.id}
-                  style={[
-                    styles.slotCard,
-                    matchCount > 0 && styles.slotCardMatched
-                  ]}
-                  onPress={() => {
-                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                    setSelectedSlotId(slot.id);
-                    setSelectedTierId(null);
-                  }}
-                >
-                  <Text style={styles.slotCardTitle}>{slot.name}</Text>
-                  {matchCount > 0 && (
-                    <View style={styles.slotMatchBadge}>
-                      <Text style={styles.slotMatchText}>⚡ {matchCount} khớp</Text>
-                    </View>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  {isSearchActive && (
+                    <TouchableOpacity
+                      style={[styles.onlyMatchToggle, onlyShowMatches && styles.onlyMatchToggleActive]}
+                      onPress={() => setOnlyShowMatches(!onlyShowMatches)}
+                    >
+                      <Text style={[styles.onlyMatchToggleText, onlyShowMatches && styles.onlyMatchToggleTextActive]}>
+                        ⭐ {onlyShowMatches ? 'Hiện tất cả' : 'Chỉ khớp'}
+                      </Text>
+                    </TouchableOpacity>
                   )}
-                  <Text style={styles.slotEmptyText}>Trống {stats.empty}</Text>
+                  <Text style={styles.sectionCount}>{currentPositions.length} vị trí</Text>
+                </View>
+              </View>
 
-                  <View style={styles.slotCardStats}>
-                    <Text style={styles.slotStatsText}>{stats.occupied}/{stats.total} vị trí</Text>
-                    <Text style={styles.slotCardPct}>{pct}%</Text>
-                  </View>
-
-                  <View style={styles.progressBarBg}>
-                    <View
-                      style={[
-                        styles.progressBarFill,
-                        {
-                          width: `${pct}%`,
-                          backgroundColor: pct >= 90 ? '#f59e0b' : '#10b981'
-                        }
-                      ]}
-                    />
-                  </View>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
-        </ScrollView>
-      ) : (
-        /* ── LEVEL 3: LƯỚI VỊ TRÍ TẦNG CỦA Ô ───────────────────── */
-        <View style={{ flex: 1 }}>
-          <View style={[styles.sectionTitleRow, { paddingHorizontal: 12, paddingTop: 10 }]}>
-            <TouchableOpacity
-              style={styles.backLevelBtn}
-              onPress={() => setSelectedSlotId(null)}
-            >
-              <Ionicons name="arrow-back" size={14} color="#38bdf8" />
-              <Text style={styles.backLevelText}>Quay lại Ô kệ</Text>
-            </TouchableOpacity>
-
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-              {isSearchActive && (
-                <TouchableOpacity
-                  style={[styles.onlyMatchToggle, onlyShowMatches && styles.onlyMatchToggleActive]}
-                  onPress={() => setOnlyShowMatches(!onlyShowMatches)}
-                >
-                  <Text style={[styles.onlyMatchToggleText, onlyShowMatches && styles.onlyMatchToggleTextActive]}>
-                    ⭐ {onlyShowMatches ? 'Hiện tất cả' : 'Chỉ khớp'}
-                  </Text>
-                </TouchableOpacity>
-              )}
-              <Text style={styles.sectionCount}>{currentPositions.length} vị trí</Text>
-            </View>
-          </View>
-
-          {/* Tiers horizontal tabs */}
-          <View style={styles.tierTabsContainer}>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: 12, gap: 6 }}>
-              <TouchableOpacity
-                style={[styles.tierTab, !selectedTierId && styles.tierTabActive]}
-                onPress={() => setSelectedTierId(null)}
-              >
-                <Text style={[styles.tierTabText, !selectedTierId && styles.tierTabTextActive]}>
-                  Tất cả tầng ({currentPositions.length})
-                </Text>
-              </TouchableOpacity>
-
-              {tiers.map(tier => {
-                const stats = zoneStatsMap.get(tier.id) || { total: 0, occupied: 0, empty: 0 };
-                const isAct = selectedTierId === tier.id;
-                return (
-                  <TouchableOpacity
-                    key={tier.id}
-                    style={[styles.tierTab, isAct && styles.tierTabActive]}
-                    onPress={() => setSelectedTierId(tier.id)}
-                  >
-                    <Text style={[styles.tierTabText, isAct && styles.tierTabTextActive]}>
-                      {tier.name} ({stats.occupied}/{stats.total})
+              {/* Hall Banner với Nút Cập Nhật LOT Sảnh */}
+              <View style={styles.hallBanner}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <View style={{ flex: 1, marginRight: 8 }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                      <View style={styles.hallBadge}>
+                        <Text style={styles.hallBadgeText}>SẢNH</Text>
+                      </View>
+                      <Text style={styles.hallTitle}>{getZoneName(selectedAisleId)}</Text>
+                    </View>
+                    {/* Đường dẫn phân cấp: Kho > Sảnh */}
+                    <Text style={{ color: '#38bdf8', fontSize: 11, fontWeight: '700', marginTop: 3 }}>
+                      📍 {zonePathMap.get(selectedAisleId || '') || getZoneName(selectedAisleId)}
                     </Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </ScrollView>
-          </View>
-
-          {/* Positions Grid & Shelves */}
-          <ScrollView contentContainerStyle={styles.positionsGridPadding}>
-            {!selectedTierId ? (
-              /* Khi xem tất cả tầng: Hiển thị Accordion có Mở tất cả & Thu tất cả (Tầng 1 -> Tầng 5) */
-              <View style={styles.tierShelvesContainer}>
-                {/* Thanh điều khiển Mở tất cả / Thu tất cả */}
-                <View style={styles.tierAccordionHeaderBar}>
-                  <Text style={styles.tierAccordionTitle}>
-                    Chi tiết theo tầng ({tiers.length} tầng):
-                  </Text>
-                  <View style={{ flexDirection: 'row', gap: 6 }}>
-                    <TouchableOpacity style={styles.tierToggleBtn} onPress={handleExpandAllTiers}>
-                      <Text style={[styles.tierToggleBtnText, { color: '#38bdf8' }]}>+ Mở tất cả</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity style={styles.tierToggleBtn} onPress={handleCollapseAllTiers}>
-                      <Text style={[styles.tierToggleBtnText, { color: '#cbd5e1' }]}>− Thu tất cả</Text>
-                    </TouchableOpacity>
                   </View>
+
+                  {/* Nút Cập nhật LOT Sảnh */}
+                  <TouchableOpacity
+                    onPress={() => {
+                      const matched = availableHalls.find(h => h.id === selectedAisleId);
+                      const currWh = selectedWarehouseId && selectedWarehouseId !== 'all'
+                        ? activeZones.find(z => z.id === selectedWarehouseId)
+                        : (selectedAisle?.parent_id ? activeZones.find(z => z.id === selectedAisle.parent_id) : null);
+                      const whId = matched?.warehouse_id || currWh?.id || selectedWarehouseId || null;
+                      const whName = matched?.warehouse_name || currWh?.name || null;
+                      const aisleName = selectedAisle?.name || getZoneName(selectedAisleId);
+                      const fullP = matched?.full_path || (whName ? `${whName} › ${aisleName}` : aisleName);
+
+                      setHallModalInitial({
+                        id: selectedAisleId || '',
+                        name: aisleName,
+                        warehouse_id: whId,
+                        warehouse_name: whName,
+                        full_path: fullP,
+                      });
+                      setIsHallLotModalVisible(true);
+                    }}
+                    style={{
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      gap: 6,
+                      backgroundColor: '#0284c7',
+                      paddingHorizontal: 12,
+                      paddingVertical: 8,
+                      borderRadius: 12,
+                      borderWidth: 1,
+                      borderColor: '#38bdf8',
+                    }}
+                  >
+                    <Feather name="truck" size={14} color="#ffffff" />
+                    <Text style={{ color: '#ffffff', fontSize: 11, fontWeight: '900' }}>Cập nhật LOT</Text>
+                  </TouchableOpacity>
                 </View>
 
-                {tiers.map(tier => {
-                  const tierPositions = tierPositionsMap?.get(tier.id) || [];
-                  const stats = zoneStatsMap.get(tier.id) || { total: 0, occupied: 0, empty: 0 };
-                  const isExpanded = expandedTierIds.has(tier.id);
-                  if (tierPositions.length === 0) return null;
+                <Text style={[styles.hallSub, { marginTop: 6 }]}>
+                  <Text style={{ color: '#fbbf24', fontWeight: '800' }}>
+                    {currentPositions.filter(p => p.lot_id).length} có hàng
+                  </Text>
+                  {' · '}
+                  <Text style={{ color: '#34d399', fontWeight: '800' }}>
+                    {currentPositions.filter(p => !p.lot_id).length} trống
+                  </Text>
+                </Text>
+              </View>
 
-                  return (
-                    <View key={tier.id} style={[styles.tierAccordionCard, isExpanded && styles.tierAccordionCardExpanded]}>
+              {/* Lưới 2 cột các vị trí */}
+              {currentPositions.length === 0 ? (
+                <View style={{ paddingVertical: 40, alignItems: 'center' }}>
+                  <Text style={{ color: '#64748b', fontSize: 13 }}>Chưa có dữ liệu vị trí nào trong sảnh này.</Text>
+                </View>
+              ) : (
+                <View style={styles.hallPositionsGrid}>
+                  {currentPositions.map(pos => {
+                    const isOccupied = !!pos.lot_id;
+                    const isHighlighted = pos.id === highlightedPosId;
+                    const isMatched = matchingPosIds.has(pos.id);
+                    const hasDraft = draftItemsMap.has(pos.id);
+                    const draftItem = draftItemsMap.get(pos.id);
+
+                    return (
                       <TouchableOpacity
-                        style={[styles.tierAccordionBtn, isExpanded && styles.tierAccordionBtnExpanded]}
-                        onPress={() => toggleTierExpand(tier.id)}
-                        activeOpacity={0.7}
+                        key={pos.id}
+                        style={[
+                          styles.hallPosCard,
+                          isOccupied ? styles.hallPosCardOccupied : styles.hallPosCardEmpty,
+                          isMatched && styles.hallPosCardMatched,
+                          isHighlighted && styles.hallPosCardHighlighted,
+                          hasDraft && styles.posCardDraftActive,
+                        ]}
+                        onPress={() => {
+                          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                          if (isDraftMode) {
+                            setDraftTargetPos(pos);
+                            setEditingDraftItem(draftItem || null);
+                          } else {
+                            setSelectedPosDetail(pos);
+                          }
+                        }}
+                        activeOpacity={0.8}
                       >
-                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7, flex: 1 }}>
-                          <Ionicons
-                            name={isExpanded ? 'chevron-down' : 'chevron-forward'}
-                            size={14}
-                            color={isExpanded ? '#38bdf8' : '#64748b'}
-                          />
-                          <View style={styles.tierDot} />
-                          <Text style={styles.tierAccordionName}>{tier.name}</Text>
-                          <Text style={styles.tierOccupancyText}>
-                            ({stats.occupied}/{stats.total} vị trí có hàng)
-                          </Text>
-                        </View>
-                        <Text style={styles.tierEmptyCountText}>
-                          {stats.empty} trống
-                        </Text>
-                      </TouchableOpacity>
-
-                      {isExpanded && (
-                        <View style={styles.tierAccordionBody}>
-                          <View style={styles.positionsGrid}>
-                            {tierPositions.map(pos => {
-                              const isOccupied = !!pos.lot_id;
-                              const isHigh = pos.id === highlightedPosId;
-                              const isMatched = isSearchActive && matchingPosIds.has(pos.id);
-
-                              return (
-                                <TouchableOpacity
-                                  key={pos.id}
-                                  style={[
-                                    styles.posCard,
-                                    isOccupied ? styles.posCardOccupied : styles.posCardEmpty,
-                                    isHigh && styles.posCardHighlighted,
-                                    isMatched && styles.posCardMatched
-                                  ]}
-                                  onPress={() => {
-                                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                                    setSelectedPosDetail(pos);
-                                  }}
-                                >
-                                  <View style={styles.posCardHeader}>
-                                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 3, flex: 1, minWidth: 0, paddingRight: 2 }}>
-                                      <Text style={styles.posCodeText} numberOfLines={1}>{pos.code}</Text>
-                                      {pos.inbound_date ? (
-                                        <View style={styles.posDateBadge}>
-                                          <Text style={styles.posDateBadgeText} numberOfLines={1}>
-                                            {formatDateShortVN(pos.inbound_date)}
-                                          </Text>
-                                        </View>
-                                      ) : null}
-                                    </View>
-                                    {isOccupied ? (
-                                      <View style={styles.posSttBadge}>
-                                        <Text style={styles.posSttBadgeText} numberOfLines={1}>
-                                          {pos.stt ? `#${pos.stt}` : 'LOT'}
-                                        </Text>
-                                      </View>
-                                    ) : (
-                                      <View style={styles.posEmptyBadge}>
-                                        <Text style={styles.posEmptyBadgeText}>TRỐNG</Text>
-                                      </View>
-                                    )}
-                                  </View>
-
-                                  {isOccupied ? (
-                                    <View style={{ gap: 2 }}>
-                                      <Text style={styles.posProdTitle}>
-                                        {pos.product_name || 'Hàng đông lạnh'}
-                                      </Text>
-                                      <View style={styles.posBottomMeta}>
-                                        {getPositionTag(pos) ? (
-                                          <Text style={styles.posTagText} numberOfLines={1}>
-                                            TAG: {getPositionTag(pos)}
-                                          </Text>
-                                        ) : <View style={{ flex: 1 }} />}
-                                        {pos.quantity ? (
-                                          <Text style={styles.posQtyText}>
-                                            {pos.quantity} {pos.unit?.toLowerCase().startsWith('thùng') ? 'th' : (pos.unit || 'th')}
-                                          </Text>
-                                        ) : null}
-                                      </View>
-                                    </View>
-                                  ) : (
-                                    <View style={styles.emptySlotHint}>
-                                      <Text style={styles.emptySlotHintText}>+ Trống</Text>
-                                    </View>
-                                  )}
-                                </TouchableOpacity>
-                              );
-                            })}
+                        <View style={styles.hallPosCardHeader}>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 3, flex: 1, minWidth: 0, paddingRight: 2 }}>
+                            <Text style={styles.hallPosCode} numberOfLines={1}>{pos.code}</Text>
+                            {hasDraft && (
+                              <View style={styles.draftMiniBadge}>
+                                <Text style={styles.draftMiniBadgeText}>✏️ Nháp</Text>
+                              </View>
+                            )}
+                            {pos.inbound_date ? (
+                              <View style={styles.posDateBadge}>
+                                <Text style={styles.posDateBadgeText} numberOfLines={1}>
+                                  {formatDateShortVN(pos.inbound_date)}
+                                </Text>
+                              </View>
+                            ) : null}
                           </View>
+                          {isOccupied ? (
+                            <View style={styles.hallSttBadge}>
+                              <Text style={styles.hallSttBadgeText}>#{pos.stt || 'LOT'}</Text>
+                            </View>
+                          ) : (
+                            <View style={styles.hallEmptyBadge}>
+                              <Text style={styles.hallEmptyBadgeText}>TRỐNG</Text>
+                            </View>
+                          )}
                         </View>
-                      )}
-                    </View>
-                  );
-                })}
+
+                        {isOccupied ? (
+                          renderPositionCardBody(pos)
+                        ) : (
+                          <View style={styles.hallEmptyPlaceholder}>
+                            <Text style={styles.hallEmptyPlaceholderText}>+ Vị trí trống</Text>
+                          </View>
+                        )}
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              )}
+            </ScrollView>
+          ) : !selectedSlotId ? (
+            /* ── LEVEL 2: DANH SÁCH Ô KỆ TRONG DÃY ─────────────────── */
+            <ScrollView style={styles.contentScroll} contentContainerStyle={styles.scrollPadding}>
+              <View style={styles.sectionTitleRow}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                  <TouchableOpacity
+                    style={styles.backLevelBtn}
+                    onPress={() => setSelectedAisleId(null)}
+                  >
+                    <Ionicons name="arrow-back" size={14} color="#38bdf8" />
+                    <Text style={styles.backLevelText}>Quay lại Dãy</Text>
+                  </TouchableOpacity>
+                  <Text style={{ color: '#34d399', fontSize: 11, fontWeight: '800', textTransform: 'uppercase' }}>
+                    Bước 3: Chọn Ô ({getZoneName(selectedAisleId)})
+                  </Text>
+                </View>
+                <Text style={styles.sectionCount}>{slots.length} ô gộp</Text>
               </View>
-            ) : currentPositions.length === 0 ? (
-              <View style={{ paddingVertical: 40, alignItems: 'center' }}>
-                <Text style={{ color: '#64748b', fontSize: 13 }}>Chưa có vị trí nào trong khu vực này</Text>
-              </View>
-            ) : (
-              <View style={styles.positionsGrid}>
-                {currentPositions.map(pos => {
-                  const isOccupied = !!pos.lot_id;
-                  const isHigh = pos.id === highlightedPosId;
-                  const isMatched = isSearchActive && matchingPosIds.has(pos.id);
+
+              <View style={styles.slotsGrid}>
+                {slots.map(slot => {
+                  const stats = zoneStatsMap.get(slot.id) || { total: 0, occupied: 0, empty: 0 };
+                  const pct = stats.total > 0 ? Math.round((stats.occupied / stats.total) * 100) : 0;
+                  const matchCount = isSearchActive ? zoneMatchCountMap.get(slot.id) || 0 : 0;
 
                   return (
                     <TouchableOpacity
-                      key={pos.id}
+                      key={slot.id}
                       style={[
-                        styles.posCard,
-                        isOccupied ? styles.posCardOccupied : styles.posCardEmpty,
-                        isHigh && styles.posCardHighlighted,
-                        isMatched && styles.posCardMatched
+                        styles.slotCard,
+                        matchCount > 0 && styles.slotCardMatched
                       ]}
                       onPress={() => {
                         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                        setSelectedPosDetail(pos);
+                        setSelectedSlotId(slot.id);
+                        setSelectedTierId(null);
                       }}
                     >
-                      <View style={styles.posCardHeader}>
-                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 3, flex: 1, minWidth: 0, paddingRight: 2 }}>
-                          <Text style={styles.posCodeText} numberOfLines={1}>{pos.code}</Text>
-                          {pos.inbound_date ? (
-                            <View style={styles.posDateBadge}>
-                              <Text style={styles.posDateBadgeText} numberOfLines={1}>
-                                {formatDateShortVN(pos.inbound_date)}
-                              </Text>
-                            </View>
-                          ) : null}
-                        </View>
-                        {isOccupied ? (
-                          <View style={styles.posSttBadge}>
-                            <Text style={styles.posSttBadgeText} numberOfLines={1}>
-                              {pos.stt ? `#${pos.stt}` : 'LOT'}
-                            </Text>
-                          </View>
-                        ) : (
-                          <View style={styles.posEmptyBadge}>
-                            <Text style={styles.posEmptyBadgeText}>TRỐNG</Text>
-                          </View>
-                        )}
-                      </View>
-
-                      {isOccupied ? (
-                        <View style={{ gap: 2 }}>
-                          <Text style={styles.posProdTitle}>
-                            {pos.product_name || 'Hàng đông lạnh'}
-                          </Text>
-                          <View style={styles.posBottomMeta}>
-                            {getPositionTag(pos) ? (
-                              <Text style={styles.posTagText} numberOfLines={1}>
-                                TAG: {getPositionTag(pos)}
-                              </Text>
-                            ) : <View style={{ flex: 1 }} />}
-                            {pos.quantity ? (
-                              <Text style={styles.posQtyText}>
-                                {pos.quantity} {pos.unit?.toLowerCase().startsWith('thùng') ? 'th' : (pos.unit || 'th')}
-                              </Text>
-                            ) : null}
-                          </View>
-                        </View>
-                      ) : (
-                        <View style={styles.emptySlotHint}>
-                          <Text style={styles.emptySlotHintText}>+ Sẵn sàng xếp hàng</Text>
+                      <Text style={styles.slotCardTitle}>{slot.name}</Text>
+                      {matchCount > 0 && (
+                        <View style={styles.slotMatchBadge}>
+                          <Text style={styles.slotMatchText}>⚡ {matchCount} khớp</Text>
                         </View>
                       )}
+                      <Text style={styles.slotEmptyText}>Trống {stats.empty}</Text>
+
+                      <View style={styles.slotCardStats}>
+                        <Text style={styles.slotStatsText}>{stats.occupied}/{stats.total} vị trí</Text>
+                        <Text style={styles.slotCardPct}>{pct}%</Text>
+                      </View>
+
+                      <View style={styles.progressBarBg}>
+                        <View
+                          style={[
+                            styles.progressBarFill,
+                            {
+                              width: `${pct}%`,
+                              backgroundColor: pct >= 90 ? '#f59e0b' : '#10b981'
+                            }
+                          ]}
+                        />
+                      </View>
                     </TouchableOpacity>
                   );
                 })}
               </View>
-            )}
-          </ScrollView>
-        </View>
-      )}
+            </ScrollView>
+          ) : (
+            /* ── LEVEL 3: LƯỚI VỊ TRÍ TẦNG CỦA Ô ───────────────────── */
+            <View style={{ flex: 1 }}>
+              <View style={[styles.sectionTitleRow, { paddingHorizontal: 12, paddingTop: 10 }]}>
+                <TouchableOpacity
+                  style={styles.backLevelBtn}
+                  onPress={() => setSelectedSlotId(null)}
+                >
+                  <Ionicons name="arrow-back" size={14} color="#38bdf8" />
+                  <Text style={styles.backLevelText}>Quay lại Ô kệ</Text>
+                </TouchableOpacity>
+
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                  {isSearchActive && (
+                    <TouchableOpacity
+                      style={[styles.onlyMatchToggle, onlyShowMatches && styles.onlyMatchToggleActive]}
+                      onPress={() => setOnlyShowMatches(!onlyShowMatches)}
+                    >
+                      <Text style={[styles.onlyMatchToggleText, onlyShowMatches && styles.onlyMatchToggleTextActive]}>
+                        ⭐ {onlyShowMatches ? 'Hiện tất cả' : 'Chỉ khớp'}
+                      </Text>
+                    </TouchableOpacity>
+                  )}
+                  <Text style={styles.sectionCount}>{currentPositions.length} vị trí</Text>
+                </View>
+              </View>
+
+              {/* Tiers horizontal tabs */}
+              <View style={styles.tierTabsContainer}>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: 12, gap: 6 }}>
+                  <TouchableOpacity
+                    style={[styles.tierTab, !selectedTierId && styles.tierTabActive]}
+                    onPress={() => setSelectedTierId(null)}
+                  >
+                    <Text style={[styles.tierTabText, !selectedTierId && styles.tierTabTextActive]}>
+                      Tất cả tầng ({currentPositions.length})
+                    </Text>
+                  </TouchableOpacity>
+
+                  {tiers.map(tier => {
+                    const stats = zoneStatsMap.get(tier.id) || { total: 0, occupied: 0, empty: 0 };
+                    const isAct = selectedTierId === tier.id;
+                    return (
+                      <TouchableOpacity
+                        key={tier.id}
+                        style={[styles.tierTab, isAct && styles.tierTabActive]}
+                        onPress={() => setSelectedTierId(tier.id)}
+                      >
+                        <Text style={[styles.tierTabText, isAct && styles.tierTabTextActive]}>
+                          {tier.name} ({stats.occupied}/{stats.total})
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </ScrollView>
+              </View>
+
+              {/* Positions Grid & Shelves */}
+              <ScrollView contentContainerStyle={styles.positionsGridPadding}>
+                {!selectedTierId ? (
+                  /* Khi xem tất cả tầng: Hiển thị Accordion có Mở tất cả & Thu tất cả (Tầng 1 -> Tầng 5) */
+                  <View style={styles.tierShelvesContainer}>
+                    {/* Thanh điều khiển Mở tất cả / Thu tất cả */}
+                    <View style={styles.tierAccordionHeaderBar}>
+                      <Text style={styles.tierAccordionTitle}>
+                        Chi tiết theo tầng ({tiers.length} tầng):
+                      </Text>
+                      <View style={{ flexDirection: 'row', gap: 6 }}>
+                        <TouchableOpacity style={styles.tierToggleBtn} onPress={handleExpandAllTiers}>
+                          <Text style={[styles.tierToggleBtnText, { color: '#38bdf8' }]}>+ Mở tất cả</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity style={styles.tierToggleBtn} onPress={handleCollapseAllTiers}>
+                          <Text style={[styles.tierToggleBtnText, { color: '#cbd5e1' }]}>− Thu tất cả</Text>
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+
+                    {tiers.map(tier => {
+                      const tierPositions = tierPositionsMap?.get(tier.id) || [];
+                      const stats = zoneStatsMap.get(tier.id) || { total: 0, occupied: 0, empty: 0 };
+                      const isExpanded = expandedTierIds.has(tier.id);
+                      if (tierPositions.length === 0) return null;
+
+                      return (
+                        <View key={tier.id} style={[styles.tierAccordionCard, isExpanded && styles.tierAccordionCardExpanded]}>
+                          <TouchableOpacity
+                            style={[styles.tierAccordionBtn, isExpanded && styles.tierAccordionBtnExpanded]}
+                            onPress={() => toggleTierExpand(tier.id)}
+                            activeOpacity={0.7}
+                          >
+                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7, flex: 1 }}>
+                              <Ionicons
+                                name={isExpanded ? 'chevron-down' : 'chevron-forward'}
+                                size={14}
+                                color={isExpanded ? '#38bdf8' : '#64748b'}
+                              />
+                              <View style={styles.tierDot} />
+                              <Text style={styles.tierAccordionName}>{tier.name}</Text>
+                              <Text style={styles.tierOccupancyText}>
+                                ({stats.occupied}/{stats.total} vị trí có hàng)
+                              </Text>
+                            </View>
+                            <Text style={styles.tierEmptyCountText}>
+                              {stats.empty} trống
+                            </Text>
+                          </TouchableOpacity>
+
+                          {isExpanded && (
+                            <View style={styles.tierAccordionBody}>
+                              <View style={styles.positionsGrid}>
+                                {tierPositions.map(pos => {
+                                  const isOccupied = !!pos.lot_id;
+                                  const isHigh = pos.id === highlightedPosId;
+                                  const isMatched = isSearchActive && matchingPosIds.has(pos.id);
+                                  const hasDraft = draftItemsMap.has(pos.id);
+                                  const draftItem = draftItemsMap.get(pos.id);
+
+                                  return (
+                                    <TouchableOpacity
+                                      key={pos.id}
+                                      style={[
+                                        styles.posCard,
+                                        isOccupied ? styles.posCardOccupied : styles.posCardEmpty,
+                                        isHigh && styles.posCardHighlighted,
+                                        isMatched && styles.posCardMatched,
+                                        hasDraft && styles.posCardDraftActive,
+                                      ]}
+                                      onPress={() => {
+                                        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                                        if (isDraftMode) {
+                                          setDraftTargetPos(pos);
+                                          setEditingDraftItem(draftItem || null);
+                                        } else {
+                                          setSelectedPosDetail(pos);
+                                        }
+                                      }}
+                                    >
+                                      <View style={styles.posCardHeader}>
+                                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 3, flex: 1, minWidth: 0, paddingRight: 2 }}>
+                                          <Text style={styles.posCodeText} numberOfLines={1}>{pos.code}</Text>
+                                          {hasDraft && (
+                                            <View style={styles.draftMiniBadge}>
+                                              <Text style={styles.draftMiniBadgeText}>✏️ Nháp</Text>
+                                            </View>
+                                          )}
+                                          {pos.inbound_date ? (
+                                            <View style={styles.posDateBadge}>
+                                              <Text style={styles.posDateBadgeText} numberOfLines={1}>
+                                                {formatDateShortVN(pos.inbound_date)}
+                                              </Text>
+                                            </View>
+                                          ) : null}
+                                        </View>
+                                        {isOccupied ? (
+                                          <View style={styles.posSttBadge}>
+                                            <Text style={styles.posSttBadgeText} numberOfLines={1}>
+                                              {pos.stt ? `#${pos.stt}` : 'LOT'}
+                                            </Text>
+                                          </View>
+                                        ) : (
+                                          <View style={styles.posEmptyBadge}>
+                                            <Text style={styles.posEmptyBadgeText}>TRỐNG</Text>
+                                          </View>
+                                        )}
+                                      </View>
+
+                                      {isOccupied ? (
+                                        renderPositionCardBody(pos)
+                                      ) : (
+                                        <View style={styles.emptySlotHint}>
+                                          <Text style={styles.emptySlotHintText}>+ Trống</Text>
+                                        </View>
+                                      )}
+                                    </TouchableOpacity>
+                                  );
+                                })}
+                              </View>
+                            </View>
+                          )}
+                        </View>
+                      );
+                    })}
+                  </View>
+                ) : currentPositions.length === 0 ? (
+                  <View style={{ paddingVertical: 40, alignItems: 'center' }}>
+                    <Text style={{ color: '#64748b', fontSize: 13 }}>Chưa có vị trí nào trong khu vực này</Text>
+                  </View>
+                ) : (
+                  <View style={styles.positionsGrid}>
+                    {currentPositions.map(pos => {
+                      const isOccupied = !!pos.lot_id;
+                      const isHigh = pos.id === highlightedPosId;
+                      const isMatched = isSearchActive && matchingPosIds.has(pos.id);
+
+                      return (
+                        <TouchableOpacity
+                          key={pos.id}
+                          style={[
+                            styles.posCard,
+                            isOccupied ? styles.posCardOccupied : styles.posCardEmpty,
+                            isHigh && styles.posCardHighlighted,
+                            isMatched && styles.posCardMatched
+                          ]}
+                          onPress={() => {
+                            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                            setSelectedPosDetail(pos);
+                          }}
+                        >
+                          <View style={styles.posCardHeader}>
+                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 3, flex: 1, minWidth: 0, paddingRight: 2 }}>
+                              <Text style={styles.posCodeText} numberOfLines={1}>{pos.code}</Text>
+                              {pos.inbound_date ? (
+                                <View style={styles.posDateBadge}>
+                                  <Text style={styles.posDateBadgeText} numberOfLines={1}>
+                                    {formatDateShortVN(pos.inbound_date)}
+                                  </Text>
+                                </View>
+                              ) : null}
+                            </View>
+                            {isOccupied ? (
+                              <View style={styles.posSttBadge}>
+                                <Text style={styles.posSttBadgeText} numberOfLines={1}>
+                                  {pos.stt ? `#${pos.stt}` : 'LOT'}
+                                </Text>
+                              </View>
+                            ) : (
+                              <View style={styles.posEmptyBadge}>
+                                <Text style={styles.posEmptyBadgeText}>TRỐNG</Text>
+                              </View>
+                            )}
+                          </View>
+
+                          {isOccupied ? (
+                            renderPositionCardBody(pos)
+                          ) : (
+                            <View style={styles.emptySlotHint}>
+                              <Text style={styles.emptySlotHintText}>+ Sẵn sàng xếp hàng</Text>
+                            </View>
+                          )}
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                )}
+              </ScrollView>
+            </View>
+          )}
         </View>
       )}
 
@@ -4169,6 +4431,23 @@ export default function WarehouseMapScreen({
               )}
 
               <TouchableOpacity
+                style={styles.modalDraftActionBtn}
+                onPress={() => {
+                  const target = selectedPosDetail;
+                  setSelectedPosDetail(null);
+                  setDraftTargetPos(target);
+                  setEditingDraftItem(draftItemsMap.get(target.id) || null);
+                }}
+              >
+                <Ionicons name="pencil" size={16} color="#000" />
+                <Text style={styles.modalDraftActionBtnText}>
+                  {draftItemsMap.has(selectedPosDetail.id)
+                    ? 'Sửa Ghi Nháp Vị Trí Này'
+                    : 'Ghi Nháp Điều Chỉnh Ô Này'}
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
                 style={styles.modalCloseBtn}
                 onPress={() => setSelectedPosDetail(null)}
               >
@@ -4205,6 +4484,100 @@ export default function WarehouseMapScreen({
           setTimeout(() => setToastMsg(null), 3500);
         }}
       />
+
+      {/* ── MODAL GHI NHÁP ĐIỀU CHỈNH VỊ TRÍ ── */}
+      <WarehouseAdjustmentDraftModal
+        visible={!!draftTargetPos}
+        onClose={() => {
+          setDraftTargetPos(null);
+          setEditingDraftItem(null);
+        }}
+        position={draftTargetPos}
+        initialItem={editingDraftItem}
+        onSaveDraftItem={async (savedItem) => {
+          await upsertDraftItem(savedItem);
+          await refreshDraft();
+          setToastMsg({
+            text: `Đã lưu nháp vị trí ${savedItem.position_code}!`,
+            type: 'success',
+          });
+          setTimeout(() => setToastMsg(null), 3000);
+        }}
+      />
+
+      {/* ── MODAL XEM LẠI PHIẾU NHÁP & GỬI DUYỆT ── */}
+      <WarehouseDraftListModal
+        visible={isDraftListVisible}
+        onClose={() => setIsDraftListVisible(false)}
+        draft={draftProposal}
+        onRefreshDraft={refreshDraft}
+        onSubmittedSuccess={() => {
+          refreshDraft();
+          setIsDraftMode(false);
+        }}
+        onEditItem={(it) => {
+          const pos = positions.find(p => p.id === it.position_id) || {
+            id: it.position_id,
+            code: it.position_code,
+            product_name: it.product_name,
+            lot_code: it.lot_code,
+            quantity: it.current_quantity,
+            unit: it.unit,
+            lot_id: it.lot_id,
+          };
+          setDraftTargetPos(pos as any);
+          setEditingDraftItem(it);
+        }}
+      />
+
+      {/* ── FLOATING BOTTOM BAR KHI CÓ BẢN NHÁP ── */}
+      {draftProposal.items.length > 0 && (
+        <View style={styles.floatingDraftBar}>
+          <TouchableOpacity
+            style={styles.floatingDraftLeft}
+            onPress={() => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              setIsDraftListVisible(true);
+            }}
+          >
+            <View style={styles.floatingDraftBadge}>
+              <Text style={styles.floatingDraftBadgeText}>
+                {draftProposal.items.length}
+              </Text>
+            </View>
+            <View>
+              <Text style={styles.floatingDraftTitle}>Phiếu nháp điều chỉnh</Text>
+              <Text style={styles.floatingDraftSub}>
+                {draftProposal.items.length} vị trí đã ghi nhận
+              </Text>
+            </View>
+          </TouchableOpacity>
+
+          <View style={{ flexDirection: 'row', gap: 6 }}>
+            <TouchableOpacity
+              style={styles.floatingDraftReviewBtn}
+              onPress={() => {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                setIsDraftListVisible(true);
+              }}
+            >
+              <Ionicons name="eye-outline" size={15} color="#cbd5e1" />
+              <Text style={styles.floatingDraftReviewBtnText}>Xem</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.floatingDraftSubmitBtn}
+              onPress={() => {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                setIsDraftListVisible(true);
+              }}
+            >
+              <Ionicons name="paper-plane" size={15} color="#fff" />
+              <Text style={styles.floatingDraftSubmitBtnText}>Gửi duyệt</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
     </View>
   );
 }
@@ -5519,6 +5892,147 @@ const styles = StyleSheet.create({
     color: '#ffffff',
     fontSize: 12,
     fontWeight: '800'
+  },
+  modalDraftActionBtn: {
+    backgroundColor: '#f59e0b',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 12,
+    borderRadius: 12,
+    marginBottom: 8,
+  },
+  modalDraftActionBtnText: {
+    color: '#000000',
+    fontSize: 13,
+    fontWeight: '900',
+  },
+  posCardDraftActive: {
+    borderColor: '#f59e0b',
+    borderWidth: 2,
+    backgroundColor: '#78350f33',
+  },
+  draftMiniBadge: {
+    backgroundColor: '#f59e0b',
+    paddingHorizontal: 4,
+    paddingVertical: 1,
+    borderRadius: 3,
+  },
+  draftMiniBadgeText: {
+    color: '#000000',
+    fontSize: 8.5,
+    fontWeight: '900',
+  },
+  draftModeBanner: {
+    backgroundColor: '#451a03',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f59e0b88',
+  },
+  draftModeBannerTitle: {
+    color: '#fde68a',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  draftModeBannerSub: {
+    color: '#fed7aa',
+    fontSize: 10,
+    marginTop: 1,
+  },
+  draftModeViewBtn: {
+    backgroundColor: '#f59e0b',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 8,
+  },
+  draftModeViewBtnText: {
+    color: '#000000',
+    fontSize: 11,
+    fontWeight: '900',
+  },
+  floatingDraftBar: {
+    position: 'absolute',
+    bottom: Platform.OS === 'ios' ? 24 : 14,
+    left: 12,
+    right: 12,
+    backgroundColor: '#0f172a',
+    borderRadius: 16,
+    borderWidth: 1.5,
+    borderColor: '#f59e0b',
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    shadowColor: '#f59e0b',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.35,
+    shadowRadius: 10,
+    elevation: 10,
+    zIndex: 999,
+  },
+  floatingDraftLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    flex: 1,
+  },
+  floatingDraftBadge: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: '#f59e0b',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  floatingDraftBadgeText: {
+    color: '#000',
+    fontSize: 13,
+    fontWeight: '900',
+  },
+  floatingDraftTitle: {
+    color: '#f8fafc',
+    fontSize: 12.5,
+    fontWeight: '800',
+  },
+  floatingDraftSub: {
+    color: '#94a3b8',
+    fontSize: 10.5,
+  },
+  floatingDraftReviewBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#1e293b',
+    borderWidth: 1,
+    borderColor: '#475569',
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderRadius: 10,
+  },
+  floatingDraftReviewBtnText: {
+    color: '#cbd5e1',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  floatingDraftSubmitBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#0284c7',
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 10,
+  },
+  floatingDraftSubmitBtnText: {
+    color: '#fff',
+    fontSize: 11,
+    fontWeight: '800',
   },
   offlineBanner: {
     backgroundColor: '#78350f',
