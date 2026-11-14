@@ -569,6 +569,7 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
     setDownloadingOpsOffline(true);
     try {
       await syncOperationsOfflineQueue().catch(() => {});
+      await refreshPendingCount();
       const [templates] = await Promise.all([
         getJobTemplates().catch(() => []),
         getOrderTypes().catch(() => []),
@@ -2227,14 +2228,25 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
 
                           return rows.map(row => {
                             const k = row.isTotal ? '__TOTAL__' : `${row.name}___${row.unit}`;
-                            const defaultTarget: 'in' | 'out' | 'net' = row.inQty >= row.outQty ? 'in' : 'out';
-                            const entry = reconcileMap[k] || {
-                              startStr: '',
-                              endStr: '',
-                              calcType: 'diff' as const,
-                              targetType: defaultTarget,
-                              note: '',
-                            };
+                            const defaultTarget: 'in' | 'out' | 'net' =
+                              row.inQty > 0 && row.outQty > 0
+                                ? 'net'
+                                : row.outQty > 0 && row.inQty === 0
+                                  ? 'out'
+                                  : 'in';
+                            const rawEntry = reconcileMap[k];
+                            const entry: ReconcileEntry = rawEntry
+                              ? {
+                                  ...rawEntry,
+                                  targetType: rawEntry.isManualTarget ? rawEntry.targetType : defaultTarget,
+                                }
+                              : {
+                                  startStr: '',
+                                  endStr: '',
+                                  calcType: 'diff' as const,
+                                  targetType: defaultTarget,
+                                  note: '',
+                                };
                             const s = parseFloat((entry.startStr || '').replace(',', '.'));
                             const e = parseFloat((entry.endStr || '').replace(',', '.'));
                             const hasNums = entry.startStr.trim() !== '' && entry.endStr.trim() !== '' && !Number.isNaN(s) && !Number.isNaN(e);
@@ -2305,7 +2317,7 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
                                     <TouchableOpacity
                                       key={opt.key}
                                       style={[styles.reconcileMiniChip, entry.targetType === opt.key && styles.reconcileMiniChipActive]}
-                                      onPress={() => updateEntry(k, defaultTarget, { targetType: opt.key })}
+                                      onPress={() => updateEntry(k, defaultTarget, { targetType: opt.key, isManualTarget: true })}
                                     >
                                       <Text style={[styles.reconcileMiniChipText, entry.targetType === opt.key && { color: '#38bdf8' }]}>
                                         {opt.label}

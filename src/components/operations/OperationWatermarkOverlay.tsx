@@ -109,20 +109,19 @@ export default function OperationWatermarkOverlay() {
 
   if (!job) return null;
 
-  const { payload, width, height, verifyCode } = job;
+  const { payload, width, height } = job;
   const dt = payload.capturedAt || new Date();
   const hh = String(dt.getHours()).padStart(2, '0');
   const mm = String(dt.getMinutes()).padStart(2, '0');
+  const dd = String(dt.getDate()).padStart(2, '0');
+  const mo = String(dt.getMonth() + 1).padStart(2, '0');
   const timeStr = `${hh}:${mm}`;
-  const dateStr = `${dt.getDate()} Tháng ${dt.getMonth() + 1}, ${dt.getFullYear()}`;
+  const dateStr = `${dd}/${mo}/${dt.getFullYear()}`;
   const weekdayStr = WEEKDAYS_VI[dt.getDay()];
 
   const dirLabel = payload.direction === 'in' ? 'NHẬP +' : payload.direction === 'out' ? 'XUẤT -' : '';
   const qtyStr =
     payload.quantity != null ? `${dirLabel}${payload.quantity}${payload.unit ? ` ${payload.unit}` : ''}` : '';
-  const itemText = [payload.itemName ? `📦 ${payload.itemName}` : '', qtyStr ? `SL: ${qtyStr}` : '']
-    .filter(Boolean)
-    .join('  |  ');
 
   return (
     <View style={styles.offscreen} pointerEvents="none">
@@ -144,47 +143,43 @@ export default function OperationWatermarkOverlay() {
           }}
         />
 
-        {/* Lớp nền tối đáy ảnh giúp chữ nổi bật */}
+        {/* Dải đóng dấu gọn sát đáy ảnh: bên trái nội dung (SP 1 dòng, SL 1 dòng), bên phải thời gian & NV */}
         <View style={styles.bottomBackdrop}>
-          <View style={styles.leftColumn}>
-            <View style={styles.timeRow}>
-              <Text style={styles.timeText}>{timeStr}</Text>
-              <View style={styles.yellowBar} />
-              <View>
-                <Text style={styles.dateText}>{dateStr}</Text>
-                <Text style={styles.weekdayText}>{weekdayStr}</Text>
-              </View>
-            </View>
-
+          <View style={styles.leftContentColumn}>
             {payload.jobName ? (
               <Text style={styles.locationText} numberOfLines={1}>
                 📍 {payload.jobName}
               </Text>
             ) : null}
 
-            {itemText ? (
-              <Text
-                style={[
-                  styles.itemText,
-                  payload.direction === 'out' ? { color: '#fda4af' } : { color: '#fbbf24' },
-                ]}
-                numberOfLines={2}
-              >
-                {itemText}
+            {payload.itemName ? (
+              <Text style={styles.itemText} numberOfLines={1}>
+                📦 {payload.itemName}
               </Text>
             ) : null}
 
-            {payload.capturedByName ? (
-              <Text style={styles.userText} numberOfLines={1}>
-                👤 NV: {payload.capturedByName}
+            {qtyStr ? (
+              <Text
+                style={[
+                  styles.qtyText,
+                  payload.direction === 'out' ? { color: '#fda4af' } : { color: '#fbbf24' },
+                ]}
+                numberOfLines={1}
+              >
+                SL: {qtyStr}
               </Text>
             ) : null}
           </View>
 
-          <View style={styles.rightBadge}>
-            <Text style={styles.brandText}>WMS Mark</Text>
-            <Text style={styles.verifiedSub}>100% Chân thực</Text>
-            <Text style={styles.codeText}>© {verifyCode}</Text>
+          <View style={styles.rightMetaColumn}>
+            <Text style={styles.timeText}>{timeStr}</Text>
+            <Text style={styles.dateText}>{dateStr} • {weekdayStr}</Text>
+
+            {payload.capturedByName ? (
+              <Text style={styles.userText} numberOfLines={1}>
+                👤 {payload.capturedByName}
+              </Text>
+            ) : null}
           </View>
         </View>
       </View>
@@ -203,83 +198,61 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
-    backgroundColor: 'rgba(0, 0, 0, 0.56)',
-    paddingHorizontal: 32,
-    paddingTop: 22,
-    paddingBottom: 28,
+    backgroundColor: 'rgba(0, 0, 0, 0.52)',
+    paddingHorizontal: 18,
+    paddingTop: 10,
+    paddingBottom: 12,
     flexDirection: 'row',
     alignItems: 'flex-end',
     justifyContent: 'space-between',
+    gap: 12,
   },
-  leftColumn: {
+  leftContentColumn: {
     flex: 1,
-    paddingRight: 20,
-    gap: 6,
-  },
-  timeRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 4,
-  },
-  timeText: {
-    color: '#ffffff',
-    fontSize: 68,
-    fontWeight: '800',
-    letterSpacing: -1,
-    textShadowColor: 'rgba(0,0,0,0.8)',
-    textShadowOffset: { width: 0, height: 2 },
-    textShadowRadius: 6,
-  },
-  yellowBar: {
-    width: 6,
-    height: 54,
-    backgroundColor: '#f59e0b',
-    borderRadius: 3,
-    marginHorizontal: 16,
-  },
-  dateText: {
-    color: '#ffffff',
-    fontSize: 25,
-    fontWeight: '700',
-  },
-  weekdayText: {
-    color: '#f8fafc',
-    fontSize: 23,
-    fontWeight: '600',
-    marginTop: 2,
+    alignItems: 'flex-start',
+    justifyContent: 'flex-end',
+    gap: 2,
   },
   locationText: {
     color: '#ffffff',
-    fontSize: 26,
+    fontSize: 17,
     fontWeight: '700',
   },
   itemText: {
-    fontSize: 26,
+    color: '#fde68a',
+    fontSize: 18,
+    fontWeight: '700',
+  },
+  qtyText: {
+    fontSize: 18,
     fontWeight: '800',
   },
-  userText: {
-    color: '#e2e8f0',
-    fontSize: 23,
-    fontWeight: '600',
-  },
-  rightBadge: {
+  rightMetaColumn: {
+    flexShrink: 0,
     alignItems: 'flex-end',
     justifyContent: 'flex-end',
+    gap: 2,
   },
-  brandText: {
-    color: '#fbbf24',
-    fontSize: 24,
+  timeText: {
+    color: '#ffffff',
+    fontSize: 22,
     fontWeight: '800',
+    letterSpacing: -0.3,
+    textAlign: 'right',
+    textShadowColor: 'rgba(0,0,0,0.8)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 3,
   },
-  verifiedSub: {
+  dateText: {
     color: '#f1f5f9',
-    fontSize: 18,
+    fontSize: 14,
     fontWeight: '600',
+    textAlign: 'right',
   },
-  codeText: {
-    color: 'rgba(255,255,255,0.7)',
-    fontSize: 15,
-    fontFamily: 'monospace',
-    marginTop: 4,
+  userText: {
+    color: '#cbd5e1',
+    fontSize: 14,
+    fontWeight: '600',
+    textAlign: 'right',
   },
 });

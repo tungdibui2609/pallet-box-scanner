@@ -713,12 +713,12 @@ export async function submitJournalEntry(params: {
     return clientJournalId;
   }
 
-  // Nếu chưa biết là offline, thử gửi online với timeout ngắn 700ms
+  // Nếu chưa biết là offline, thử gửi online với timeout 2.5s
   try {
     const supabase = await getSupabaseClient();
     const { error } = await withNetworkTimeout(
       supabase.from('delivery_journal').insert([payload]),
-      700
+      2500
     );
 
     if (!error) {
@@ -1145,6 +1145,7 @@ export async function syncOperationsOfflineQueue(): Promise<{
 
   const supabase = await getSupabaseClient();
   let syncedCount = 0;
+  let lastErrorMsg = '';
   const tempShiftIdMap: Record<string, string> = {};
   const remainingQueue: OperationsQueueAction[] = [];
 
@@ -1220,17 +1221,29 @@ export async function syncOperationsOfflineQueue(): Promise<{
         syncedCount++;
       } else if (action.type === 'UPDATE_JOURNAL') {
         const { id, payload } = action.payload;
-        const { error: upErr } = await supabase.from('delivery_journal').update(payload).eq('id', id);
-        if (upErr) throw upErr;
-        syncedCount++;
+        if (String(id).startsWith('offline_jn_')) {
+          // ID tạm chưa từng có trên server -> bỏ qua để tránh lỗi UUID kẹt queue
+          syncedCount++;
+        } else {
+          const { error: upErr } = await supabase.from('delivery_journal').update(payload).eq('id', id);
+          if (upErr) throw upErr;
+          syncedCount++;
+        }
       } else if (action.type === 'DELETE_JOURNAL') {
         const { recordId } = action.payload;
-        const { error: delErr } = await supabase.from('delivery_journal').delete().eq('id', recordId);
-        if (delErr) throw delErr;
-        syncedCount++;
+        if (String(recordId).startsWith('offline_jn_')) {
+          syncedCount++;
+        } else {
+          const { error: delErr } = await supabase.from('delivery_journal').delete().eq('id', recordId);
+          if (delErr) throw delErr;
+          syncedCount++;
+        }
       } else if (action.type === 'CLOSE_SHIFT') {
         const { payload, shiftId } = action.payload;
         const realShiftId = tempShiftIdMap[shiftId] || shiftId;
+        if (String(realShiftId).startsWith('offline_shift_')) {
+          throw new Error('Ca làm việc chưa đồng bộ ID lên máy chủ');
+        }
 
         const { error: closeErr } = await supabase
           .from('delivery_shifts')
@@ -1241,7 +1254,19 @@ export async function syncOperationsOfflineQueue(): Promise<{
         syncedCount++;
       }
     } catch (err: any) {
-      console.warn(`[Sync Error] Không thể đồng bộ action ${action.type}:`, err?.message);
+      const errMsg = err?.message || String(err || '');
+      const errCode = err?.code || '';
+      console.warn(`[Sync Error] Không thể đồng bộ action ${action.type}:`, errMsg);
+      // Nếu lỗi trùng khóa chính (23505 / duplicate key) -> bản ghi thực tế đã có trên server từ lần gửi trước (ví dụ timeout mạng lúc gửi nhưng server đã nhận)
+      if (errCode === '23505' || errMsg.includes('duplicate key value violates unique constraint')) {
+        syncedCount++;
+        continue;
+      }
+      // Nếu lỗi dữ liệu UUID không hợp lệ (22P02) sau khi đã thử, loại khỏi queue tránh kẹt vĩnh viễn
+      if (errCode === '22P02' || errMsg.includes('invalid input syntax for type uuid')) {
+        continue;
+      }
+      lastErrorMsg = errMsg;
       remainingQueue.push({
         ...action,
         retryCount: (action.retryCount || 0) + 1,
@@ -1250,6 +1275,9 @@ export async function syncOperationsOfflineQueue(): Promise<{
   }
 
   await saveOfflineOperationsQueue(remainingQueue);
+  if (remainingQueue.length === 0) {
+    setKnownOffline(false);
+  }
 
   // Đồng bộ ảnh chụp offline (nếu có)
   try {
@@ -1267,7 +1295,7 @@ export async function syncOperationsOfflineQueue(): Promise<{
     syncedCount,
     message: remainingQueue.length === 0
       ? `Đã đồng bộ ${syncedCount} lượt số liệu lên máy chủ thành công!`
-      : `Đã đồng bộ ${syncedCount} lượt, còn ${remainingQueue.length} lượt đang chờ thử lại`,
+      : `Đã đồng bộ ${syncedCount} lượt, còn ${remainingQueue.length} lượt chưa đẩy được${lastErrorMsg ? ` (${lastErrorMsg})` : ''}`,
   };
 }
 
@@ -1576,6 +1604,7 @@ export interface ReconcileEntry {
   endStr: string;
   calcType: 'diff' | 'inclusive';
   targetType: 'in' | 'out' | 'net';
+  isManualTarget?: boolean;
   note?: string;
 }
 

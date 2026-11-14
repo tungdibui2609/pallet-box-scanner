@@ -59,7 +59,9 @@ export default function WarehouseAlbumModal({ visible, systemCode, companyId, on
   const [selectedJobGroupKey, setSelectedJobGroupKey] = useState<string | null>(null);
   const [expandedMonths, setExpandedMonths] = useState<Record<string, boolean>>({});
   const [expandedDates, setExpandedDates] = useState<Record<string, boolean>>({});
+  const [expandedTreeJobs, setExpandedTreeJobs] = useState<Record<string, boolean>>({});
   const [expandedJobNames, setExpandedJobNames] = useState<Record<string, boolean>>({});
+  const [expandedRefAlbums, setExpandedRefAlbums] = useState<Record<string, boolean>>({});
   const [selectedImage, setSelectedImage] = useState<OperationImageRecord | null>(null);
   const [warehouseProducts, setWarehouseProducts] = useState<any[]>([]);
   const [skuToNameMap, setSkuToNameMap] = useState<Record<string, string>>({});
@@ -234,8 +236,17 @@ export default function WarehouseAlbumModal({ visible, systemCode, companyId, on
     return results.sort((a, b) => b.score - a.score || b.imageCount - a.imageCount).slice(0, 8);
   }, [searchText, warehouseProducts, images]);
 
+  const parseRefPhase = (notes?: string | null): 'start' | 'end' | 'legacy' | null => {
+    const m = notes?.match(/^\[THAM_CHIEU:([^\]:]+)(?::(start|end))?\]/);
+    if (!m) return null;
+    if (m[2] === 'start') return 'start';
+    if (m[2] === 'end') return 'end';
+    return 'legacy';
+  };
+
   const folderTree = useMemo(() => {
-    type JobGroup = { jobKey: string; shiftId: string; jobName: string; dateLabel: string; items: OperationImageRecord[] };
+    type RefSubGroup = { subKey: string; label: string; phase: 'start' | 'end' | 'legacy'; items: OperationImageRecord[] };
+    type JobGroup = { jobKey: string; shiftId: string; jobName: string; dateLabel: string; items: OperationImageRecord[]; refSubs: Map<string, RefSubGroup> };
     type DateGroup = { dateKey: string; dateLabel: string; count: number; jobs: Map<string, JobGroup> };
     type MonthGroup = { monthKey: string; monthLabel: string; count: number; dates: Map<string, DateGroup> };
 
@@ -243,16 +254,8 @@ export default function WarehouseAlbumModal({ visible, systemCode, companyId, on
     for (const img of filteredImages) {
       const { monthKey, monthLabel, dateKey, dateLabel } = getDayInfo(img.captured_at);
       const baseJobName = img.job_name || 'Công việc không tên';
-      const refMatch = img.notes?.match(/^\[THAM_CHIEU:([^\]:]+)(?::(start|end))?\]/);
-      const refTag = refMatch ? (refMatch[2] === 'end' ? 'REF_END' : refMatch[2] === 'start' ? 'REF_START' : 'REF') : null;
-      const jobName = refTag === 'REF_START'
-        ? `${baseJobName} › 📌 Tham chiếu Đầu`
-        : refTag === 'REF_END'
-          ? `${baseJobName} › 📌 Tham chiếu Cuối`
-          : refTag === 'REF'
-            ? `${baseJobName} › 📌 Tham chiếu`
-            : baseJobName;
-      const jobKey = refTag ? `${dateKey}::${img.shift_id}::${refTag}` : `${dateKey}::${img.shift_id}`;
+      const jobKey = `${dateKey}::${img.shift_id}`;
+      const refPhase = parseRefPhase(img.notes);
 
       let mNode = months.get(monthKey);
       if (!mNode) {
@@ -270,12 +273,30 @@ export default function WarehouseAlbumModal({ visible, systemCode, companyId, on
 
       let jNode = dNode.jobs.get(jobKey);
       if (!jNode) {
-        jNode = { jobKey, shiftId: img.shift_id, jobName, dateLabel, items: [] };
+        jNode = { jobKey, shiftId: img.shift_id, jobName: baseJobName, dateLabel, items: [], refSubs: new Map() };
         dNode.jobs.set(jobKey, jNode);
       }
       jNode.items.push(img);
+
+      if (refPhase) {
+        const refTag = refPhase === 'start' ? 'REF_START' : refPhase === 'end' ? 'REF_END' : 'REF';
+        const subKey = `${jobKey}::${refTag}`;
+        const label =
+          refPhase === 'start'
+            ? '📌 Tham chiếu Đầu'
+            : refPhase === 'end'
+              ? '📌 Tham chiếu Cuối'
+              : '📌 Tham chiếu';
+        let sNode = jNode.refSubs.get(subKey);
+        if (!sNode) {
+          sNode = { subKey, label, phase: refPhase, items: [] };
+          jNode.refSubs.set(subKey, sNode);
+        }
+        sNode.items.push(img);
+      }
     }
 
+    const phaseOrder: Record<'start' | 'end' | 'legacy', number> = { start: 0, end: 1, legacy: 2 };
     return Array.from(months.values())
       .sort((a, b) => b.monthKey.localeCompare(a.monthKey))
       .map((m) => ({
@@ -284,7 +305,14 @@ export default function WarehouseAlbumModal({ visible, systemCode, companyId, on
           .sort((a, b) => b.dateKey.localeCompare(a.dateKey))
           .map((d) => ({
             ...d,
-            jobs: Array.from(d.jobs.values()).sort((a, b) => a.jobName.localeCompare(b.jobName)),
+            jobs: Array.from(d.jobs.values())
+              .sort((a, b) => a.jobName.localeCompare(b.jobName))
+              .map((j) => ({
+                ...j,
+                refSubs: Array.from(j.refSubs.values()).sort(
+                  (a, b) => phaseOrder[a.phase] - phaseOrder[b.phase]
+                ),
+              })),
           })),
       }));
   }, [filteredImages]);
@@ -347,12 +375,12 @@ export default function WarehouseAlbumModal({ visible, systemCode, companyId, on
         const jNode = jobTree.find((j) => j.jobName === jName);
         const dNode = jNode?.dates.find((d) => d.dateKey === dKey);
         if (dNode) {
-          return { dateLabel: dNode.dateLabel, jobName: jName, items: dNode.items };
+          return { dateLabel: dNode.dateLabel, jobName: jName, items: dNode.items, isDirectRef: dKey.startsWith('__REF') };
         }
       } else {
         const jNode = jobTree.find((j) => j.jobName === selectedJobGroupKey);
         if (jNode) {
-          return { dateLabel: 'Tất cả ngày', jobName: jNode.jobName, items: jNode.items };
+          return { dateLabel: 'Tất cả ngày', jobName: jNode.jobName, items: jNode.items, isDirectRef: false };
         }
       }
       return null;
@@ -361,8 +389,15 @@ export default function WarehouseAlbumModal({ visible, systemCode, companyId, on
     if (!selectedJobKey) return null;
     for (const m of folderTree) {
       for (const d of m.dates) {
-        const found = d.jobs.find((j) => j.jobKey === selectedJobKey);
-        if (found) return found;
+        for (const j of d.jobs) {
+          if (j.jobKey === selectedJobKey) {
+            return { dateLabel: j.dateLabel, jobName: j.jobName, items: j.items, isDirectRef: false };
+          }
+          const sub = j.refSubs.find((s) => s.subKey === selectedJobKey);
+          if (sub) {
+            return { dateLabel: j.dateLabel, jobName: `${j.jobName} › ${sub.label}`, items: sub.items, isDirectRef: true };
+          }
+        }
       }
     }
     return null;
@@ -562,38 +597,120 @@ export default function WarehouseAlbumModal({ visible, systemCode, companyId, on
               </Text>
             </TouchableOpacity>
 
-            <ScrollView contentContainerStyle={styles.gridWrap}>
-              {selectedJobData.items.map((item) => (
-                <TouchableOpacity
-                  key={item.id}
-                  style={styles.gridItem}
-                  onPress={() => setSelectedImage(item)}
-                  activeOpacity={0.85}
-                >
-                  <Image source={{ uri: getOperationImageDisplayUrl(item) }} style={styles.gridImage} />
-                  <View style={styles.badgeRow}>
-                    {item.direction === 'in' && (
-                      <View style={[styles.badge, { backgroundColor: '#10b981' }]}>
-                        <Text style={styles.badgeText}>NHẬP</Text>
-                      </View>
-                    )}
-                    {item.direction === 'out' && (
-                      <View style={[styles.badge, { backgroundColor: '#f43f5e' }]}>
-                        <Text style={styles.badgeText}>XUẤT</Text>
-                      </View>
-                    )}
+            <ScrollView contentContainerStyle={{ paddingBottom: 24, gap: 10 }}>
+              {(() => {
+                const renderGridItems = (list: OperationImageRecord[]) => (
+                  <View style={styles.gridWrap}>
+                    {list.map((item) => (
+                      <TouchableOpacity
+                        key={item.id}
+                        style={styles.gridItem}
+                        onPress={() => setSelectedImage(item)}
+                        activeOpacity={0.85}
+                      >
+                        <Image source={{ uri: getOperationImageDisplayUrl(item) }} style={styles.gridImage} />
+                        <View style={styles.badgeRow}>
+                          {item.direction === 'in' && (
+                            <View style={[styles.badge, { backgroundColor: '#10b981' }]}>
+                              <Text style={styles.badgeText}>NHẬP</Text>
+                            </View>
+                          )}
+                          {item.direction === 'out' && (
+                            <View style={[styles.badge, { backgroundColor: '#f43f5e' }]}>
+                              <Text style={styles.badgeText}>XUẤT</Text>
+                            </View>
+                          )}
+                        </View>
+                        {item.drive_file_id ? (
+                          <View style={[styles.cloudTag, { backgroundColor: 'rgba(16,185,129,0.88)' }]}>
+                            <Ionicons name="cloud-done" size={11} color="#fff" />
+                          </View>
+                        ) : item.is_offline ? (
+                          <View style={styles.cloudTag}>
+                            <Ionicons name="cloud-upload-outline" size={11} color="#fbbf24" />
+                          </View>
+                        ) : null}
+                      </TouchableOpacity>
+                    ))}
                   </View>
-                  {item.drive_file_id ? (
-                    <View style={[styles.cloudTag, { backgroundColor: 'rgba(16,185,129,0.88)' }]}>
-                      <Ionicons name="cloud-done" size={11} color="#fff" />
-                    </View>
-                  ) : item.is_offline ? (
-                    <View style={styles.cloudTag}>
-                      <Ionicons name="cloud-upload-outline" size={11} color="#fbbf24" />
-                    </View>
-                  ) : null}
-                </TouchableOpacity>
-              ))}
+                );
+
+                if (selectedJobData.isDirectRef) {
+                  return renderGridItems(selectedJobData.items);
+                }
+
+                const regularItems: OperationImageRecord[] = [];
+                const refStartItems: OperationImageRecord[] = [];
+                const refEndItems: OperationImageRecord[] = [];
+                const refLegacyItems: OperationImageRecord[] = [];
+                for (const it of selectedJobData.items) {
+                  const p = parseRefPhase(it.notes);
+                  if (p === 'start') refStartItems.push(it);
+                  else if (p === 'end') refEndItems.push(it);
+                  else if (p === 'legacy') refLegacyItems.push(it);
+                  else regularItems.push(it);
+                }
+
+                const refAlbums = [
+                  { id: `${selectedJobKey || selectedJobGroupKey || 'job'}::REF_START`, title: '📌 Album Tham chiếu Đầu', items: refStartItems },
+                  { id: `${selectedJobKey || selectedJobGroupKey || 'job'}::REF_END`, title: '📌 Album Tham chiếu Cuối', items: refEndItems },
+                  { id: `${selectedJobKey || selectedJobGroupKey || 'job'}::REF`, title: '📌 Album Tham chiếu', items: refLegacyItems },
+                ].filter((g) => g.items.length > 0);
+
+                return (
+                  <View style={{ gap: 10 }}>
+                    {refAlbums.map((ra) => {
+                      const isOpen = !!expandedRefAlbums[ra.id];
+                      const cover = ra.items[0];
+                      return (
+                        <View
+                          key={ra.id}
+                          style={{
+                            borderRadius: 12,
+                            borderWidth: 1,
+                            borderColor: 'rgba(251,191,36,0.35)',
+                            backgroundColor: 'rgba(251,191,36,0.08)',
+                            overflow: 'hidden',
+                          }}
+                        >
+                          <TouchableOpacity
+                            style={{ flexDirection: 'row', alignItems: 'center', gap: 10, padding: 10 }}
+                            onPress={() =>
+                              setExpandedRefAlbums((prev) => ({ ...prev, [ra.id]: !isOpen }))
+                            }
+                            activeOpacity={0.75}
+                          >
+                            {cover ? (
+                              <Image
+                                source={{ uri: getOperationImageDisplayUrl(cover) }}
+                                style={{ width: 40, height: 40, borderRadius: 8, backgroundColor: '#1e293b' }}
+                              />
+                            ) : null}
+                            <View style={{ flex: 1 }}>
+                              <Text style={{ color: '#fde68a', fontSize: 13, fontWeight: '800' }}>{ra.title}</Text>
+                              <Text style={{ color: '#cbd5e1', fontSize: 11 }}>
+                                {ra.items.length} ảnh • Bấm để {isOpen ? 'thu gọn' : 'xem ảnh'}
+                              </Text>
+                            </View>
+                            <Ionicons
+                              name={isOpen ? 'chevron-up' : 'chevron-down'}
+                              size={18}
+                              color="#fbbf24"
+                            />
+                          </TouchableOpacity>
+                          {isOpen && (
+                            <View style={{ paddingHorizontal: 8, paddingBottom: 10 }}>
+                              {renderGridItems(ra.items)}
+                            </View>
+                          )}
+                        </View>
+                      );
+                    })}
+
+                    {regularItems.length > 0 && renderGridItems(regularItems)}
+                  </View>
+                );
+              })()}
             </ScrollView>
           </View>
         ) : treeMode === 'job' ? (
@@ -713,22 +830,70 @@ export default function WarehouseAlbumModal({ visible, systemCode, companyId, on
 
                             {isDateOpen && (
                               <View style={styles.jobsContainer}>
-                                {dt.jobs.map((job) => (
-                                  <TouchableOpacity
-                                    key={job.jobKey}
-                                    style={styles.jobRow}
-                                    onPress={() => setSelectedJobKey(job.jobKey)}
-                                  >
-                                    <Ionicons name="folder-open" size={16} color="#34d399" />
-                                    <Text style={styles.jobTitle} numberOfLines={1}>
-                                      {job.jobName}
-                                    </Text>
-                                    <View style={styles.jobCountBadge}>
-                                      <Text style={styles.jobCountText}>{job.items.length} ảnh</Text>
+                                {dt.jobs.map((job) => {
+                                  const hasRefs = job.refSubs.length > 0;
+                                  const isJobExpanded = !!expandedTreeJobs[job.jobKey];
+                                  return (
+                                    <View key={job.jobKey} style={{ gap: 4 }}>
+                                      <View style={styles.jobRow}>
+                                        {hasRefs && (
+                                          <TouchableOpacity
+                                            onPress={() =>
+                                              setExpandedTreeJobs((prev) => ({
+                                                ...prev,
+                                                [job.jobKey]: !isJobExpanded,
+                                              }))
+                                            }
+                                            style={{ padding: 2 }}
+                                          >
+                                            <Ionicons
+                                              name={isJobExpanded ? 'chevron-down' : 'chevron-forward'}
+                                              size={15}
+                                              color="#94a3b8"
+                                            />
+                                          </TouchableOpacity>
+                                        )}
+                                        <TouchableOpacity
+                                          style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8 }}
+                                          onPress={() => {
+                                            if (hasRefs && !isJobExpanded) {
+                                              setExpandedTreeJobs((prev) => ({ ...prev, [job.jobKey]: true }));
+                                            }
+                                            setSelectedJobKey(job.jobKey);
+                                          }}
+                                        >
+                                          <Ionicons name="folder-open" size={16} color="#34d399" />
+                                          <Text style={styles.jobTitle} numberOfLines={1}>
+                                            {job.jobName}
+                                          </Text>
+                                          <View style={styles.jobCountBadge}>
+                                            <Text style={styles.jobCountText}>{job.items.length} ảnh</Text>
+                                          </View>
+                                          <Ionicons name="chevron-forward" size={16} color="#64748b" />
+                                        </TouchableOpacity>
+                                      </View>
+                                      {hasRefs && isJobExpanded && (
+                                        <View style={{ paddingLeft: 20, gap: 4 }}>
+                                          {job.refSubs.map((sub) => (
+                                            <TouchableOpacity
+                                              key={sub.subKey}
+                                              style={[styles.jobRow, { backgroundColor: 'rgba(251,191,36,0.08)', borderColor: 'rgba(251,191,36,0.28)' }]}
+                                              onPress={() => setSelectedJobKey(sub.subKey)}
+                                            >
+                                              <Text style={[styles.jobTitle, { color: '#fde68a' }]} numberOfLines={1}>
+                                                {sub.label}
+                                              </Text>
+                                              <View style={styles.jobCountBadge}>
+                                                <Text style={styles.jobCountText}>{sub.items.length} ảnh</Text>
+                                              </View>
+                                              <Ionicons name="chevron-forward" size={16} color="#fbbf24" />
+                                            </TouchableOpacity>
+                                          ))}
+                                        </View>
+                                      )}
                                     </View>
-                                    <Ionicons name="chevron-forward" size={16} color="#64748b" />
-                                  </TouchableOpacity>
-                                ))}
+                                  );
+                                })}
                               </View>
                             )}
                           </View>
