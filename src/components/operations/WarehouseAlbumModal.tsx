@@ -242,8 +242,17 @@ export default function WarehouseAlbumModal({ visible, systemCode, companyId, on
     const months = new Map<string, MonthGroup>();
     for (const img of filteredImages) {
       const { monthKey, monthLabel, dateKey, dateLabel } = getDayInfo(img.captured_at);
-      const jobName = img.job_name || 'Công việc không tên';
-      const jobKey = `${dateKey}::${img.shift_id}`;
+      const baseJobName = img.job_name || 'Công việc không tên';
+      const refMatch = img.notes?.match(/^\[THAM_CHIEU:([^\]:]+)(?::(start|end))?\]/);
+      const refTag = refMatch ? (refMatch[2] === 'end' ? 'REF_END' : refMatch[2] === 'start' ? 'REF_START' : 'REF') : null;
+      const jobName = refTag === 'REF_START'
+        ? `${baseJobName} › 📌 Tham chiếu Đầu`
+        : refTag === 'REF_END'
+          ? `${baseJobName} › 📌 Tham chiếu Cuối`
+          : refTag === 'REF'
+            ? `${baseJobName} › 📌 Tham chiếu`
+            : baseJobName;
+      const jobKey = refTag ? `${dateKey}::${img.shift_id}::${refTag}` : `${dateKey}::${img.shift_id}`;
 
       let mNode = months.get(monthKey);
       if (!mNode) {
@@ -288,6 +297,13 @@ export default function WarehouseAlbumModal({ visible, systemCode, companyId, on
     for (const img of filteredImages) {
       const { dateKey, dateLabel } = getDayInfo(img.captured_at);
       const jobName = img.job_name || 'Công việc không tên';
+      const refMatch = img.notes?.match(/^\[THAM_CHIEU:([^\]:]+)(?::(start|end))?\]/);
+      const childKey = refMatch
+        ? (refMatch[2] === 'end' ? '__REF_END__' : refMatch[2] === 'start' ? '__REF_START__' : '__REF__')
+        : dateKey;
+      const childLabel = refMatch
+        ? (refMatch[2] === 'end' ? '📌 Tham chiếu Cuối' : refMatch[2] === 'start' ? '📌 Tham chiếu Đầu' : '📌 Tham chiếu')
+        : dateLabel;
 
       let jNode = jobs.get(jobName);
       if (!jNode) {
@@ -298,19 +314,27 @@ export default function WarehouseAlbumModal({ visible, systemCode, companyId, on
       jNode.items.push(img);
       if (dateKey > jNode.latestDateKey) jNode.latestDateKey = dateKey;
 
-      let dNode = jNode.dates.get(dateKey);
+      let dNode = jNode.dates.get(childKey);
       if (!dNode) {
-        dNode = { dateKey, dateLabel, items: [] };
-        jNode.dates.set(dateKey, dNode);
+        dNode = { dateKey: childKey, dateLabel: childLabel, items: [] };
+        jNode.dates.set(childKey, dNode);
       }
       dNode.items.push(img);
     }
 
+    const refOrder: Record<string, number> = { __REF_START__: 0, __REF_END__: 1, __REF__: 2 };
     return Array.from(jobs.values())
       .sort((a, b) => b.latestDateKey.localeCompare(a.latestDateKey) || a.jobName.localeCompare(b.jobName))
       .map((j) => ({
         ...j,
-        dates: Array.from(j.dates.values()).sort((a, b) => b.dateKey.localeCompare(a.dateKey)),
+        dates: Array.from(j.dates.values()).sort((a, b) => {
+          const ra = refOrder[a.dateKey];
+          const rb = refOrder[b.dateKey];
+          if (ra !== undefined && rb !== undefined) return ra - rb;
+          if (ra !== undefined) return -1;
+          if (rb !== undefined) return 1;
+          return b.dateKey.localeCompare(a.dateKey);
+        }),
       }));
   }, [filteredImages]);
 

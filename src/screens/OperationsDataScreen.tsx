@@ -11,8 +11,11 @@ import {
   Alert,
   RefreshControl,
   Platform,
+  Image,
+  Modal,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import * as ImagePicker from 'expo-image-picker';
 import { useAuth } from '../contexts/AuthContext';
 import {
   DeliveryShift,
@@ -58,6 +61,7 @@ import OperationImagesModal, { JournalImageTarget } from '../components/operatio
 import WarehouseAlbumModal from '../components/operations/WarehouseAlbumModal';
 import {
   LocalPickedImage,
+  OperationImageRecord,
   uploadOperationImages,
   getShiftOperationImages,
 } from '../services/operationImagesService';
@@ -210,6 +214,9 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
   const [reconcileMap, setReconcileMap] = useState<Record<string, ReconcileEntry>>({});
   const [savingReconcile, setSavingReconcile] = useState(false);
   const [expandedReconcileKeys, setExpandedReconcileKeys] = useState<Record<string, boolean>>({});
+  const [reconcileImagesMap, setReconcileImagesMap] = useState<Record<string, { start: OperationImageRecord[]; end: OperationImageRecord[] }>>({});
+  const [uploadingReconcileKey, setUploadingReconcileKey] = useState<string | null>(null);
+  const [previewReconcileImage, setPreviewReconcileImage] = useState<OperationImageRecord | null>(null);
 
   useEffect(() => {
     if (!selectedShift?.id) {
@@ -232,12 +239,77 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
     try {
       const nextSummary = await saveShiftReconciliations(selectedShift, reconcileMap);
       setSelectedShift((prev: any) => (prev && prev.id === selectedShift.id ? { ...prev, summary_data: nextSummary } : prev));
-      Alert.alert('Thành công', 'Đã lưu dữ liệu đối chiếu cuối ca.');
+      Alert.alert('Thành công', 'Đã lưu dữ liệu tham chiếu.');
     } catch (e: any) {
-      Alert.alert('Lỗi', e?.message || 'Không thể lưu đối chiếu');
+      Alert.alert('Lỗi', e?.message || 'Không thể lưu tham chiếu');
     } finally {
       setSavingReconcile(false);
     }
+  };
+
+  const handlePickReconcileImage = (reconcileKey: string, phase: 'start' | 'end', itemName: string, unit: string) => {
+    if (!selectedShift?.id) return;
+    const doUpload = async (assets: ImagePicker.ImagePickerAsset[]) => {
+      if (!assets || assets.length === 0) return;
+      setUploadingReconcileKey(`${reconcileKey}:${phase}`);
+      try {
+        const images: LocalPickedImage[] = assets.map((a, idx) => ({
+          localId: `ref_${Date.now()}_${idx}`,
+          uri: a.uri,
+          fileName: a.fileName || `ref_${Date.now()}_${idx}.jpg`,
+          mimeType: a.mimeType || 'image/jpeg',
+          fileSize: a.fileSize,
+        }));
+        await uploadOperationImages({
+          systemCode: selectedShift.system_code || 'KHO_DONG_LANH',
+          companyId: selectedShift.company_id || user?.company_id || null,
+          shiftId: selectedShift.id,
+          jobName: selectedShift.summary_data?.job_name || selectedShift.notes || '',
+          scope: 'shift',
+          itemName: reconcileKey === '__TOTAL__' ? 'Tham chiếu tổng' : itemName,
+          unit,
+          notes: `[THAM_CHIEU:${reconcileKey}:${phase}]`,
+          images,
+          user,
+        });
+        await reloadShiftData(selectedShift.id);
+      } catch (e: any) {
+        Alert.alert('Lỗi tải ảnh', e?.message || 'Không thể tải ảnh tham chiếu');
+      } finally {
+        setUploadingReconcileKey(null);
+      }
+    };
+
+    Alert.alert(`Ảnh tham chiếu ${phase === 'start' ? 'ĐẦU' : 'CUỐI'}`, 'Chọn nguồn ảnh:', [
+      {
+        text: 'Chụp ảnh mới',
+        onPress: async () => {
+          const perm = await ImagePicker.requestCameraPermissionsAsync();
+          if (!perm.granted) {
+            Alert.alert('Cần quyền Camera', 'Vui lòng cấp quyền camera để chụp ảnh.');
+            return;
+          }
+          const res = await ImagePicker.launchCameraAsync({ quality: 0.75 });
+          if (!res.canceled && res.assets) await doUpload(res.assets);
+        },
+      },
+      {
+        text: 'Chọn từ thư viện',
+        onPress: async () => {
+          const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+          if (!perm.granted) {
+            Alert.alert('Cần quyền Thư viện', 'Vui lòng cấp quyền truy cập ảnh.');
+            return;
+          }
+          const res = await ImagePicker.launchImageLibraryAsync({
+            allowsMultipleSelection: true,
+            quality: 0.75,
+          });
+          if (!res.canceled && res.assets) await doUpload(res.assets);
+        },
+      },
+      { text: 'Hủy', style: 'cancel' },
+    ]);
   };
   // Bộ lọc cho Lịch sử đợt: 'all' | 'in' | 'out'
   const [journalFilter, setJournalFilter] = useState<'all' | 'in' | 'out'>('all');
@@ -393,6 +465,16 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
       setAllJournals(jList);
       setSubShifts(sList);
       setShiftImageCount(imgList.length);
+      const refMap: Record<string, { start: OperationImageRecord[]; end: OperationImageRecord[] }> = {};
+      imgList.forEach(img => {
+        const m = img.notes?.match(/^\[THAM_CHIEU:([^\]:]+)(?::(start|end))?\]/);
+        if (m && m[1]) {
+          const phase = m[2] === 'end' ? 'end' : 'start';
+          if (!refMap[m[1]]) refMap[m[1]] = { start: [], end: [] };
+          refMap[m[1]][phase].push(img);
+        }
+      });
+      setReconcileImagesMap(refMap);
     } catch (e) {
       console.warn('Lỗi lấy nhật ký & đợt chốt tạm:', e);
     }
@@ -1589,7 +1671,7 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
                           color={reportTab === 'reconcile' ? '#f59e0b' : '#94a3b8'}
                         />
                         <Text style={[styles.reportTabBtnText, reportTab === 'reconcile' && { color: '#fbbf24' }]}>
-                          Đối chiếu
+                          Tham chiếu
                         </Text>
                       </TouchableOpacity>
                     </View>
@@ -2073,14 +2155,14 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
                       </View>
                     )}
 
-                    {/* ── NỘI DUNG TAB 3: ĐỐI CHIẾU SỐ ĐẦU - SỐ ĐUÔI CUỐI CA ── */}
+                    {/* ── NỘI DUNG TAB 3: THAM CHIẾU SỐ ĐẦU - SỐ ĐUÔI ── */}
                     {reportTab === 'reconcile' && (
                       <View style={styles.reconcileTabContainer}>
                         <View style={styles.reconcileHeaderRow}>
                           <View style={{ flex: 1 }}>
-                            <Text style={styles.reconcileTitle}>Đối chiếu Số đầu – Đuôi</Text>
+                            <Text style={styles.reconcileTitle}>Tham chiếu Số đầu – Đuôi</Text>
                             <Text style={styles.reconcileSub}>
-                              Dữ liệu đối chiếu độc lập cuối ca, không cộng vào số liệu nhập xuất.
+                              Dữ liệu tham chiếu độc lập, không cộng vào số liệu nhập xuất.
                             </Text>
                           </View>
                           <TouchableOpacity
@@ -2127,7 +2209,7 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
                           const totalOut = Math.round(prodRows.reduce((s, r) => s + r.outQty, 0) * 1000) / 1000;
                           const rows: Array<{ name: string; unit: string; inQty: number; outQty: number; isTotal?: boolean }> = [
                             {
-                              name: 'Tổng tất cả sản phẩm (Đối chiếu tổng)',
+                              name: 'Tổng tất cả sản phẩm (Tham chiếu tổng)',
                               unit: 'Tổng cả việc',
                               inQty: totalIn,
                               outQty: totalOut,
@@ -2181,6 +2263,11 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
                                       {(entry.startStr.trim() !== '' || entry.endStr.trim() !== '') && (
                                         <Text style={{ color: '#fbbf24', fontWeight: '700' }}>
                                           {`  •  Đầu: ${entry.startStr || '—'} / Đuôi: ${entry.endStr || '—'}`}
+                                        </Text>
+                                      )}
+                                      {((reconcileImagesMap[k]?.start.length || 0) > 0 || (reconcileImagesMap[k]?.end.length || 0) > 0) && (
+                                        <Text style={{ color: '#a5b4fc', fontWeight: '700' }}>
+                                          {`  •  📷 Đầu: ${reconcileImagesMap[k]?.start.length || 0} / Cuối: ${reconcileImagesMap[k]?.end.length || 0}`}
                                         </Text>
                                       )}
                                     </Text>
@@ -2275,6 +2362,51 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
                                         ? '💡 VD: Đầu ca có 6, cuối ca đếm được 12 → Phát sinh 6.'
                                         : '💡 VD: Làm từ số 6 đến số 12 (tính cả 2 đầu) → Tổng 7.'}
                                     </Text>
+
+                                    {/* Ảnh tham chiếu Đầu / Cuối */}
+                                    <View style={{ marginTop: 4, gap: 6 }}>
+                                      {([
+                                        { phase: 'start' as const, label: 'Ảnh tham chiếu ĐẦU', badge: 'ĐẦU', borderColor: '#38bdf8', textColor: '#7dd3fc' },
+                                        { phase: 'end' as const, label: 'Ảnh tham chiếu CUỐI', badge: 'CUỐI', borderColor: '#f59e0b', textColor: '#fbbf24' },
+                                      ]).map(cfg => {
+                                        const imgs = reconcileImagesMap[k]?.[cfg.phase] || [];
+                                        const isUp = uploadingReconcileKey === `${k}:${cfg.phase}`;
+                                        return (
+                                          <View key={cfg.phase} style={{ padding: 8, borderRadius: 10, backgroundColor: 'rgba(15,23,42,0.65)', borderWidth: 1, borderColor: '#334155', gap: 6 }}>
+                                            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                                              <Text style={{ color: '#cbd5e1', fontSize: 11, fontWeight: '700' }}>
+                                                📷 {cfg.label} ({imgs.length})
+                                              </Text>
+                                              <TouchableOpacity
+                                                disabled={isUp}
+                                                onPress={() => handlePickReconcileImage(k, cfg.phase, row.name, row.unit)}
+                                                style={{ paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8, backgroundColor: 'rgba(15,23,42,0.9)', borderWidth: 1, borderColor: cfg.borderColor }}
+                                              >
+                                                <Text style={{ color: cfg.textColor, fontSize: 11, fontWeight: '700' }}>
+                                                  {isUp ? 'Đang tải...' : '+ Thêm'}
+                                                </Text>
+                                              </TouchableOpacity>
+                                            </View>
+                                            {imgs.length > 0 && (
+                                              <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+                                                {imgs.map(img => (
+                                                  <TouchableOpacity
+                                                    key={img.id}
+                                                    onPress={() => setPreviewReconcileImage(img)}
+                                                    style={{ marginRight: 8 }}
+                                                  >
+                                                    <Image
+                                                      source={{ uri: img.public_url || '' }}
+                                                      style={{ width: 52, height: 52, borderRadius: 8, borderWidth: 1, borderColor: cfg.borderColor }}
+                                                    />
+                                                  </TouchableOpacity>
+                                                ))}
+                                              </ScrollView>
+                                            )}
+                                          </View>
+                                        );
+                                      })}
+                                    </View>
                                   </View>
                                 )}
                               </View>
@@ -3588,6 +3720,26 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
           }
         }}
       />
+
+      <Modal
+        visible={Boolean(previewReconcileImage)}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setPreviewReconcileImage(null)}
+      >
+        <TouchableOpacity
+          activeOpacity={1}
+          onPress={() => setPreviewReconcileImage(null)}
+          style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.9)', justifyContent: 'center', alignItems: 'center', padding: 16 }}
+        >
+          {previewReconcileImage && (
+            <Image
+              source={{ uri: previewReconcileImage.public_url || '' }}
+              style={{ width: '100%', height: '80%', resizeMode: 'contain' }}
+            />
+          )}
+        </TouchableOpacity>
+      </Modal>
     </View>
   );
 }
