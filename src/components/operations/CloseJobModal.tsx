@@ -13,6 +13,8 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { DeliveryShift, OrderTypeItem, getOrderTypes, closeShift } from '../../services/operationsService';
+import { LocalPickedImage, uploadOperationImages } from '../../services/operationImagesService';
+import OperationImagePickerBar from './OperationImagePickerBar';
 
 interface Props {
   visible: boolean;
@@ -27,11 +29,13 @@ export default function CloseJobModal({ visible, shift, onClose, onSuccess, user
   const [closeNotes, setCloseNotes] = useState('');
   const [orderTypes, setOrderTypes] = useState<OrderTypeItem[]>([]);
   const [selectedOrderType, setSelectedOrderType] = useState<OrderTypeItem | null>(null);
+  const [images, setImages] = useState<LocalPickedImage[]>([]);
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
     if (visible && shift) {
       setCloseNotes('');
+      setImages([]);
       loadTypes();
     }
   }, [visible, shift]);
@@ -66,6 +70,19 @@ export default function CloseJobModal({ visible, shift, onClose, onSuccess, user
         orderTypeCode: selectedOrderType?.code || shift.summary_data?.order_type_code || null,
         user,
       });
+      if (images.length > 0) {
+        await uploadOperationImages({
+          images,
+          systemCode: shift.system_code,
+          companyId: shift.company_id || user?.company_id || null,
+          shiftId: shift.id,
+          scope: 'shift',
+          jobName,
+          user,
+          notes: closeNotes.trim() || 'Ảnh hoàn thành công việc',
+        });
+      }
+      setImages([]);
       onSuccess();
       onClose();
     } catch (err: any) {
@@ -136,6 +153,15 @@ export default function CloseJobModal({ visible, shift, onClose, onSuccess, user
                   value={closeNotes}
                   onChangeText={setCloseNotes}
                   multiline
+                />
+              </View>
+
+              <View style={styles.formGroup}>
+                <OperationImagePickerBar
+                  images={images}
+                  onChange={setImages}
+                  compact
+                  label="Ảnh bàn giao / chứng minh công việc"
                 />
               </View>
 

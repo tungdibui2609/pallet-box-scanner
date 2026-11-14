@@ -40,6 +40,14 @@ Docs: https://docs.expo.dev/eas/index.md
 - Expo Go only includes its bundled native modules. After adding a library with native code, the app needs a development build: `npx expo run:ios|android` locally, or `eas build --profile development`.
 - Prefer recommended Expo modules over third-party libraries, and check your available skills before adding dependencies. Docs: https://docs.expo.dev/versions/latest/index.md
 
+# 📌 QUY TẮC BẮT BUỘC: TÌM KIẾM SẢN PHẨM THEO TÊN VIẾT TẮT & GỢI Ý (AUTOCOMPLETE)
+
+1. **Ưu tiên Tên gõ tắt / Viết tắt (`aliases`)**:
+   - Trong toàn bộ hệ thống (Web, Mobile App, Sơ đồ kho, Album ảnh, Báo cáo...), người dùng phần lớn tìm kiếm sản phẩm bằng **tên viết tắt / tên gõ tắt** (`products.aliases`) hoặc mã nội bộ (`internal_code`, `internal_name`), mã `sku`.
+   - Mọi bộ lọc tìm kiếm liên quan đến sản phẩm BẮT BUỘC phải hỗ trợ tìm không dấu, đa từ khóa và khớp đồng thời qua `aliases`, `internal_code`, `internal_name`, `sku`, và `name` (suy luận hai chiều với `sku`).
+2. **Bắt buộc có Gợi ý khi gõ (Search Suggestions / Autocomplete)**:
+   - Mọi ô tìm kiếm sản phẩm/công việc khi người dùng gõ từ khóa PHẢI hiển thị danh sách **gợi ý trực tiếp bên dưới ô tìm kiếm** (hiển thị rõ **tên gõ tắt** nếu có, **tên đầy đủ**, **mã SKU**) để người dùng chạm chọn nhanh chính xác mục cần tìm.
+
 # 🛑 QUY TẮC BẮT BUỘC: ĐIỀU KIỆN BUILD FILE APK (EAS BUILD POLICY)
 
 **NGHIÊM CẤM TỰ ĐỘNG CHẠY LỆNH BUILD APK (eas build, eas-cli build) KHI CHƯA CÓ LỆNH RÕ RÀNG TỪ NGƯỜI DÙNG.**

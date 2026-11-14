@@ -1,6 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getSupabaseClient } from './supabase';
 import { getProductsFromCache } from './database';
+import { generateUuidV4, syncOfflineOperationImages } from './operationImagesService';
 
 export interface ShiftProductItem {
   id: string;
@@ -471,11 +472,13 @@ export async function createShift(params: {
   orderTypeName?: string | null;
   orderTypeCode?: string | null;
   templateId?: string | null;
+  reconciliations?: Record<string, ReconcileEntry>;
   user: any;
 }): Promise<DeliveryShift | null> {
   const baseSys = await getCurrentSystemCode();
   const shiftSys = getShiftSystemCode(baseSys);
   const openedAtIso = params.openedAt ? new Date(params.openedAt).toISOString() : new Date().toISOString();
+  const hasReconciliations = params.reconciliations && Object.keys(params.reconciliations).length > 0;
 
   const payload = {
     system_code: shiftSys,
@@ -493,6 +496,7 @@ export async function createShift(params: {
       order_type_id: params.orderTypeId || null,
       order_type_name: params.orderTypeName || null,
       order_type_code: params.orderTypeCode || null,
+      ...(hasReconciliations ? { reconciliations: params.reconciliations } : {}),
     }
   };
 
@@ -534,6 +538,7 @@ export async function createShift(params: {
       order_type_id: params.orderTypeId || null,
       order_type_name: params.orderTypeName || null,
       order_type_code: params.orderTypeCode || null,
+      ...(hasReconciliations ? { reconciliations: params.reconciliations } : {}),
       is_offline: true,
     }
   };
@@ -633,17 +638,19 @@ export async function submitJournalEntry(params: {
   type: 'in' | 'out';
   user: any;
   userNote?: string;
-}): Promise<boolean> {
+}): Promise<string> {
   const baseSys = await getCurrentSystemCode();
   const shiftSys = getShiftSystemCode(baseSys);
   const isImport = params.type === 'in';
   const nowIso = new Date().toISOString();
   const jobName = params.shift.summary_data?.job_name || params.shift.notes || 'Công việc';
+  const clientJournalId = generateUuidV4();
 
   const notesTag = `[CV_ID: ${params.shift.id}] [PID: ${params.product.id}] [SKU: ${params.product.sku || ''}] [CV: ${jobName}] ${isImport ? 'Nhập kho' : 'Xuất kho'}${params.userNote ? ` - ${params.userNote.trim()}` : ''}`;
   const companyId = params.user?.company_id || params.shift.company_id || null;
 
   const payload = {
+    id: clientJournalId,
     delivery_code: `SO-LIEU-${Date.now().toString().slice(-6)}`,
     company_id: companyId,
     system_code: shiftSys,
@@ -675,9 +682,8 @@ export async function submitJournalEntry(params: {
     created_by_name: params.user?.full_name || null,
   };
 
-  const tempJournalId = `offline_jn_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
   const localRecord: JournalRecord = {
-    id: tempJournalId,
+    id: clientJournalId,
     delivery_code: payload.delivery_code,
     item_name: params.product.name,
     quantity_sent: params.quantity,
@@ -704,7 +710,7 @@ export async function submitJournalEntry(params: {
       payload: { payload, offlineRecord: localRecord, shiftId: params.shift.id },
       shiftId: params.shift.id,
     });
-    return true;
+    return clientJournalId;
   }
 
   // Nếu chưa biết là offline, thử gửi online với timeout ngắn 700ms
@@ -716,7 +722,7 @@ export async function submitJournalEntry(params: {
     );
 
     if (!error) {
-      return true;
+      return clientJournalId;
     }
   } catch (e) {
     setKnownOffline(true);
@@ -730,7 +736,7 @@ export async function submitJournalEntry(params: {
     shiftId: params.shift.id,
   });
 
-  return true;
+  return clientJournalId;
 }
 
 // 6.1 Cập nhật một dòng nhật ký (Sửa lượt bấm - Offline-First)
@@ -1167,6 +1173,7 @@ export async function syncOperationsOfflineQueue(): Promise<{
             order_type_id: params.orderTypeId || null,
             order_type_name: params.orderTypeName || null,
             order_type_code: params.orderTypeCode || null,
+            ...(params.reconciliations && Object.keys(params.reconciliations).length > 0 ? { reconciliations: params.reconciliations } : {}),
           }
         };
 
@@ -1243,6 +1250,13 @@ export async function syncOperationsOfflineQueue(): Promise<{
   }
 
   await saveOfflineOperationsQueue(remainingQueue);
+
+  // Đồng bộ ảnh chụp offline (nếu có)
+  try {
+    await syncOfflineOperationImages(tempShiftIdMap);
+  } catch (e) {
+    console.warn('syncOfflineOperationImages error:', e);
+  }
 
   // Nạp lại danh sách ca online mới nhất
   await getOpenShifts();
@@ -1555,5 +1569,43 @@ export function aggregateShiftsUnits(products: AggregatedProductItem[]): Aggrega
     unitMap[u].count += r.count;
   });
   return Object.values(unitMap);
+}
+
+export interface ReconcileEntry {
+  startStr: string;
+  endStr: string;
+  calcType: 'diff' | 'inclusive';
+  targetType: 'in' | 'out' | 'net';
+  note?: string;
+}
+
+export async function getCachedShiftReconciliations(shiftId: string): Promise<Record<string, ReconcileEntry>> {
+  try {
+    const raw = await AsyncStorage.getItem(`op_reconcile_${shiftId}`);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+
+export async function saveShiftReconciliations(
+  shift: { id: string; summary_data?: any },
+  reconciliations: Record<string, ReconcileEntry>
+): Promise<any> {
+  try {
+    await AsyncStorage.setItem(`op_reconcile_${shift.id}`, JSON.stringify(reconciliations));
+  } catch {
+    // ignore
+  }
+  const nextSummary = { ...(shift.summary_data || {}), reconciliations };
+  if (!String(shift.id).startsWith('offline_')) {
+    const supabase = await getSupabaseClient();
+    const { error } = await (supabase as any)
+      .from('delivery_shifts')
+      .update({ summary_data: nextSummary })
+      .eq('id', shift.id);
+    if (error) throw error;
+  }
+  return nextSummary;
 }
 

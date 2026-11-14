@@ -13,6 +13,8 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { DeliveryShift, createSubShift } from '../../services/operationsService';
+import { LocalPickedImage, uploadOperationImages } from '../../services/operationImagesService';
+import OperationImagePickerBar from './OperationImagePickerBar';
 
 interface Props {
   visible: boolean;
@@ -25,6 +27,7 @@ interface Props {
 export default function InterimCloseModal({ visible, shift, onClose, onSuccess, user }: Props) {
   const insets = useSafeAreaInsets();
   const [notes, setNotes] = useState('');
+  const [images, setImages] = useState<LocalPickedImage[]>([]);
   const [submitting, setSubmitting] = useState(false);
 
   if (!shift) return null;
@@ -32,12 +35,26 @@ export default function InterimCloseModal({ visible, shift, onClose, onSuccess, 
   const handleConfirm = async () => {
     setSubmitting(true);
     try {
-      await createSubShift({
+      const subShift = await createSubShift({
         shift,
         notes: notes.trim() || undefined,
         user,
       });
+      if (images.length > 0) {
+        await uploadOperationImages({
+          images,
+          systemCode: shift.system_code,
+          companyId: shift.company_id || user?.company_id || null,
+          shiftId: shift.id,
+          subShiftId: subShift?.id || null,
+          scope: 'sub_shift',
+          jobName: shift.summary_data?.job_name || shift.notes || 'Công việc',
+          user,
+          notes: notes.trim() || 'Ảnh chốt ca tạm',
+        });
+      }
       setNotes('');
+      setImages([]);
       onSuccess();
       onClose();
     } catch (e: any) {
@@ -86,6 +103,12 @@ export default function InterimCloseModal({ visible, shift, onClose, onSuccess, 
                     autoFocus
                   />
                 </View>
+
+                <OperationImagePickerBar
+                  images={images}
+                  onChange={setImages}
+                  label="Ảnh chứng minh đợt chốt tạm"
+                />
 
                 <View style={styles.btnRow}>
                   <TouchableOpacity onPress={onClose} style={styles.cancelBtn}>

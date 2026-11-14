@@ -40,6 +40,10 @@ import {
   syncOperationsOfflineQueue,
   getJobTemplates,
   getOrderTypes,
+  getCurrentSystemCode,
+  ReconcileEntry,
+  getCachedShiftReconciliations,
+  saveShiftReconciliations,
 } from '../services/operationsService';
 import OperationNumberPadModal from '../components/operations/OperationNumberPadModal';
 import OpenJobModal from '../components/operations/OpenJobModal';
@@ -50,6 +54,13 @@ import EditJournalModal from '../components/operations/EditJournalModal';
 import PastShiftDetailModal from '../components/operations/PastShiftDetailModal';
 import AggregatedReportModal from '../components/operations/AggregatedReportModal';
 import { CalendarPickerModal } from '../components/operations/CalendarPickerModal';
+import OperationImagesModal, { JournalImageTarget } from '../components/operations/OperationImagesModal';
+import WarehouseAlbumModal from '../components/operations/WarehouseAlbumModal';
+import {
+  LocalPickedImage,
+  uploadOperationImages,
+  getShiftOperationImages,
+} from '../services/operationImagesService';
 import { matchSearch, calculateSearchScore } from '../utils/searchUtils';
 
 interface OperationsDataScreenProps {
@@ -166,6 +177,8 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
 
   // Tab: 'active' (Đang làm) | 'done' (Đã hoàn thành)
   const [activeTab, setActiveTab] = useState<'active' | 'done'>('active');
+  const [isWarehouseAlbumVisible, setIsWarehouseAlbumVisible] = useState(false);
+  const [albumSystemCode, setAlbumSystemCode] = useState<string>('');
 
   // Quản lý ca công việc
   const [openShifts, setOpenShifts] = useState<DeliveryShift[]>([]);
@@ -193,7 +206,39 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
   const [viewMode, setViewMode] = useState<'sub-shift' | 'shift'>('sub-shift');
 
   // Tab Báo cáo cuối trang: 'feed' (Lịch sử đợt) | 'summary' (Báo cáo tổng hợp)
-  const [reportTab, setReportTab] = useState<'feed' | 'summary'>('feed');
+  const [reportTab, setReportTab] = useState<'feed' | 'summary' | 'reconcile'>('feed');
+  const [reconcileMap, setReconcileMap] = useState<Record<string, ReconcileEntry>>({});
+  const [savingReconcile, setSavingReconcile] = useState(false);
+  const [expandedReconcileKeys, setExpandedReconcileKeys] = useState<Record<string, boolean>>({});
+
+  useEffect(() => {
+    if (!selectedShift?.id) {
+      setReconcileMap({});
+      return;
+    }
+    const fromShift = (selectedShift as any)?.summary_data?.reconciliations;
+    if (fromShift && typeof fromShift === 'object') {
+      setReconcileMap(fromShift);
+      return;
+    }
+    getCachedShiftReconciliations(selectedShift.id)
+      .then(setReconcileMap)
+      .catch(() => setReconcileMap({}));
+  }, [selectedShift?.id]);
+
+  const handleSaveReconcile = async () => {
+    if (!selectedShift?.id) return;
+    setSavingReconcile(true);
+    try {
+      const nextSummary = await saveShiftReconciliations(selectedShift, reconcileMap);
+      setSelectedShift((prev: any) => (prev && prev.id === selectedShift.id ? { ...prev, summary_data: nextSummary } : prev));
+      Alert.alert('Thành công', 'Đã lưu dữ liệu đối chiếu cuối ca.');
+    } catch (e: any) {
+      Alert.alert('Lỗi', e?.message || 'Không thể lưu đối chiếu');
+    } finally {
+      setSavingReconcile(false);
+    }
+  };
   // Bộ lọc cho Lịch sử đợt: 'all' | 'in' | 'out'
   const [journalFilter, setJournalFilter] = useState<'all' | 'in' | 'out'>('all');
 
@@ -216,6 +261,9 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
   const [isOpenJobModal, setIsOpenJobModal] = useState(false);
   const [isCloseJobModal, setIsCloseJobModal] = useState(false);
   const [isInterimCloseModal, setIsInterimCloseModal] = useState(false);
+  const [isImagesModalVisible, setIsImagesModalVisible] = useState(false);
+  const [journalTargetForImages, setJournalTargetForImages] = useState<JournalImageTarget | null>(null);
+  const [shiftImageCount, setShiftImageCount] = useState(0);
   const [historyProduct, setHistoryProduct] = useState<ShiftProductItem | null>(null);
   const [isHistoryVisible, setIsHistoryVisible] = useState(false);
   const [isShiftDropdownOpen, setIsShiftDropdownOpen] = useState(false);
@@ -337,12 +385,14 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
   // Tải lại nhật ký và các đợt chốt tạm của ca
   const reloadShiftData = useCallback(async (shiftId: string) => {
     try {
-      const [jList, sList] = await Promise.all([
+      const [jList, sList, imgList] = await Promise.all([
         getShiftJournals(shiftId),
         getSubShifts(shiftId),
+        getShiftOperationImages(shiftId),
       ]);
       setAllJournals(jList);
       setSubShifts(sList);
+      setShiftImageCount(imgList.length);
     } catch (e) {
       console.warn('Lỗi lấy nhật ký & đợt chốt tạm:', e);
     }
@@ -938,7 +988,7 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
   };
 
   // Ghi nhận lượt bấm từ Bàn phím số (Siêu tốc 0ms lag - Optimistic Update cho Kho Đông)
-  const handlePadSubmit = async ({ quantity, unit, type, note }: { quantity: number; unit: string; type: 'in' | 'out'; note?: string }) => {
+  const handlePadSubmit = async ({ quantity, unit, type, note, images }: { quantity: number; unit: string; type: 'in' | 'out'; note?: string; images?: LocalPickedImage[] }) => {
     if (!selectedShift || !padProduct) return;
 
     // 1. CẬP NHẬT TỨC THỜI TRÊN GIAO DIỆN (OPTIMISTIC UI UPDATE - 0ms phản hồi tức thì)
@@ -963,7 +1013,7 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
 
     // 2. GHI NHẬN VÀO BỘ NHỚ LOCAL & HÀNG ĐỢI OFFLINE
     try {
-      await submitJournalEntry({
+      const journalId = await submitJournalEntry({
         shift: selectedShift,
         product: padProduct,
         quantity,
@@ -972,6 +1022,28 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
         user,
         userNote: note,
       });
+      if (images && images.length > 0) {
+        uploadOperationImages({
+          images,
+          systemCode: selectedShift.system_code,
+          companyId: selectedShift.company_id || user?.company_id || null,
+          shiftId: selectedShift.id,
+          journalId,
+          scope: 'journal',
+          direction: type,
+          jobName: selectedShift.summary_data?.job_name || selectedShift.notes || 'Công việc',
+          itemName: padProduct.name,
+          itemSku: padProduct.sku || null,
+          quantity,
+          unit,
+          user,
+          notes: note || null,
+        })
+          .then(() => {
+            setShiftImageCount((c) => c + images.length);
+          })
+          .catch((e) => console.warn('Upload journal images error:', e));
+      }
       refreshPendingCount();
       // Nạp ngầm để đồng bộ dữ liệu chuẩn
       reloadShiftData(selectedShift.id);
@@ -1095,6 +1167,27 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
         </TouchableOpacity>
 
         <TouchableOpacity
+          onPress={async () => {
+            const sys = await getCurrentSystemCode().catch(() => '');
+            if (sys) setAlbumSystemCode(sys);
+            setIsWarehouseAlbumVisible(true);
+          }}
+          style={{
+            width: 36,
+            height: 36,
+            borderRadius: 10,
+            backgroundColor: '#1e293b',
+            borderWidth: 1,
+            borderColor: '#10b98144',
+            justifyContent: 'center',
+            alignItems: 'center',
+          }}
+          accessibilityLabel="Thư viện ảnh theo ngày và công việc"
+        >
+          <Ionicons name="images-outline" size={17} color="#34d399" />
+        </TouchableOpacity>
+
+        <TouchableOpacity
           onPress={handleSyncOperationsOffline}
           disabled={downloadingOpsOffline || refreshing}
           style={{
@@ -1155,6 +1248,21 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
             {/* Nút Chốt tạm (Cam), Hoàn thành ca (Đỏ), Thêm mới (Tím) */}
             {selectedShift && (
               <View style={{ flexDirection: 'row', gap: 6, marginLeft: 6 }}>
+                <TouchableOpacity
+                  onPress={() => setIsImagesModalVisible(true)}
+                  style={[
+                    styles.actionIconBtnWarning,
+                    { backgroundColor: 'rgba(56, 189, 248, 0.14)', borderColor: 'rgba(56, 189, 248, 0.4)' },
+                  ]}
+                  accessibilityLabel="Album ảnh chứng minh"
+                >
+                  <Ionicons name="camera-outline" size={16} color="#38bdf8" />
+                  {shiftImageCount > 0 && (
+                    <Text style={{ color: '#38bdf8', fontSize: 11, fontWeight: '800', marginLeft: 2 }}>
+                      {shiftImageCount}
+                    </Text>
+                  )}
+                </TouchableOpacity>
                 <TouchableOpacity
                   onPress={() => setIsInterimCloseModal(true)}
                   style={styles.actionIconBtnWarning}
@@ -1467,7 +1575,21 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
                           color={reportTab === 'summary' ? '#6366f1' : '#94a3b8'}
                         />
                         <Text style={[styles.reportTabBtnText, reportTab === 'summary' && styles.reportTabBtnTextActive]}>
-                          Báo cáo tổng hợp
+                          Báo cáo
+                        </Text>
+                      </TouchableOpacity>
+
+                      <TouchableOpacity
+                        onPress={() => setReportTab('reconcile')}
+                        style={[styles.reportTabBtn, reportTab === 'reconcile' && styles.reportTabBtnActive]}
+                      >
+                        <Ionicons
+                          name="checkmark-done-circle"
+                          size={15}
+                          color={reportTab === 'reconcile' ? '#f59e0b' : '#94a3b8'}
+                        />
+                        <Text style={[styles.reportTabBtnText, reportTab === 'reconcile' && { color: '#fbbf24' }]}>
+                          Đối chiếu
                         </Text>
                       </TouchableOpacity>
                     </View>
@@ -1606,6 +1728,22 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
                                                   </Text>
                                                   <View style={styles.rowActions}>
                                                     <TouchableOpacity
+                                                      onPress={() => {
+                                                        setJournalTargetForImages({
+                                                          id: record.id,
+                                                          itemName: record.item_name,
+                                                          quantity: record.quantity_sent,
+                                                          unit: stdUnit,
+                                                          direction: isImport ? 'in' : 'out',
+                                                        });
+                                                        setIsImagesModalVisible(true);
+                                                      }}
+                                                      style={styles.actionPencilBtn}
+                                                      accessibilityLabel="Ảnh đợt này"
+                                                    >
+                                                      <Ionicons name="camera-outline" size={14} color="#38bdf8" />
+                                                    </TouchableOpacity>
+                                                    <TouchableOpacity
                                                       onPress={() => handleStartEdit(record)}
                                                       style={styles.actionPencilBtn}
                                                     >
@@ -1696,6 +1834,22 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
                                           {record.item_name}
                                         </Text>
                                         <View style={styles.rowActions}>
+                                          <TouchableOpacity
+                                            onPress={() => {
+                                              setJournalTargetForImages({
+                                                id: record.id,
+                                                itemName: record.item_name,
+                                                quantity: record.quantity_sent,
+                                                unit: stdUnit,
+                                                direction: isImport ? 'in' : 'out',
+                                              });
+                                              setIsImagesModalVisible(true);
+                                            }}
+                                            style={styles.actionPencilBtn}
+                                            accessibilityLabel="Ảnh đợt này"
+                                          >
+                                            <Ionicons name="camera-outline" size={14} color="#38bdf8" />
+                                          </TouchableOpacity>
                                           <TouchableOpacity
                                             onPress={() => handleStartEdit(record)}
                                             style={styles.actionPencilBtn}
@@ -1916,6 +2070,217 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
                             </View>
                           )}
                         </View>
+                      </View>
+                    )}
+
+                    {/* ── NỘI DUNG TAB 3: ĐỐI CHIẾU SỐ ĐẦU - SỐ ĐUÔI CUỐI CA ── */}
+                    {reportTab === 'reconcile' && (
+                      <View style={styles.reconcileTabContainer}>
+                        <View style={styles.reconcileHeaderRow}>
+                          <View style={{ flex: 1 }}>
+                            <Text style={styles.reconcileTitle}>Đối chiếu Số đầu – Đuôi</Text>
+                            <Text style={styles.reconcileSub}>
+                              Dữ liệu đối chiếu độc lập cuối ca, không cộng vào số liệu nhập xuất.
+                            </Text>
+                          </View>
+                          <TouchableOpacity
+                            style={[styles.reconcileSaveBtn, savingReconcile && { opacity: 0.6 }]}
+                            disabled={savingReconcile}
+                            onPress={handleSaveReconcile}
+                          >
+                            <Text style={styles.reconcileSaveBtnText}>
+                              {savingReconcile ? 'Đang lưu...' : 'Lưu'}
+                            </Text>
+                          </TouchableOpacity>
+                        </View>
+
+                        {(() => {
+                          const prodMap: Record<string, { name: string; unit: string; inQty: number; outQty: number }> = {};
+                          allJournals.forEach(j => {
+                            const name = (j.item_name || '').trim();
+                            if (!name) return;
+                            const u = standardizeUnitLabel((j.unit || 'Thùng (20kg)').trim());
+                            const k = `${name}___${u}`;
+                            if (!prodMap[k]) prodMap[k] = { name, unit: u, inQty: 0, outQty: 0 };
+                            if (j.to_department === 'Kho') prodMap[k].inQty += j.quantity_sent || 0;
+                            else prodMap[k].outQty += j.quantity_sent || 0;
+                          });
+                          const existingNames = new Set(Object.values(prodMap).map(r => r.name.trim().toLowerCase()));
+                          pinnedProducts.forEach(p => {
+                            const name = (p.name || '').trim();
+                            if (!name || existingNames.has(name.toLowerCase())) return;
+                            const u = standardizeUnitLabel((p.unit || 'Thùng (20kg)').trim());
+                            const k = `${name}___${u}`;
+                            if (!prodMap[k]) {
+                              prodMap[k] = { name, unit: u, inQty: 0, outQty: 0 };
+                              existingNames.add(name.toLowerCase());
+                            }
+                          });
+                          Object.keys(reconcileMap).forEach(k => {
+                            if (k !== '__TOTAL__' && !prodMap[k] && k.includes('___')) {
+                              const [name, unit] = k.split('___');
+                              prodMap[k] = { name, unit, inQty: 0, outQty: 0 };
+                            }
+                          });
+                          const prodRows = Object.values(prodMap);
+                          const totalIn = Math.round(prodRows.reduce((s, r) => s + r.inQty, 0) * 1000) / 1000;
+                          const totalOut = Math.round(prodRows.reduce((s, r) => s + r.outQty, 0) * 1000) / 1000;
+                          const rows: Array<{ name: string; unit: string; inQty: number; outQty: number; isTotal?: boolean }> = [
+                            {
+                              name: 'Tổng tất cả sản phẩm (Đối chiếu tổng)',
+                              unit: 'Tổng cả việc',
+                              inQty: totalIn,
+                              outQty: totalOut,
+                              isTotal: true,
+                            },
+                            ...prodRows,
+                          ];
+
+                          const updateEntry = (k: string, defaultTarget: 'in' | 'out' | 'net', patch: Partial<ReconcileEntry>) => {
+                            setReconcileMap(prev => {
+                              const cur = prev[k] || { startStr: '', endStr: '', calcType: 'diff', targetType: defaultTarget, note: '' };
+                              return { ...prev, [k]: { ...cur, ...patch } };
+                            });
+                          };
+
+                          return rows.map(row => {
+                            const k = row.isTotal ? '__TOTAL__' : `${row.name}___${row.unit}`;
+                            const defaultTarget: 'in' | 'out' | 'net' = row.inQty >= row.outQty ? 'in' : 'out';
+                            const entry = reconcileMap[k] || {
+                              startStr: '',
+                              endStr: '',
+                              calcType: 'diff' as const,
+                              targetType: defaultTarget,
+                              note: '',
+                            };
+                            const s = parseFloat((entry.startStr || '').replace(',', '.'));
+                            const e = parseFloat((entry.endStr || '').replace(',', '.'));
+                            const hasNums = entry.startStr.trim() !== '' && entry.endStr.trim() !== '' && !Number.isNaN(s) && !Number.isNaN(e);
+                            const rawDiff = hasNums ? Math.abs(e - s) : 0;
+                            const calcQty = hasNums ? Math.round((entry.calcType === 'inclusive' ? rawDiff + 1 : rawDiff) * 1000) / 1000 : 0;
+                            const sysQty = entry.targetType === 'in' ? row.inQty : entry.targetType === 'out' ? row.outQty : Math.abs(row.inQty - row.outQty);
+                            const delta = hasNums ? Math.round((calcQty - sysQty) * 1000) / 1000 : 0;
+                            const isMatched = hasNums && delta === 0;
+                            const isExpanded = !!expandedReconcileKeys[k];
+
+                            return (
+                              <View key={k} style={[styles.reconcileCard, row.isTotal && { borderColor: '#6366f1', backgroundColor: 'rgba(99,102,241,0.08)' }]}>
+                                <TouchableOpacity
+                                  style={styles.reconcileCardTop}
+                                  activeOpacity={0.7}
+                                  onPress={() => setExpandedReconcileKeys(prev => ({ ...prev, [k]: !prev[k] }))}
+                                >
+                                  <View style={{ flex: 1 }}>
+                                    <Text style={styles.reconcileProdName}>
+                                      {row.isTotal ? '🌐 ' : ''}{row.name} {!row.isTotal && <Text style={{ color: '#94a3b8' }}>({row.unit})</Text>}
+                                    </Text>
+                                    <Text style={styles.reconcileSysStats}>
+                                      HT Nhập: <Text style={{ color: '#22c55e', fontWeight: '800' }}>+{row.inQty}</Text>
+                                      {'  •  '}
+                                      Xuất: <Text style={{ color: '#f43f5e', fontWeight: '800' }}>-{row.outQty}</Text>
+                                      {(entry.startStr.trim() !== '' || entry.endStr.trim() !== '') && (
+                                        <Text style={{ color: '#fbbf24', fontWeight: '700' }}>
+                                          {`  •  Đầu: ${entry.startStr || '—'} / Đuôi: ${entry.endStr || '—'}`}
+                                        </Text>
+                                      )}
+                                    </Text>
+                                  </View>
+                                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                                    {hasNums && (
+                                      <View style={[styles.reconcileStatusPill, isMatched ? styles.reconcileMatchPill : styles.reconcileDiffPill]}>
+                                        <Text style={[styles.reconcileStatusText, isMatched ? { color: '#34d399' } : { color: '#fb7185' }]}>
+                                          {isMatched ? `✓ Khớp (${calcQty})` : `⚠ Lệch ${delta > 0 ? `+${delta}` : delta}`}
+                                        </Text>
+                                      </View>
+                                    )}
+                                    <Ionicons
+                                      name={isExpanded ? 'chevron-up' : 'chevron-down'}
+                                      size={16}
+                                      color="#94a3b8"
+                                    />
+                                  </View>
+                                </TouchableOpacity>
+
+                                {isExpanded && (
+                                  <View style={{ marginTop: 8, paddingTop: 8, borderTopWidth: 1, borderTopColor: 'rgba(148,163,184,0.18)', gap: 8 }}>
+                                    {row.isTotal && (
+                                      <Text style={{ color: '#a5b4fc', fontSize: 10 }}>
+                                        VD: Đầu ca 3 pallet không, cuối ca 10 → 7 để so với tổng cả việc.
+                                      </Text>
+                                    )}
+
+                                <View style={styles.reconcileTargetRow}>
+                                  {[
+                                    { key: 'in' as const, label: `So Nhập (+${row.inQty})` },
+                                    { key: 'out' as const, label: `So Xuất (-${row.outQty})` },
+                                    { key: 'net' as const, label: `Cân đối (${Math.abs(row.inQty - row.outQty)})` },
+                                  ].map(opt => (
+                                    <TouchableOpacity
+                                      key={opt.key}
+                                      style={[styles.reconcileMiniChip, entry.targetType === opt.key && styles.reconcileMiniChipActive]}
+                                      onPress={() => updateEntry(k, defaultTarget, { targetType: opt.key })}
+                                    >
+                                      <Text style={[styles.reconcileMiniChipText, entry.targetType === opt.key && { color: '#38bdf8' }]}>
+                                        {opt.label}
+                                      </Text>
+                                    </TouchableOpacity>
+                                  ))}
+                                </View>
+
+                                <View style={styles.reconcileInputsRow}>
+                                  <View style={{ flex: 1 }}>
+                                    <Text style={styles.reconcileInputLabel}>Số đầu</Text>
+                                    <TextInput
+                                      style={styles.reconcileInput}
+                                      keyboardType="decimal-pad"
+                                      placeholder="VD: 6"
+                                      placeholderTextColor="#64748b"
+                                      value={entry.startStr}
+                                      onChangeText={txt => updateEntry(k, defaultTarget, { startStr: txt })}
+                                    />
+                                  </View>
+                                  <View style={{ flex: 1 }}>
+                                    <Text style={styles.reconcileInputLabel}>Số đuôi</Text>
+                                    <TextInput
+                                      style={styles.reconcileInput}
+                                      keyboardType="decimal-pad"
+                                      placeholder="VD: 12"
+                                      placeholderTextColor="#64748b"
+                                      value={entry.endStr}
+                                      onChangeText={txt => updateEntry(k, defaultTarget, { endStr: txt })}
+                                    />
+                                  </View>
+                                </View>
+
+                                <View style={styles.reconcileTargetRow}>
+                                  <TouchableOpacity
+                                    style={[styles.reconcileMiniChip, entry.calcType === 'diff' && styles.reconcileCalcChipActive]}
+                                    onPress={() => updateEntry(k, defaultTarget, { calcType: 'diff' })}
+                                  >
+                                    <Text style={[styles.reconcileMiniChipText, entry.calcType === 'diff' && { color: '#fbbf24' }]}>
+                                      Đếm Tồn (Đuôi - Đầu)
+                                    </Text>
+                                  </TouchableOpacity>
+                                  <TouchableOpacity
+                                    style={[styles.reconcileMiniChip, entry.calcType === 'inclusive' && styles.reconcileCalcChipActive]}
+                                    onPress={() => updateEntry(k, defaultTarget, { calcType: 'inclusive' })}
+                                  >
+                                    <Text style={[styles.reconcileMiniChipText, entry.calcType === 'inclusive' && { color: '#fbbf24' }]}>
+                                      Đếm STT (Đuôi - Đầu + 1)
+                                    </Text>
+                                  </TouchableOpacity>
+                                </View>
+                                    <Text style={styles.reconcileHintText}>
+                                      {entry.calcType === 'diff'
+                                        ? '💡 VD: Đầu ca có 6, cuối ca đếm được 12 → Phát sinh 6.'
+                                        : '💡 VD: Làm từ số 6 đến số 12 (tính cả 2 đầu) → Tổng 7.'}
+                                    </Text>
+                                  </View>
+                                )}
+                              </View>
+                            );
+                          });
+                        })()}
                       </View>
                     )}
                   </View>
@@ -3113,6 +3478,32 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
         user={user}
       />
 
+      {/* 4.5. Modal Album hình ảnh chứng minh của công việc */}
+      <OperationImagesModal
+        visible={isImagesModalVisible}
+        shift={selectedShift}
+        user={user}
+        journalTarget={journalTargetForImages}
+        onClose={() => {
+          setIsImagesModalVisible(false);
+          setJournalTargetForImages(null);
+        }}
+        onChanged={(count) => setShiftImageCount(count)}
+      />
+
+      {/* 4.6. Modal Thư viện & Cây Thư Mục Ảnh Tổng Hợp Toàn Kho */}
+      <WarehouseAlbumModal
+        visible={isWarehouseAlbumVisible}
+        systemCode={
+          selectedShift?.system_code ||
+          openShifts[0]?.system_code ||
+          pastShifts[0]?.system_code ||
+          albumSystemCode
+        }
+        companyId={user?.company_id || selectedShift?.company_id || null}
+        onClose={() => setIsWarehouseAlbumVisible(false)}
+      />
+
       {/* 5. Modal Con mắt xem lịch sử sản phẩm */}
       <ProductHistoryModal
         visible={isHistoryVisible}
@@ -3138,6 +3529,7 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
         shift={selectedPastShift}
         journals={pastShiftJournals}
         subShifts={pastSubShifts}
+        user={user}
         loading={loadingPastDetail}
         onClose={() => setSelectedPastShift(null)}
         onRefreshAll={handleRefresh}
@@ -4710,6 +5102,131 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 11,
     fontWeight: '800',
+  },
+  reconcileTabContainer: {
+    padding: 12,
+    gap: 10,
+  },
+  reconcileHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingBottom: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#334155',
+  },
+  reconcileTitle: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: '#f8fafc',
+  },
+  reconcileSub: {
+    fontSize: 11,
+    color: '#94a3b8',
+    marginTop: 2,
+  },
+  reconcileSaveBtn: {
+    backgroundColor: '#d97706',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 10,
+  },
+  reconcileSaveBtnText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  reconcileCard: {
+    backgroundColor: '#0f172a',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#334155',
+    padding: 10,
+    gap: 8,
+  },
+  reconcileCardTop: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  reconcileProdName: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#f8fafc',
+  },
+  reconcileSysStats: {
+    fontSize: 11,
+    color: '#94a3b8',
+    marginTop: 2,
+  },
+  reconcileStatusPill: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 999,
+  },
+  reconcileMatchPill: {
+    backgroundColor: 'rgba(16, 185, 129, 0.16)',
+  },
+  reconcileDiffPill: {
+    backgroundColor: 'rgba(244, 63, 94, 0.18)',
+  },
+  reconcileStatusText: {
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  reconcileTargetRow: {
+    flexDirection: 'row',
+    gap: 6,
+    flexWrap: 'wrap',
+  },
+  reconcileMiniChip: {
+    flex: 1,
+    paddingVertical: 6,
+    paddingHorizontal: 6,
+    borderRadius: 8,
+    backgroundColor: '#1e293b',
+    borderWidth: 1,
+    borderColor: '#334155',
+    alignItems: 'center',
+  },
+  reconcileMiniChipActive: {
+    borderColor: '#38bdf8',
+    backgroundColor: 'rgba(56, 189, 248, 0.12)',
+  },
+  reconcileCalcChipActive: {
+    borderColor: '#f59e0b',
+    backgroundColor: 'rgba(245, 158, 11, 0.14)',
+  },
+  reconcileMiniChipText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#94a3b8',
+  },
+  reconcileInputsRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  reconcileInputLabel: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#94a3b8',
+    marginBottom: 3,
+  },
+  reconcileInput: {
+    height: 38,
+    backgroundColor: '#1e293b',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#334155',
+    paddingHorizontal: 10,
+    color: '#f8fafc',
+    fontSize: 15,
+    fontWeight: '800',
+  },
+  reconcileHintText: {
+    fontSize: 10,
+    color: '#94a3b8',
   },
 });
 

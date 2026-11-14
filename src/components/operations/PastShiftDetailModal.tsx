@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   View,
   Text,
@@ -18,6 +18,8 @@ import {
   reopenShift,
   deleteShift,
 } from '../../services/operationsService';
+import OperationImagesModal, { JournalImageTarget } from './OperationImagesModal';
+import { getShiftOperationImages } from '../../services/operationImagesService';
 
 interface Props {
   visible: boolean;
@@ -25,6 +27,7 @@ interface Props {
   journals: JournalRecord[];
   subShifts: SubShift[];
   loading: boolean;
+  user?: any;
   onClose: () => void;
   onRefreshAll: () => Promise<void>;
 }
@@ -100,6 +103,7 @@ export default function PastShiftDetailModal({
   journals,
   subShifts,
   loading,
+  user,
   onClose,
   onRefreshAll,
 }: Props) {
@@ -115,6 +119,19 @@ export default function PastShiftDetailModal({
   const [expandedSubShifts, setExpandedSubShifts] = useState<Record<string, boolean>>({});
 
   const [actionLoading, setActionLoading] = useState(false);
+  const [isImagesVisible, setIsImagesVisible] = useState(false);
+  const [journalTarget, setJournalTarget] = useState<JournalImageTarget | null>(null);
+  const [imageCount, setImageCount] = useState(0);
+
+  useEffect(() => {
+    if (visible && shift?.id) {
+      getShiftOperationImages(shift.id)
+        .then((list) => setImageCount(list.length))
+        .catch(() => {});
+    } else {
+      setImageCount(0);
+    }
+  }, [visible, shift?.id]);
 
   // Tổng hợp theo ĐVT (Hook phải gọi trước bất kỳ return điều kiện nào)
   const unitSummaryList = useMemo(() => {
@@ -245,6 +262,28 @@ export default function PastShiftDetailModal({
               </Text>
             </View>
           </View>
+          <TouchableOpacity
+            onPress={() => {
+              setJournalTarget(null);
+              setIsImagesVisible(true);
+            }}
+            style={{
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 4,
+              paddingHorizontal: 10,
+              paddingVertical: 6,
+              borderRadius: 10,
+              backgroundColor: 'rgba(56, 189, 248, 0.16)',
+              borderWidth: 1,
+              borderColor: 'rgba(56, 189, 248, 0.4)',
+            }}
+          >
+            <Ionicons name="camera-outline" size={16} color="#38bdf8" />
+            <Text style={{ color: '#38bdf8', fontSize: 12, fontWeight: '800' }}>
+              {imageCount > 0 ? imageCount : 'Ảnh'}
+            </Text>
+          </TouchableOpacity>
           <TouchableOpacity onPress={onClose} style={styles.closeBtn}>
             <Ionicons name="close" size={20} color="#94a3b8" />
           </TouchableOpacity>
@@ -531,9 +570,32 @@ export default function PastShiftDetailModal({
                         </View>
 
                         <View style={{ flex: 1, minWidth: 0 }}>
-                          <Text style={styles.journalItemName} numberOfLines={2}>
-                            {record.item_name}
-                          </Text>
+                          <View style={{ flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 }}>
+                            <Text style={[styles.journalItemName, { flex: 1 }]} numberOfLines={2}>
+                              {record.item_name}
+                            </Text>
+                            <TouchableOpacity
+                              onPress={() => {
+                                setJournalTarget({
+                                  id: record.id,
+                                  itemName: record.item_name,
+                                  quantity: record.quantity_sent,
+                                  unit: stdUnit,
+                                  direction: isImport ? 'in' : 'out',
+                                });
+                                setIsImagesVisible(true);
+                              }}
+                              style={{
+                                padding: 5,
+                                borderRadius: 8,
+                                backgroundColor: 'rgba(56, 189, 248, 0.12)',
+                                borderWidth: 1,
+                                borderColor: 'rgba(56, 189, 248, 0.35)',
+                              }}
+                            >
+                              <Ionicons name="camera-outline" size={14} color="#38bdf8" />
+                            </TouchableOpacity>
+                          </View>
 
                           <View style={styles.journalRowMid}>
                             <View style={[styles.qtyBadge, isImport ? styles.qtyBadgeIn : styles.qtyBadgeOut]}>
@@ -577,6 +639,18 @@ export default function PastShiftDetailModal({
           </TouchableOpacity>
         </View>
       </View>
+
+      <OperationImagesModal
+        visible={isImagesVisible}
+        shift={shift}
+        user={user}
+        journalTarget={journalTarget}
+        onClose={() => {
+          setIsImagesVisible(false);
+          setJournalTarget(null);
+        }}
+        onChanged={(count) => setImageCount(count)}
+      />
     </Modal>
   );
 }

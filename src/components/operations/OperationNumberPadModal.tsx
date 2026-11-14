@@ -13,13 +13,15 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ShiftProductItem } from '../../services/operationsService';
+import { LocalPickedImage } from '../../services/operationImagesService';
+import OperationImagePickerBar from './OperationImagePickerBar';
 
 interface Props {
   visible: boolean;
   product: ShiftProductItem | null;
   defaultUnit?: string;
   onClose: () => void;
-  onSubmit: (params: { quantity: number; unit: string; type: 'in' | 'out'; note?: string }) => Promise<void>;
+  onSubmit: (params: { quantity: number; unit: string; type: 'in' | 'out'; note?: string; images?: LocalPickedImage[] }) => Promise<void>;
   currentStats?: { inQty: number; outQty: number; unit: string };
 }
 
@@ -29,6 +31,7 @@ export default function OperationNumberPadModal({ visible, product, defaultUnit,
   const [selectedUnit, setSelectedUnit] = useState<string>('Thùng');
   const [note, setNote] = useState<string>('');
   const [showNoteInput, setShowNoteInput] = useState<boolean>(false);
+  const [images, setImages] = useState<LocalPickedImage[]>([]);
   const [submitting, setSubmitting] = useState<boolean>(false);
 
   useEffect(() => {
@@ -36,6 +39,7 @@ export default function OperationNumberPadModal({ visible, product, defaultUnit,
       setValueStr('');
       setNote('');
       setShowNoteInput(false);
+      setImages([]);
       const units = product.available_units && product.available_units.length > 0
         ? product.available_units
         : [product.unit || 'Kg'];
@@ -86,9 +90,11 @@ export default function OperationNumberPadModal({ visible, product, defaultUnit,
     }
     const currentUnit = selectedUnit;
     const currentNote = note.trim() || undefined;
+    const currentImages = images;
 
     // Đóng bàn phím và reset ngay lập tức (0ms lag phản hồi tức thì cho người dùng trong kho đông)
     setValueStr('');
+    setImages([]);
     onClose();
 
     try {
@@ -97,6 +103,7 @@ export default function OperationNumberPadModal({ visible, product, defaultUnit,
         unit: currentUnit,
         type,
         note: currentNote,
+        images: currentImages,
       });
     } catch (err: any) {
       console.warn('Lỗi submit bàn phím:', err);
@@ -201,6 +208,16 @@ export default function OperationNumberPadModal({ visible, product, defaultUnit,
                   />
                 </View>
               )}
+
+              {/* Chụp ảnh / Chọn từ thư viện (không bắt buộc) */}
+              <View style={{ marginBottom: 8 }}>
+                <OperationImagePickerBar
+                  images={images}
+                  onChange={setImages}
+                  compact
+                  label="Ảnh chứng minh"
+                />
+              </View>
 
               {/* Bàn phím số 3x4 */}
               <View style={styles.keypad}>
@@ -469,6 +486,119 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 14,
     fontWeight: '800',
+  },
+  modeRow: {
+    flexDirection: 'row',
+    backgroundColor: '#0f172a',
+    borderRadius: 10,
+    padding: 3,
+    marginBottom: 8,
+    gap: 4,
+  },
+  modeBtn: {
+    flex: 1,
+    paddingVertical: 7,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  modeBtnActive: {
+    backgroundColor: '#1e293b',
+  },
+  modeText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#94a3b8',
+  },
+  modeTextActive: {
+    color: '#38bdf8',
+  },
+  rangeCard: {
+    backgroundColor: '#0f172a',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#334155',
+    padding: 10,
+    marginBottom: 8,
+    gap: 8,
+  },
+  rangeInputsRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  rangeLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#94a3b8',
+    marginBottom: 4,
+  },
+  rangeInput: {
+    height: 44,
+    backgroundColor: '#1e293b',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#334155',
+    paddingHorizontal: 12,
+    color: '#f8fafc',
+    fontSize: 18,
+    fontWeight: '800',
+  },
+  calcTypeRow: {
+    flexDirection: 'row',
+    gap: 6,
+  },
+  calcTypeBtn: {
+    flex: 1,
+    paddingVertical: 7,
+    paddingHorizontal: 6,
+    borderRadius: 8,
+    backgroundColor: '#1e293b',
+    borderWidth: 1,
+    borderColor: '#334155',
+    alignItems: 'center',
+  },
+  calcTypeBtnActive: {
+    backgroundColor: 'rgba(245, 158, 11, 0.16)',
+    borderColor: '#f59e0b',
+  },
+  calcTypeText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#94a3b8',
+  },
+  calcTypeTextActive: {
+    color: '#fbbf24',
+  },
+  calcHintText: {
+    fontSize: 11,
+    color: '#94a3b8',
+    lineHeight: 15,
+  },
+  rangeResultBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: 'rgba(245, 158, 11, 0.1)',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(245, 158, 11, 0.35)',
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  rangeFormula: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#fbbf24',
+  },
+  rangeSuggest: {
+    fontSize: 11,
+    color: '#cbd5e1',
+    marginTop: 2,
+  },
+  rangeResultNum: {
+    fontSize: 22,
+    fontWeight: '900',
+    color: '#f8fafc',
+    marginLeft: 8,
   },
 });
 

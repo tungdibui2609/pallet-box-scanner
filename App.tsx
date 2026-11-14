@@ -13,6 +13,7 @@ import LoginScreen from './src/screens/LoginScreen';
 import { AuthProvider, useAuth } from './src/contexts/AuthContext';
 import { triggerBackgroundAutoSync } from './src/services/autoSync';
 import { FullMenuModal } from './src/components/navigation/FullMenuModal';
+import OperationWatermarkOverlay from './src/components/operations/OperationWatermarkOverlay';
 
 type AppTab = 'scanner' | 'stamp_scanner' | 'operations' | 'inventory' | 'warehouse_map' | 'pallets' | 'settings';
 
@@ -263,6 +264,7 @@ export default function App() {
     <SafeAreaProvider>
       <AuthProvider>
         <AppContent />
+        <OperationWatermarkOverlay />
       </AuthProvider>
     </SafeAreaProvider>
   );
