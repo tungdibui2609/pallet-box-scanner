@@ -11,6 +11,7 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { DeliveryShift, createSubShift } from '../../services/operationsService';
 
 interface Props {
@@ -22,6 +23,7 @@ interface Props {
 }
 
 export default function InterimCloseModal({ visible, shift, onClose, onSuccess, user }: Props) {
+  const insets = useSafeAreaInsets();
   const [notes, setNotes] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
@@ -50,7 +52,7 @@ export default function InterimCloseModal({ visible, shift, onClose, onSuccess, 
       <TouchableWithoutFeedback onPress={onClose}>
         <View style={styles.overlay}>
           <TouchableWithoutFeedback>
-            <View style={styles.sheetContainer}>
+            <View style={[styles.sheetContainer, { paddingBottom: Math.max(insets.bottom, 16) + 8 }]}>
               <View style={styles.handle} />
 
               <View style={styles.header}>

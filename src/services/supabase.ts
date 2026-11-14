@@ -1260,6 +1260,10 @@ export async function syncWarehouseMapOffline(): Promise<{
               });
             }
 
+            const itemsTotalQty = allItems.length > 0
+              ? allItems.reduce((sum: number, it: any) => sum + (Number(it.quantity) || 0), 0)
+              : null;
+
             lotMap.set(l.id, {
               code: l.code,
               stt: l.daily_seq ? decodeSTT(l.daily_seq) : null,
@@ -1278,7 +1282,7 @@ export async function syncWarehouseMapOffline(): Promise<{
               batch_code: l.batch_code || l.metadata?.batch_code || null,
               production_place: prodPlace,
               extra_info: l.metadata?.extra_info || l.notes || null,
-              quantity: l.quantity || (l.lot_items?.[0]?.quantity ?? null)
+              quantity: itemsTotalQty !== null ? itemsTotalQty : (l.quantity ?? null)
             });
           });
         }
@@ -1649,6 +1653,132 @@ export async function syncOfflineHallLotUpdates(): Promise<{ synced: number; rem
     return { synced: syncedCount, remaining: remainingQueue.length };
   } catch {
     return { synced: 0, remaining: 0 };
+  }
+}
+
+export interface LookedUpLot {
+  id: string;
+  code: string;
+  stt: string | null;
+  quantity: number;
+  unit: string;
+  product_name: string;
+  sku: string | null;
+  items?: Array<{
+    product_id: string | null;
+    product_name: string;
+    sku: string | null;
+    quantity: number;
+    unit: string;
+  }>;
+  current_position_id?: string | null;
+  current_position_code?: string | null;
+}
+
+/**
+ * Tra cứu thông tin Lot theo STT (VD: G949) hoặc mã Lot (DL-LOT-...)
+ * Cô lập theo system_code và company_id đang hoạt động.
+ */
+export async function lookupLotBySttOrCode(query: string): Promise<LookedUpLot | null> {
+  try {
+    const clean = (query || '').trim().toUpperCase();
+    if (!clean) return null;
+
+    const client = await getSupabaseClient();
+    const storedSys = await AsyncStorage.getItem('config_system_code');
+    const systemCode = storedSys || 'KHO_DONG_LANH';
+
+    let companyId: string | null = null;
+    try {
+      const rawUser = await AsyncStorage.getItem('auth_user_profile');
+      if (rawUser) {
+        companyId = JSON.parse(rawUser)?.company_id || null;
+      }
+    } catch {}
+
+    const encodedSeq = encodeSTT(clean);
+    let lotRow: any = null;
+
+    const selectFields = `
+      id,
+      code,
+      daily_seq,
+      quantity,
+      status,
+      system_code,
+      lot_items (
+        id,
+        product_id,
+        quantity,
+        unit,
+        products (id, name, sku)
+      ),
+      positions!positions_lot_id_fkey (id, code)
+    `;
+
+    if (encodedSeq !== null) {
+      let q = client
+        .from('lots')
+        .select(selectFields)
+        .eq('daily_seq', encodedSeq)
+        .eq('system_code', systemCode);
+      if (companyId) q = q.eq('company_id', companyId);
+      const { data } = await withTimeout(q.limit(1).maybeSingle(), 5000, 'Timeout tìm Lot theo STT');
+      if (data) lotRow = data;
+    }
+
+    if (!lotRow) {
+      let q = client
+        .from('lots')
+        .select(selectFields)
+        .eq('system_code', systemCode)
+        .or(`code.ilike.%${clean}%,production_code.ilike.%${clean}%`);
+      if (companyId) q = q.eq('company_id', companyId);
+      const { data } = await withTimeout(q.limit(1).maybeSingle(), 5000, 'Timeout tìm Lot theo mã');
+      if (data) lotRow = data;
+    }
+
+    if (!lotRow) return null;
+
+    const items = Array.isArray(lotRow.lot_items)
+      ? lotRow.lot_items.map((it: any) => ({
+          product_id: it.product_id || it.products?.id || null,
+          product_name: it.products?.name || 'Sản phẩm',
+          sku: it.products?.sku || null,
+          quantity: Number(it.quantity) || 0,
+          unit: it.unit || 'Thùng',
+        }))
+      : [];
+
+    const totalQty =
+      items.length > 0
+        ? items.reduce((sum: number, it: any) => sum + (it.quantity || 0), 0)
+        : Number(lotRow.quantity) || 0;
+
+    const posList = Array.isArray(lotRow.positions)
+      ? lotRow.positions
+      : lotRow.positions
+        ? [lotRow.positions]
+        : [];
+
+    return {
+      id: lotRow.id,
+      code: lotRow.code,
+      stt: lotRow.daily_seq ? decodeSTT(lotRow.daily_seq) : null,
+      quantity: totalQty,
+      unit: items[0]?.unit || 'Thùng',
+      product_name:
+        items.length > 0
+          ? items.map((it: any) => it.product_name).join(', ')
+          : `Lot ${lotRow.code}`,
+      sku: items[0]?.sku || null,
+      items,
+      current_position_id: posList[0]?.id || null,
+      current_position_code: posList[0]?.code || null,
+    };
+  } catch (err) {
+    console.warn('lookupLotBySttOrCode error:', err);
+    return null;
   }
 }
 

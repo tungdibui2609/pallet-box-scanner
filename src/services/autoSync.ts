@@ -1,5 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { syncCloudPalletsOffline, syncStampDictionariesFromSupabase, syncWarehouseMapOffline, testConnection } from './supabase';
+import { getSubmittedAdjustmentProposals, syncOfflineAdjustmentProposals } from './warehouseAdjustmentService';
+import { getJobTemplates, getOrderTypes } from './operationsService';
 
 const AUTO_SYNC_STORAGE_KEY = 'config_auto_sync_offline_v2';
 const LAST_AUTO_SYNC_KEY = 'last_auto_sync_timestamp';
@@ -106,18 +108,29 @@ export async function syncAllWarehouseDataMaster(): Promise<{
   totalPositions: number;
   totalWarehouses: number;
   totalLots: number;
+  totalProposals: number;
   message: string;
 }> {
   try {
-    const [whMapRes, palletRes, stampRes] = await Promise.all([
+    const syncProposalsTask = async () => {
+      await syncOfflineAdjustmentProposals().catch(() => 0);
+      const list = await getSubmittedAdjustmentProposals('KHO_DONG_LANH');
+      return list.length;
+    };
+
+    const [whMapRes, palletRes, stampRes, proposalCount, templatesList, orderTypesList] = await Promise.all([
       syncWarehouseMapOffline().catch(e => ({ success: false, totalPositions: 0, totalWarehouses: 0, message: e.message })),
       syncCloudPalletsOffline().catch(e => ({ success: false, count: 0, message: e.message })),
-      syncStampDictionariesFromSupabase().catch(e => ({ success: false, count: 0, message: e.message }))
+      syncStampDictionariesFromSupabase().catch(e => ({ success: false, count: 0, message: e.message })),
+      syncProposalsTask().catch(() => 0),
+      getJobTemplates().catch(() => []),
+      getOrderTypes().catch(() => []),
     ]);
 
     const posCount = (whMapRes as any).success ? (whMapRes as any).totalPositions : 0;
     const whCount = (whMapRes as any).success ? (whMapRes as any).totalWarehouses : 0;
     const lotCount = palletRes.success ? palletRes.count : 0;
+    const tplCount = Array.isArray(templatesList) ? templatesList.length : 0;
 
     const ok = (whMapRes as any).success || palletRes.success;
 
@@ -126,8 +139,9 @@ export async function syncAllWarehouseDataMaster(): Promise<{
       totalPositions: posCount,
       totalWarehouses: whCount,
       totalLots: lotCount,
+      totalProposals: proposalCount,
       message: ok
-        ? `Đã tải thành công ${posCount} vị trí (${whCount} kho) và ${lotCount} LOT sản phẩm. Dữ liệu đã sẵn sàng cho tất cả các tính năng!`
+        ? `Đã tải thành công ${posCount} vị trí (${whCount} kho), ${lotCount} LOT, ${proposalCount} phiếu nháp và ${tplCount} công việc mẫu. Dữ liệu đã sẵn sàng cho tất cả các tính năng!`
         : `Lỗi: ${(whMapRes as any).message || palletRes.message || 'Không thể kết nối máy chủ'}`
     };
   } catch (err: any) {
@@ -136,6 +150,7 @@ export async function syncAllWarehouseDataMaster(): Promise<{
       totalPositions: 0,
       totalWarehouses: 0,
       totalLots: 0,
+      totalProposals: 0,
       message: err.message || 'Lỗi không xác định'
     };
   }

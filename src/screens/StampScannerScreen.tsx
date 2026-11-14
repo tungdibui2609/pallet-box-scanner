@@ -1,12 +1,21 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, ScrollView,
-  Alert, Modal, TextInput, ActivityIndicator, Vibration, Animated, Platform
+  Alert, Modal, TextInput, ActivityIndicator, Vibration, Animated, Platform, AppState, NativeModules
 } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import TextRecognition from '@react-native-ml-kit/text-recognition';
 import * as Haptics from 'expo-haptics';
 import { Ionicons } from '@expo/vector-icons';
+
+let VolumeManager: any = null;
+if (NativeModules && NativeModules.VolumeManager) {
+  try {
+    VolumeManager = require('react-native-volume-manager').VolumeManager;
+  } catch (err) {
+    console.warn('VolumeManager not linked:', err);
+  }
+}
 import { Pallet, BoxLabel, ParsedStampData, StampFormat } from '../types';
 import {
   getActivePallet, createNewPallet, completePallet,
@@ -16,6 +25,7 @@ import {
   updatePalletTag, updatePalletTagAndNotes, resetPalletBoxes
 } from '../services/database';
 import { parseStampText, isStampContent, decodeStamp } from '../services/stampParser';
+import { syncStampDictionariesFromSupabase } from '../services/supabase';
 
 export default function StampScannerScreen({ onNavigateToPallets }: { onNavigateToPallets: () => void }) {
   const [permission, requestPermission] = useCameraPermissions();
@@ -25,6 +35,64 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
   const [boxes, setBoxes] = useState<BoxLabel[]>([]);
   const [isScanning, setIsScanning] = useState(false);
   const [torch, setTorch] = useState(false);
+  const [cameraEnabled, setCameraEnabled] = useState(true);
+  const [isAppActive, setIsAppActive] = useState(AppState.currentState === 'active');
+
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (nextState) => {
+      const active = nextState === 'active';
+      setIsAppActive(active);
+      if (!active) {
+        setTorch(false);
+      }
+    });
+    return () => sub.remove();
+  }, []);
+
+  const isCameraRunning = cameraEnabled && isAppActive && !!activePallet;
+  const lastVolumeRef = useRef<number>(0.5);
+  const captureHandlerRef = useRef<() => void>(() => {});
+
+  function toggleCamera() {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setCameraEnabled(prev => {
+      if (prev) setTorch(false);
+      return !prev;
+    });
+  }
+
+  // Bấm nút Giảm âm lượng để chụp dấu mực
+  useEffect(() => {
+    if (!VolumeManager) return;
+    let volumeListener: any = null;
+
+    async function setupVolumeTrigger() {
+      try {
+        await VolumeManager.showNativeVolumeUI({ enabled: false });
+        await VolumeManager.setVolume(0.5);
+        lastVolumeRef.current = 0.5;
+
+        volumeListener = VolumeManager.addVolumeListener(async (result: any) => {
+          if (result.volume < lastVolumeRef.current) {
+            captureHandlerRef.current?.();
+          }
+          lastVolumeRef.current = 0.5;
+          await VolumeManager.setVolume(0.5, { showUI: false, playSound: false });
+        });
+      } catch (err) {
+        console.warn('VolumeManager listener setup:', err);
+      }
+    }
+
+    setupVolumeTrigger();
+
+    return () => {
+      if (volumeListener && typeof volumeListener.remove === 'function') {
+        volumeListener.remove();
+      }
+      VolumeManager?.showNativeVolumeUI({ enabled: true })?.catch(() => {});
+    };
+  }, [activePallet]);
 
   // Pallet Modal
   const [isNewPalletModal, setIsNewPalletModal] = useState(false);
@@ -59,6 +127,27 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
   // Offline Stamp Dictionary Map & Active Template
   const [dictMap, setDictMap] = useState<Record<string, Record<string, string>>>({});
   const [activeFormat, setActiveFormat] = useState<StampFormat | null>(null);
+  const [syncingRules, setSyncingRules] = useState(false);
+
+  async function handleSyncStampRules() {
+    if (syncingRules) return;
+    setSyncingRules(true);
+    try {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+      const res = await syncStampDictionariesFromSupabase();
+      if (res.success) {
+        await refreshStampRules();
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        Alert.alert('Thành công', res.message || `Đã tải ${res.count} quy tắc dấu đóng mới nhất về máy.`);
+      } else {
+        Alert.alert('Không thể tải', res.message || 'Vui lòng kiểm tra kết nối mạng.');
+      }
+    } catch (e: any) {
+      Alert.alert('Lỗi', e?.message || 'Không thể tải quy tắc dấu đóng.');
+    } finally {
+      setSyncingRules(false);
+    }
+  }
 
   useEffect(() => {
     loadActivePallet();
@@ -105,18 +194,23 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
 
   // ── Chụp và nhận diện con dấu mực ──────────────────────────
   async function handleCaptureAndRecognize() {
-    if (!cameraRef.current || isScanning) return;
-
     if (!activePallet) {
       Alert.alert(
         'Chưa có Pallet',
         'Vui lòng nhập Số Thứ Tự (STT) Pallet trước khi quét dấu thùng!',
         [
+          { text: 'Huỷ', style: 'cancel' },
           { text: 'Nhập STT Pallet', onPress: () => setIsNewPalletModal(true) }
         ]
       );
       return;
     }
+    if (!cameraEnabled) {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      setCameraEnabled(true);
+      return;
+    }
+    if (!cameraRef.current || isScanning) return;
 
     try {
       setIsScanning(true);
@@ -410,6 +504,48 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
     }
   }
 
+  captureHandlerRef.current = handleCaptureAndRecognize;
+
+  async function handleDeleteBox(box: BoxLabel) {
+    Alert.alert(
+      'Xóa thùng hàng',
+      `Bạn muốn xóa thùng #${box.box_index} (${box.stamp_line1 || box.lot_code}) khỏi Pallet?`,
+      [
+        { text: 'Hủy', style: 'cancel' },
+        {
+          text: 'Xóa',
+          style: 'destructive',
+          onPress: async () => {
+            if (!activePallet) return;
+            await deleteBox(box.id, activePallet.id);
+            await loadActivePallet();
+          }
+        }
+      ]
+    );
+  }
+
+  async function handleCompletePallet() {
+    if (!activePallet) return;
+    Alert.alert(
+      'Hoàn thành & Chốt Pallet?',
+      `Pallet ${activePallet.code} đã có ${boxes.length} thùng (${activePallet.total_weight.toFixed(1)} Kg).`,
+      [
+        { text: 'Chưa chốt', style: 'cancel' },
+        {
+          text: 'Chốt Pallet',
+          onPress: async () => {
+            await completePallet(activePallet.id);
+            setActivePallet(null);
+            setBoxes([]);
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+            Alert.alert('Đã chốt', `Pallet ${activePallet.code} đã hoàn thành!`);
+          }
+        }
+      ]
+    );
+  }
+
   if (!permission) {
     return (
       <View style={styles.centerContainer}>
@@ -470,29 +606,20 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
 
           <View style={styles.topActionBtns}>
             <TouchableOpacity
-              style={[styles.iconButton, torch && styles.iconButtonActive]}
-              onPress={() => setTorch(!torch)}
+              style={[styles.iconButton, { borderColor: '#10b98155', borderWidth: 1 }]}
+              onPress={handleSyncStampRules}
+              disabled={syncingRules}
             >
-              <Ionicons name={torch ? 'flash' : 'flash-off'} size={18} color={torch ? '#fbbf24' : '#fff'} />
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.iconButton}
-              onPress={() => setIsManualModal(true)}
-            >
-              <Ionicons name="create-outline" size={18} color="#fff" />
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.iconButton}
-              onPress={onNavigateToPallets}
-            >
-              <Ionicons name="list" size={18} color="#fff" />
+              {syncingRules ? (
+                <ActivityIndicator size="small" color="#34d399" />
+              ) : (
+                <Ionicons name="cloud-download-outline" size={18} color="#34d399" />
+              )}
             </TouchableOpacity>
           </View>
         </View>
 
-        {activePallet && (
+        {activePallet ? (
           <View style={styles.progressContainer}>
             <View style={styles.progressHeader}>
               <View style={{ flexDirection: 'row', alignItems: 'center' }}>
@@ -523,50 +650,116 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
               />
             </View>
           </View>
+        ) : (
+          <View style={styles.noPalletTipBar}>
+            <Ionicons name="information-circle-outline" size={16} color="#38bdf8" />
+            <Text style={styles.noPalletTipText}>Bạn chưa chọn Pallet. Hãy bấm chọn Pallet để bắt đầu.</Text>
+          </View>
         )}
       </View>
 
-      {/* ── CAMERA VIEW & STAMP TARGET RETICLE ─────────────── */}
-      <View style={styles.cameraWrapper}>
-        <CameraView
-          ref={cameraRef}
-          style={StyleSheet.absoluteFill}
-          facing="back"
-          enableTorch={torch}
-        />
-
-        {/* Viewfinder Overlay chuyên dụng cho 2 dòng số con dấu */}
-        <View style={styles.reticleContainer}>
-          <View style={styles.reticleHeaderBox}>
-            <Ionicons name="scan-outline" size={18} color="#fbbf24" />
-            <Text style={styles.reticleGuideText}>Đặt 2 dòng dấu mực vào khung dưới</Text>
-          </View>
-
-          {/* Khung chữ nhật ngang theo tỉ lệ con dấu mực đóng */}
-          <View style={[styles.stampTargetFrame, isScanning && styles.stampTargetFrameScanning]}>
-            <View style={[styles.corner, styles.tl]} />
-            <View style={[styles.corner, styles.tr]} />
-            <View style={[styles.corner, styles.bl]} />
-            <View style={[styles.corner, styles.br]} />
-
-            {/* Đường chỉ dẫn 2 dòng số */}
-            <View style={styles.lineGuideRow}>
-              <Text style={styles.lineGuideTag}>Dòng 1</Text>
-              <View style={styles.lineGuideDash} />
-              <Text style={styles.lineGuideExample}>10102010204001 (14 số)</Text>
-            </View>
-
-            <View style={[styles.lineGuideRow, { marginTop: 16 }]}>
-              <Text style={styles.lineGuideTag}>Dòng 2</Text>
-              <View style={styles.lineGuideDash} />
-              <Text style={styles.lineGuideExample}>1110926001471609 (16 số)</Text>
-            </View>
-          </View>
-
-          <Text style={styles.reticleHintSub}>
-            Chụp rõ nét · Giữ thẳng góc và đủ ánh sáng
-          </Text>
+      {/* ── HARDWARE VOLUME KEY HINT & TORCH ─────────────── */}
+      <View style={styles.volumeBar}>
+        <View style={styles.volumeKeyHintBadge}>
+          <Ionicons name="volume-low" size={15} color="#38bdf8" />
+          <Text style={styles.volumeKeyHintText}>Bấm [Giảm âm lượng] để chụp</Text>
         </View>
+
+        <TouchableOpacity
+          style={[styles.torchBtn, !isCameraRunning && { opacity: 0.45 }]}
+          onPress={() => {
+            if (!isCameraRunning) return;
+            setTorch(t => !t);
+          }}
+          disabled={!isCameraRunning}
+        >
+          <Ionicons
+            name={torch && isCameraRunning ? 'flash' : 'flash-outline'}
+            size={18}
+            color={torch && isCameraRunning ? '#facc15' : '#94a3b8'}
+          />
+        </TouchableOpacity>
+      </View>
+
+      {/* ── CAMERA BOX (GỌN GIỐNG QUÉT TEM) ──────────────── */}
+      <View style={styles.compactCameraBox}>
+        {!activePallet ? (
+          <View style={styles.noPalletOverlay}>
+            <Ionicons name="cube-outline" size={36} color="#38bdf8" />
+            <Text style={styles.noPalletOverlayTitle}>Chưa chọn Pallet</Text>
+            <Text style={styles.noPalletOverlaySub}>
+              Để tránh quét nhầm hàng, vui lòng chọn hoặc nhập số Pallet trước.
+            </Text>
+            <TouchableOpacity
+              style={styles.selectPalletOverlayBtn}
+              onPress={() => setIsNewPalletModal(true)}
+            >
+              <Ionicons name="add-circle-outline" size={18} color="#fff" />
+              <Text style={styles.selectPalletOverlayBtnText}>Chọn / Nhập Pallet Ngay</Text>
+            </TouchableOpacity>
+          </View>
+        ) : isCameraRunning ? (
+          <>
+            <CameraView
+              ref={cameraRef}
+              style={StyleSheet.absoluteFill}
+              facing="back"
+              enableTorch={torch}
+            />
+
+            {/* Khung ngắm 2 dòng dấu mực gọn */}
+            <View style={styles.compactReticleContainer}>
+              <View style={[styles.compactStampFrame, isScanning && styles.stampTargetFrameScanning]}>
+                <View style={[styles.corner, styles.tl]} />
+                <View style={[styles.corner, styles.tr]} />
+                <View style={[styles.corner, styles.bl]} />
+                <View style={[styles.corner, styles.br]} />
+
+                <View style={styles.lineGuideRow}>
+                  <Text style={styles.lineGuideTag}>Dòng 1</Text>
+                  <View style={styles.lineGuideDash} />
+                  <Text style={styles.lineGuideExample}>10102010204001</Text>
+                </View>
+
+                <View style={[styles.lineGuideRow, { marginTop: 10 }]}>
+                  <Text style={styles.lineGuideTag}>Dòng 2</Text>
+                  <View style={styles.lineGuideDash} />
+                  <Text style={styles.lineGuideExample}>1110926001471609</Text>
+                </View>
+              </View>
+
+              <Text style={styles.compactHintText}>
+                Đặt 2 dòng dấu mực vào khung · Bấm nút hoặc Giảm âm lượng
+              </Text>
+            </View>
+
+            {/* Nút tắt camera nhanh để tiết kiệm pin */}
+            <TouchableOpacity
+              style={styles.cameraTogglePill}
+              onPress={toggleCamera}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="videocam-off-outline" size={14} color="#fca5a5" />
+              <Text style={styles.cameraTogglePillText}>Tắt Camera</Text>
+            </TouchableOpacity>
+          </>
+        ) : (
+          <View style={styles.cameraPausedContainer}>
+            <Ionicons name="videocam-off-outline" size={34} color="#94a3b8" />
+            <Text style={styles.cameraPausedTitle}>Camera đang tắt</Text>
+            <Text style={styles.cameraPausedSub}>
+              Tạm tắt để tiết kiệm pin. Bạn vẫn có thể Nhập Số bên dưới.
+            </Text>
+            <TouchableOpacity
+              style={styles.cameraEnableBtn}
+              onPress={toggleCamera}
+              activeOpacity={0.85}
+            >
+              <Ionicons name="videocam" size={16} color="#0f172a" />
+              <Text style={styles.cameraEnableBtnText}>Bật Camera</Text>
+            </TouchableOpacity>
+          </View>
+        )}
 
         {/* Success Banner */}
         {successBanner && (
@@ -584,52 +777,129 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
         )}
       </View>
 
-      {/* ── BANNER NHÂN BẢN THÙNG NHANH ───────────────────── */}
-      {activePallet && boxes.length > 0 && boxes.length < activePallet.target_qty && (
+      {/* ── ACTION BUTTONS ────────────────────────────────── */}
+      <View style={styles.actionRow}>
         <TouchableOpacity
-          style={styles.quickStampCloneBanner}
-          onPress={() => handleOpenCloneModal(boxes[boxes.length - 1])}
-          activeOpacity={0.8}
+          style={[styles.captureActionBtn, (!activePallet || isScanning) && { opacity: 0.6 }]}
+          disabled={isScanning}
+          onPress={handleCaptureAndRecognize}
         >
-          <Ionicons name="copy" size={15} color="#fbbf24" />
-          <Text style={styles.quickStampCloneText}>
-            ⚡ Nhân bản thùng #{boxes[boxes.length - 1].box_index} cho {activePallet.target_qty - boxes.length} thùng còn lại
-          </Text>
-          <Ionicons name="chevron-forward" size={15} color="#fbbf24" />
+          {isScanning ? (
+            <>
+              <ActivityIndicator color="#ffffff" size="small" />
+              <Text style={styles.captureActionText}>Đang đọc dấu...</Text>
+            </>
+          ) : (
+            <>
+              <Ionicons name="camera" size={20} color="#ffffff" />
+              <Text style={styles.captureActionText}>Chụp Dấu Mực</Text>
+            </>
+          )}
         </TouchableOpacity>
-      )}
 
-      {/* ── BOTTOM TRIGGER CONTROLS ───────────────────────── */}
-      <View style={styles.bottomControls}>
-        <View style={styles.triggerRow}>
-          <TouchableOpacity
-            style={styles.btnManualInput}
-            onPress={() => setIsManualModal(true)}
-          >
-            <Ionicons name="keypad-outline" size={20} color="#94a3b8" />
-            <Text style={styles.btnManualText}>Nhập Số</Text>
-          </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.manualActionBtn, !activePallet && { opacity: 0.6 }]}
+          onPress={() => {
+            if (!activePallet) {
+              setIsNewPalletModal(true);
+              return;
+            }
+            setIsManualModal(true);
+          }}
+        >
+          <Ionicons name="keypad-outline" size={20} color="#38bdf8" />
+          <Text style={styles.manualActionText}>Nhập Số</Text>
+        </TouchableOpacity>
 
+        {activePallet && boxes.length > 0 && (
           <TouchableOpacity
-            style={[styles.shutterBtn, isScanning && styles.shutterBtnDisabled]}
-            onPress={handleCaptureAndRecognize}
-            disabled={isScanning}
-            activeOpacity={0.8}
+            style={styles.completeActionBtn}
+            onPress={handleCompletePallet}
           >
-            <View style={styles.shutterInner}>
-              <Ionicons name="camera" size={32} color="#0f172a" />
-            </View>
+            <Ionicons name="cube-outline" size={20} color="#ffffff" />
+            <Text style={styles.completeActionText}>Chốt Pallet</Text>
           </TouchableOpacity>
-
-          <TouchableOpacity
-            style={styles.btnHistory}
-            onPress={onNavigateToPallets}
-          >
-            <Ionicons name="file-tray-full-outline" size={20} color="#94a3b8" />
-            <Text style={styles.btnManualText}>Pallet ({boxes.length})</Text>
-          </TouchableOpacity>
-        </View>
+        )}
       </View>
+
+      {/* ── DANH SÁCH THÙNG HÀNG ──────────────────────────── */}
+      <View style={styles.listHeaderRow}>
+        <Text style={styles.listHeaderTitle}>
+          {activePallet ? `Danh sách thùng đã quét (${boxes.length})` : 'Thùng hàng'}
+        </Text>
+        <TouchableOpacity onPress={onNavigateToPallets}>
+          <Text style={styles.seeAllText}>Xem tất cả Pallet →</Text>
+        </TouchableOpacity>
+      </View>
+
+      <ScrollView style={styles.boxList}>
+        {!activePallet ? (
+          <View style={styles.emptyBox}>
+            <Ionicons name="cube-outline" size={32} color="#64748b" />
+            <Text style={styles.emptyText}>Chưa có Pallet nào đang chọn</Text>
+            <TouchableOpacity onPress={() => setIsNewPalletModal(true)} style={{ marginTop: 8 }}>
+              <Text style={{ color: '#10b981', fontWeight: '700' }}>+ Bấm để chọn hoặc nhập Pallet mới</Text>
+            </TouchableOpacity>
+          </View>
+        ) : boxes.length === 0 ? (
+          <View style={styles.emptyBox}>
+            <Ionicons name="finger-print-outline" size={32} color="#64748b" />
+            <Text style={styles.emptyText}>Chưa có thùng nào trong Pallet {activePallet.code}</Text>
+            <Text style={styles.emptySubText}>
+              Bấm nút [Chụp Dấu Mực] hoặc bấm phím [Giảm âm lượng] để quét
+            </Text>
+          </View>
+        ) : (
+          <>
+            {boxes.length < activePallet.target_qty && (
+              <TouchableOpacity
+                style={[styles.quickStampCloneBanner, { marginHorizontal: 0, marginTop: 0, marginBottom: 8 }]}
+                onPress={() => handleOpenCloneModal(boxes[boxes.length - 1])}
+                activeOpacity={0.8}
+              >
+                <Ionicons name="copy" size={15} color="#fbbf24" />
+                <Text style={styles.quickStampCloneText}>
+                  ⚡ Nhân bản thùng #{boxes[boxes.length - 1].box_index} cho {activePallet.target_qty - boxes.length} thùng còn lại
+                </Text>
+                <Ionicons name="chevron-forward" size={15} color="#fbbf24" />
+              </TouchableOpacity>
+            )}
+            {boxes.map((b) => (
+              <View key={b.id} style={styles.stampBoxCard}>
+                <View style={styles.stampBoxHeader}>
+                  <View style={styles.stampBoxIndexBadge}>
+                    <Text style={styles.stampBoxIndexText}>#{b.box_index}</Text>
+                  </View>
+                  <Text style={styles.stampBoxCodeText} numberOfLines={1}>
+                    {b.stamp_line1 || b.lot_code || '---'}
+                  </Text>
+                  <View style={styles.stampBoxWeightBadge}>
+                    <Text style={styles.stampBoxWeightText}>{b.weight} {b.unit || 'Kg'}</Text>
+                  </View>
+                  <TouchableOpacity
+                    onPress={() => handleOpenCloneModal(b)}
+                    style={{ padding: 4 }}
+                  >
+                    <Ionicons name="copy-outline" size={16} color="#38bdf8" />
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    onPress={() => handleDeleteBox(b)}
+                    style={{ padding: 4 }}
+                  >
+                    <Ionicons name="trash-outline" size={17} color="#ef4444" />
+                  </TouchableOpacity>
+                </View>
+                {b.product_name ? (
+                  <Text style={styles.stampBoxTitle} numberOfLines={1}>{b.product_name}</Text>
+                ) : null}
+                {b.stamp_line2 ? (
+                  <Text style={styles.stampBoxSub} numberOfLines={1}>Dòng 2: {b.stamp_line2}</Text>
+                ) : null}
+              </View>
+            ))}
+          </>
+        )}
+      </ScrollView>
 
       {/* ── MODAL XÁC NHẬN KẾT QUẢ ĐỌC CON DẤU ────────────── */}
       {pendingStamp && (
@@ -1723,5 +1993,332 @@ const styles = StyleSheet.create({
     color: '#cbd5e1',
     fontSize: 10,
     marginTop: 4,
+  },
+  cameraTogglePill: {
+    position: 'absolute',
+    top: 12,
+    right: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: 'rgba(15, 23, 42, 0.85)',
+    borderWidth: 1,
+    borderColor: 'rgba(248, 113, 113, 0.45)',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+  },
+  cameraTogglePillText: {
+    color: '#fecaca',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  cameraPausedContainer: {
+    flex: 1,
+    backgroundColor: '#0b1220',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 28,
+  },
+  cameraPausedIconCircle: {
+    width: 72,
+    height: 72,
+    borderRadius: 36,
+    backgroundColor: '#1e293b',
+    borderWidth: 1,
+    borderColor: '#334155',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 14,
+  },
+  cameraPausedTitle: {
+    color: '#f8fafc',
+    fontSize: 16,
+    fontWeight: '800',
+    marginBottom: 6,
+  },
+  cameraPausedSub: {
+    color: '#94a3b8',
+    fontSize: 12,
+    textAlign: 'center',
+    lineHeight: 18,
+    marginBottom: 18,
+  },
+  cameraEnableBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#fbbf24',
+    paddingHorizontal: 20,
+    paddingVertical: 11,
+    borderRadius: 12,
+  },
+  cameraEnableBtnText: {
+    color: '#0f172a',
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  noPalletTipBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: 'rgba(56, 189, 248, 0.1)',
+    marginTop: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(56, 189, 248, 0.25)',
+  },
+  noPalletTipText: {
+    color: '#38bdf8',
+    fontSize: 12,
+    flex: 1,
+  },
+  volumeBar: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    marginTop: 8,
+    marginBottom: 6,
+    gap: 8,
+  },
+  volumeKeyHintBadge: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(56, 189, 248, 0.12)',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(56, 189, 248, 0.3)',
+    gap: 6,
+  },
+  volumeKeyHintText: {
+    color: '#38bdf8',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  torchBtn: {
+    padding: 7,
+    borderRadius: 8,
+    backgroundColor: '#1e293b',
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  compactCameraBox: {
+    height: 220,
+    marginHorizontal: 16,
+    borderRadius: 14,
+    overflow: 'hidden',
+    backgroundColor: '#000',
+    position: 'relative',
+    borderWidth: 1.5,
+    borderColor: '#334155',
+  },
+  noPalletOverlay: {
+    ...StyleSheet.absoluteFill,
+    backgroundColor: 'rgba(9, 13, 22, 0.92)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  noPalletOverlayTitle: {
+    color: '#ffffff',
+    fontSize: 16,
+    fontWeight: '800',
+    marginTop: 8,
+  },
+  noPalletOverlaySub: {
+    color: '#94a3b8',
+    fontSize: 12,
+    textAlign: 'center',
+    marginTop: 4,
+    marginBottom: 14,
+    paddingHorizontal: 10,
+  },
+  selectPalletOverlayBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#10b981',
+    paddingHorizontal: 18,
+    paddingVertical: 9,
+    borderRadius: 8,
+  },
+  selectPalletOverlayBtnText: {
+    color: '#ffffff',
+    fontWeight: '700',
+    fontSize: 13,
+  },
+  compactReticleContainer: {
+    ...StyleSheet.absoluteFill,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 14,
+  },
+  compactStampFrame: {
+    width: '92%',
+    height: 110,
+    backgroundColor: 'rgba(15, 23, 42, 0.35)',
+    borderRadius: 10,
+    justifyContent: 'center',
+    paddingHorizontal: 14,
+    position: 'relative',
+  },
+  compactHintText: {
+    marginTop: 8,
+    color: '#e2e8f0',
+    fontSize: 11,
+    fontWeight: '600',
+    backgroundColor: 'rgba(15, 23, 42, 0.72)',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 8,
+  },
+  actionRow: {
+    flexDirection: 'row',
+    gap: 8,
+    paddingHorizontal: 16,
+    marginTop: 10,
+    marginBottom: 10,
+  },
+  captureActionBtn: {
+    flex: 1.3,
+    backgroundColor: '#059669',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 11,
+    borderRadius: 10,
+  },
+  captureActionText: {
+    color: '#ffffff',
+    fontWeight: '700',
+    fontSize: 14,
+  },
+  manualActionBtn: {
+    flex: 1,
+    backgroundColor: '#0f2942',
+    borderWidth: 1,
+    borderColor: '#0284c7',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5,
+    paddingVertical: 11,
+    borderRadius: 10,
+  },
+  manualActionText: {
+    color: '#38bdf8',
+    fontWeight: '700',
+    fontSize: 13,
+  },
+  completeActionBtn: {
+    backgroundColor: '#7c3aed',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+  },
+  completeActionText: {
+    color: '#fff',
+    fontWeight: '700',
+    fontSize: 13,
+  },
+  listHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    marginBottom: 6,
+  },
+  listHeaderTitle: {
+    color: '#94a3b8',
+    fontSize: 12,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+  },
+  seeAllText: {
+    color: '#38bdf8',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  boxList: {
+    flex: 1,
+    paddingHorizontal: 16,
+  },
+  emptyBox: {
+    alignItems: 'center',
+    paddingVertical: 22,
+  },
+  emptyText: {
+    color: '#e2e8f0',
+    fontSize: 14,
+    fontWeight: '700',
+    marginTop: 8,
+  },
+  emptySubText: {
+    color: '#64748b',
+    fontSize: 12,
+    marginTop: 4,
+    textAlign: 'center',
+  },
+  stampBoxCard: {
+    backgroundColor: '#131b2e',
+    borderRadius: 10,
+    padding: 10,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: '#1e293b',
+  },
+  stampBoxHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  stampBoxIndexBadge: {
+    backgroundColor: '#854d0e',
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  stampBoxIndexText: {
+    color: '#fbbf24',
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  stampBoxCodeText: {
+    flex: 1,
+    color: '#e2e8f0',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  stampBoxWeightBadge: {
+    backgroundColor: '#064e3b',
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  stampBoxWeightText: {
+    color: '#34d399',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  stampBoxTitle: {
+    color: '#f8fafc',
+    fontSize: 13,
+    fontWeight: '600',
+    marginTop: 5,
+  },
+  stampBoxSub: {
+    color: '#94a3b8',
+    fontSize: 11,
+    marginTop: 2,
   },
 });

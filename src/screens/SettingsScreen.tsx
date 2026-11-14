@@ -14,6 +14,10 @@ import {
 import { getStampDictionariesCount } from '../services/database';
 import { useAuth } from '../contexts/AuthContext';
 import { isAutoSyncEnabled, setAutoSyncEnabled, syncAllWarehouseDataMaster } from '../services/autoSync';
+import {
+  syncOfflineAdjustmentProposals,
+  getSubmittedAdjustmentProposals,
+} from '../services/warehouseAdjustmentService';
 
 export default function SettingsScreen({ onBack }: { onBack: () => void }) {
   const { user, logout } = useAuth();
@@ -187,10 +191,21 @@ export default function SettingsScreen({ onBack }: { onBack: () => void }) {
     try {
       const res = await syncWarehouseMapOffline();
       if (res.success) {
+        let submittedCount = 0;
+        try {
+          await syncOfflineAdjustmentProposals();
+          const submitted = await getSubmittedAdjustmentProposals('KHO_DONG_LANH');
+          submittedCount = submitted.length;
+        } catch {
+          // ignore
+        }
         setWarehouseMapCount(res.totalPositions);
         setWarehouseMapWarehouses(res.totalWarehouses);
         if (res.lastSyncedAt) setLastWarehouseMapSync(res.lastSyncedAt);
-        Alert.alert('Thành công', res.message);
+        Alert.alert(
+          'Thành công',
+          `${res.message}\nĐã đồng bộ kèm ${submittedCount} phiếu nháp đã gửi để xem ngoại tuyến.`
+        );
       } else {
         Alert.alert('Không thể tải', res.message);
       }

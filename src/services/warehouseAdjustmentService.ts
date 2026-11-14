@@ -1,7 +1,8 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getSupabaseClient } from './supabase';
+import { encodeSTT } from '../utils/numberUtils';
 
-export type ProposalActionType = 'CLEAR' | 'SET_QTY' | 'MOVE';
+export type ProposalActionType = 'CLEAR' | 'SET_QTY' | 'MOVE' | 'ASSIGN_LOT' | 'NOTE';
 
 export interface ProposalSubItem {
   product_id?: string | null;
@@ -10,6 +11,7 @@ export interface ProposalSubItem {
   current_quantity: number;
   new_quantity: number;
   unit: string;
+  is_new?: boolean;
 }
 
 export interface ProposalItem {
@@ -21,6 +23,8 @@ export interface ProposalItem {
   // Thông tin hàng hóa hiện tại
   lot_id?: string | null;
   lot_code?: string | null;
+  lot_stt?: string | null;
+  lot_found?: boolean;
   product_name?: string | null;
   sku?: string | null;
   current_quantity?: number | null;
@@ -45,6 +49,7 @@ export interface DraftProposal {
 const STORAGE_KEYS = {
   CURRENT_DRAFT: '@warehouse_adjustment_draft_v1',
   OFFLINE_QUEUE: '@warehouse_adjustment_offline_queue_v1',
+  SUBMITTED_CACHE_PREFIX: '@warehouse_adjustment_submitted_cache_v1_',
 };
 
 const TABLE_PRIMARY = 'warehouse_position_proposals';
@@ -285,6 +290,329 @@ export async function syncOfflineAdjustmentProposals(): Promise<number> {
   } catch (err) {
     console.error('Lỗi đồng bộ hàng đợi ngoại tuyến:', err);
     return 0;
+  }
+}
+
+export interface SubmittedProposal {
+  id: string;
+  code: string;
+  system_code: string;
+  title: string;
+  notes: string;
+  status: 'PENDING' | 'APPROVED' | 'REJECTED';
+  total_positions: number;
+  items: ProposalItem[];
+  created_by?: string | null;
+  created_by_name?: string | null;
+  approved_by_name?: string | null;
+  approved_at?: string | null;
+  review_notes?: string | null;
+  created_at: string;
+  isOfflinePending?: boolean;
+}
+
+/**
+ * Đọc nhanh danh sách phiếu đã gửi từ bộ nhớ máy (0ms, không gọi mạng)
+ * Dùng khi mở modal để tránh tự động tải ngầm gây lag máy
+ */
+export async function getCachedSubmittedProposals(
+  systemCode: string = 'KHO_DONG_LANH'
+): Promise<SubmittedProposal[]> {
+  const results: SubmittedProposal[] = [];
+
+  try {
+    const rawOffline = await AsyncStorage.getItem(STORAGE_KEYS.OFFLINE_QUEUE);
+    if (rawOffline) {
+      const offlineList: any[] = JSON.parse(rawOffline);
+      if (Array.isArray(offlineList)) {
+        offlineList.forEach((item, idx) => {
+          results.push({
+            id: `offline-${idx}-${item.queued_at || Date.now()}`,
+            code: 'CHỜ ĐỒNG BỘ',
+            system_code: item.system_code || systemCode,
+            title: item.title || `Điều chỉnh vị trí kho (${item.items?.length || 0} vị trí)`,
+            notes: item.notes || '',
+            status: 'PENDING',
+            total_positions: Array.isArray(item.items) ? item.items.length : 0,
+            items: Array.isArray(item.items) ? item.items : [],
+            created_by: item.created_by,
+            created_by_name: item.created_by_name || 'Bạn',
+            created_at: item.queued_at || new Date().toISOString(),
+            isOfflinePending: true,
+          });
+        });
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  try {
+    const cacheKey = `${STORAGE_KEYS.SUBMITTED_CACHE_PREFIX}${systemCode || 'DEFAULT'}`;
+    const rawCache = await AsyncStorage.getItem(cacheKey);
+    if (rawCache) {
+      const cachedList: SubmittedProposal[] = JSON.parse(rawCache);
+      if (Array.isArray(cachedList)) {
+        results.push(...cachedList);
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  return results;
+}
+
+/**
+ * Lấy danh sách các phiếu nháp đã gửi lên máy chủ (kèm các phiếu đang chờ đồng bộ offline)
+ */
+export async function getSubmittedAdjustmentProposals(
+  systemCode: string = 'KHO_DONG_LANH'
+): Promise<SubmittedProposal[]> {
+  const results: SubmittedProposal[] = [];
+
+  // 1. Đọc các phiếu đang chờ đồng bộ trong hàng đợi Offline
+  try {
+    const rawOffline = await AsyncStorage.getItem(STORAGE_KEYS.OFFLINE_QUEUE);
+    if (rawOffline) {
+      const offlineList: any[] = JSON.parse(rawOffline);
+      if (Array.isArray(offlineList)) {
+        offlineList.forEach((item, idx) => {
+          results.push({
+            id: `offline-${idx}-${item.queued_at || Date.now()}`,
+            code: 'CHỜ ĐỒNG BỘ',
+            system_code: item.system_code || systemCode,
+            title: item.title || `Điều chỉnh vị trí kho (${item.items?.length || 0} vị trí)`,
+            notes: item.notes || '',
+            status: 'PENDING',
+            total_positions: Array.isArray(item.items) ? item.items.length : 0,
+            items: Array.isArray(item.items) ? item.items : [],
+            created_by: item.created_by,
+            created_by_name: item.created_by_name || 'Bạn',
+            created_at: item.queued_at || new Date().toISOString(),
+            isOfflinePending: true,
+          });
+        });
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  // 2. Lấy danh sách từ Supabase (shift_tasks), có lưu cache để xem khi Offline
+  const cacheKey = `${STORAGE_KEYS.SUBMITTED_CACHE_PREFIX}${systemCode || 'DEFAULT'}`;
+  let loadedFromServer = false;
+  const serverResults: SubmittedProposal[] = [];
+
+  try {
+    const client = await getSupabaseClient();
+    if (client) {
+      let query = (client as any)
+        .from(TABLE_FALLBACK)
+        .select('*')
+        .eq('task_type', 'warehouse_adjustment')
+        .order('created_at', { ascending: false })
+        .limit(30);
+
+      if (systemCode) {
+        query = query.eq('system_code', systemCode);
+      }
+
+      const { data, error } = await query;
+      if (!error && Array.isArray(data)) {
+        loadedFromServer = true;
+        for (const t of data) {
+          let parsedItems: ProposalItem[] = [];
+          let parsedNotes = t.content || '';
+          try {
+            if (t.content && typeof t.content === 'string' && t.content.startsWith('{')) {
+              const parsed = JSON.parse(t.content);
+              parsedItems = Array.isArray(parsed.items) ? parsed.items : [];
+              parsedNotes = parsed.notes || '';
+            }
+          } catch {
+            // ignore
+          }
+
+          const rawStatus = (t.status || '').toUpperCase();
+          const status: 'PENDING' | 'APPROVED' | 'REJECTED' =
+            rawStatus === 'COMPLETED'
+              ? 'APPROVED'
+              : rawStatus === 'CANCELLED'
+              ? 'REJECTED'
+              : 'PENDING';
+
+          serverResults.push({
+            id: t.id,
+            code: t.code || 'DC',
+            system_code: t.system_code || systemCode,
+            title: t.title || 'Đề xuất điều chỉnh vị trí kho',
+            notes: parsedNotes,
+            status,
+            total_positions: parsedItems.length,
+            items: parsedItems,
+            created_by: t.created_by,
+            created_by_name: t.created_by_name || 'Nhân viên kho',
+            approved_by_name: t.completed_by_name || null,
+            approved_at: t.completed_at || null,
+            review_notes: t.completion_notes || null,
+            created_at: t.created_at,
+            isOfflinePending: false,
+          });
+        }
+
+        if (serverResults.length > 0) {
+          await enrichAssignLotItems(client, serverResults, systemCode);
+        }
+
+        // Lưu bản cache mới nhất xuống máy để xem được cả khi Offline
+        try {
+          await AsyncStorage.setItem(cacheKey, JSON.stringify(serverResults));
+        } catch {
+          // ignore
+        }
+
+        results.push(...serverResults);
+      }
+    }
+  } catch (err) {
+    console.warn('Không thể tải phiếu từ máy chủ, dùng bản cache offline:', err);
+  }
+
+  // 3. Nếu đang Offline / mất kết nối -> đọc từ cache đã lưu trên máy
+  if (!loadedFromServer) {
+    try {
+      const rawCache = await AsyncStorage.getItem(cacheKey);
+      if (rawCache) {
+        const cachedList: SubmittedProposal[] = JSON.parse(rawCache);
+        if (Array.isArray(cachedList)) {
+          results.push(...cachedList);
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  return results;
+}
+
+/**
+ * Tự động tra cứu thông tin Lot (tên SP, mã Lot, số lượng) từ STT (VD: G888)
+ * để App hiển thị đầy đủ giống Web mẹ
+ */
+async function enrichAssignLotItems(
+  client: any,
+  proposals: SubmittedProposal[],
+  systemCode: string
+): Promise<void> {
+  const seqSet = new Set<number>();
+  const lotIdSet = new Set<string>();
+  let hasAssignLot = false;
+
+  for (const p of proposals) {
+    for (const it of p.items) {
+      if (it.action_type !== 'ASSIGN_LOT') continue;
+      hasAssignLot = true;
+      if (it.lot_id) lotIdSet.add(it.lot_id);
+      const sttRaw = (it.lot_stt || '').trim().toUpperCase();
+      if (sttRaw) {
+        const seq = encodeSTT(sttRaw);
+        if (seq !== null) seqSet.add(seq);
+      }
+    }
+  }
+
+  if (!hasAssignLot || (seqSet.size === 0 && lotIdSet.size === 0)) {
+    return;
+  }
+
+  const bySeq = new Map<number, any>();
+  const byId = new Map<string, any>();
+
+  try {
+    if (seqSet.size > 0) {
+      const { data } = await client
+        .from('lots')
+        .select(
+          `id, code, production_code, daily_seq, quantity,
+           lot_items(id, quantity, unit, products(name, sku, unit))`
+        )
+        .eq('system_code', systemCode)
+        .in('daily_seq', Array.from(seqSet));
+
+      if (Array.isArray(data)) {
+        for (const lot of data) {
+          if (lot.daily_seq != null) bySeq.set(lot.daily_seq, lot);
+          if (lot.id) byId.set(lot.id, lot);
+        }
+      }
+    }
+
+    const missingIds = Array.from(lotIdSet).filter((id) => !byId.has(id));
+    if (missingIds.length > 0) {
+      const { data } = await client
+        .from('lots')
+        .select(
+          `id, code, production_code, daily_seq, quantity,
+           lot_items(id, quantity, unit, products(name, sku, unit))`
+        )
+        .eq('system_code', systemCode)
+        .in('id', missingIds);
+
+      if (Array.isArray(data)) {
+        for (const lot of data) {
+          if (lot.daily_seq != null) bySeq.set(lot.daily_seq, lot);
+          if (lot.id) byId.set(lot.id, lot);
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('Lỗi enrich thông tin Lot trên App:', err);
+    return;
+  }
+
+  for (const p of proposals) {
+    for (const it of p.items) {
+      if (it.action_type !== 'ASSIGN_LOT') continue;
+      const sttRaw = (it.lot_stt || '').trim().toUpperCase();
+      const seq = sttRaw ? encodeSTT(sttRaw) : null;
+      const lot =
+        (seq !== null ? bySeq.get(seq) : null) ||
+        (it.lot_id ? byId.get(it.lot_id) : null);
+
+      if (!lot) {
+        if (sttRaw) it.lot_found = false;
+        continue;
+      }
+
+      it.lot_found = true;
+      it.lot_id = lot.id;
+      it.lot_code = lot.code || lot.production_code || it.lot_code;
+
+      const itemsArr: any[] = Array.isArray(lot.lot_items) ? lot.lot_items : [];
+      if (itemsArr.length > 0) {
+        const names = itemsArr.map((li) => li.products?.name).filter(Boolean);
+        const skus = itemsArr.map((li) => li.products?.sku).filter(Boolean);
+        const totalQty = itemsArr.reduce(
+          (s, li) => s + (Number(li.quantity) || 0),
+          0
+        );
+        const firstUnit =
+          itemsArr[0]?.unit || itemsArr[0]?.products?.unit || it.unit || 'Thùng';
+
+        if (names.length > 0) {
+          it.product_name = Array.from(new Set(names)).join(', ');
+        }
+        if (skus.length > 0) {
+          it.sku = Array.from(new Set(skus)).join(', ');
+        }
+        it.new_quantity = totalQty || lot.quantity || it.new_quantity;
+        it.unit = firstUnit;
+      } else if (lot.quantity != null) {
+        it.new_quantity = lot.quantity;
+      }
+    }
   }
 }
 

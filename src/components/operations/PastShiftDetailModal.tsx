@@ -10,6 +10,7 @@ import {
   Alert,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   DeliveryShift,
   JournalRecord,
@@ -102,6 +103,7 @@ export default function PastShiftDetailModal({
   onClose,
   onRefreshAll,
 }: Props) {
+  const insets = useSafeAreaInsets();
   // Tab: 'summary' (Báo cáo tổng hợp) | 'feed' (Lịch sử các đợt phát sinh)
   const [activeTab, setActiveTab] = useState<'summary' | 'feed'>('summary');
   const [journalFilter, setJournalFilter] = useState<'all' | 'in' | 'out'>('all');
@@ -226,7 +228,7 @@ export default function PastShiftDetailModal({
     <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
       <View style={styles.container}>
         {/* ── TOP HEADER ── */}
-        <View style={styles.header}>
+        <View style={[styles.header, { paddingTop: Math.max(insets.top, 14) }]}>
           <TouchableOpacity onPress={onClose} style={styles.backBtn}>
             <Ionicons name="arrow-back" size={22} color="#f8fafc" />
           </TouchableOpacity>
@@ -556,7 +558,7 @@ export default function PastShiftDetailModal({
         )}
 
         {/* ── FOOTER HÀNH ĐỘNG: MỞ LẠI CA / XÓA CA ── */}
-        <View style={styles.footerBar}>
+        <View style={[styles.footerBar, { paddingBottom: Math.max(insets.bottom, 12) + 8 }]}>
           <TouchableOpacity
             onPress={handleReopen}
             style={styles.reopenBtn}

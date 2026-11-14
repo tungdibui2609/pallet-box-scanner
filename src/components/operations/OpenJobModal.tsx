@@ -11,6 +11,7 @@ import {
   Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   OrderTypeItem,
   JobTemplate,
@@ -29,6 +30,7 @@ interface Props {
 }
 
 export default function OpenJobModal({ visible, onClose, onSuccess, user, allProducts = [] }: Props) {
+  const insets = useSafeAreaInsets();
   const [jobName, setJobName] = useState('');
   const [notes, setNotes] = useState('');
   const [orderTypes, setOrderTypes] = useState<OrderTypeItem[]>([]);
@@ -122,7 +124,7 @@ export default function OpenJobModal({ visible, onClose, onSuccess, user, allPro
       <TouchableWithoutFeedback onPress={onClose}>
         <View style={styles.overlay}>
           <TouchableWithoutFeedback>
-            <View style={styles.sheetContainer}>
+            <View style={[styles.sheetContainer, { paddingBottom: Math.max(insets.bottom, 16) + 8 }]}>
               <View style={styles.handle} />
 
               <View style={styles.header}>
@@ -135,7 +137,7 @@ export default function OpenJobModal({ visible, onClose, onSuccess, user, allPro
                 </TouchableOpacity>
               </View>
 
-              <ScrollView style={{ maxHeight: 420 }} showsVerticalScrollIndicator={false}>
+              <ScrollView style={{ maxHeight: 420 }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
                 {/* 1. Tên công việc */}
                 <View style={styles.formGroup}>
                   <Text style={styles.label}>
@@ -165,7 +167,7 @@ export default function OpenJobModal({ visible, onClose, onSuccess, user, allPro
                     )}
                   </View>
                   {jobTemplates.length > 0 ? (
-                    <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginVertical: 2 }}>
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginVertical: 2 }} keyboardShouldPersistTaps="handled">
                       {jobTemplates.map(tpl => {
                         const isSelected = selectedTemplate?.id === tpl.id || jobName.trim().toLowerCase() === tpl.name.trim().toLowerCase();
                         const pinCount = tpl.pinned_product_ids?.length || 0;
@@ -203,7 +205,7 @@ export default function OpenJobModal({ visible, onClose, onSuccess, user, allPro
                 {/* 2. Loại phiếu kế toán (Tự động điền) */}
                 <View style={styles.formGroup}>
                   <Text style={styles.label}>Loại phiếu (Kế toán)</Text>
-                  <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginVertical: 4 }}>
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginVertical: 4 }} keyboardShouldPersistTaps="handled">
                     <TouchableOpacity
                       onPress={() => setSelectedOrderType(null)}
                       style={[styles.typePill, !selectedOrderType && styles.typePillActive]}

@@ -9,6 +9,7 @@ import {
   TouchableWithoutFeedback,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../../contexts/AuthContext';
 
 export type AppTab =
@@ -33,6 +34,7 @@ export const FullMenuModal: React.FC<FullMenuModalProps> = ({
   currentTab,
   onSelectTab,
 }) => {
+  const insets = useSafeAreaInsets();
   const { user, logout } = useAuth();
 
   const handleSelect = (tab: AppTab) => {
@@ -141,7 +143,7 @@ export const FullMenuModal: React.FC<FullMenuModalProps> = ({
           <View style={styles.backdrop} />
         </TouchableWithoutFeedback>
 
-        <View style={styles.sheetContainer}>
+        <View style={[styles.sheetContainer, { paddingBottom: Math.max(insets.bottom, 12) }]}>
           {/* Header Thông Tin Tài Khoản */}
           <View style={styles.header}>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>

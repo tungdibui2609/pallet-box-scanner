@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, ScrollView,
   Alert, Modal, TextInput, ActivityIndicator, Vibration, Animated,
-  NativeModules
+  NativeModules, AppState
 } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import TextRecognition from '@react-native-ml-kit/text-recognition';
@@ -37,6 +37,33 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
   const [boxes, setBoxes] = useState<BoxLabel[]>([]);
   const [isScanning, setIsScanning] = useState(false);
   const [torch, setTorch] = useState(false);
+  const [cameraEnabled, setCameraEnabled] = useState(true);
+  const [isAppActive, setIsAppActive] = useState(AppState.currentState === 'active');
+
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (nextState) => {
+      const active = nextState === 'active';
+      setIsAppActive(active);
+      if (!active) {
+        setTorch(false);
+        setIsAutoScan(false);
+      }
+    });
+    return () => sub.remove();
+  }, []);
+
+  const isCameraRunning = cameraEnabled && isAppActive && !!activePallet;
+
+  function toggleCamera() {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setCameraEnabled(prev => {
+      if (prev) {
+        setTorch(false);
+        setIsAutoScan(false);
+      }
+      return !prev;
+    });
+  }
 
   // AUTO-SCAN STATE: Mặc định TẮT theo yêu cầu của người dùng
   const [isAutoScan, setIsAutoScan] = useState(false);
@@ -159,7 +186,7 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
   useEffect(() => {
     let scanTimer: any = null;
 
-    if (isAutoScan && activePallet && permission?.granted) {
+    if (isAutoScan && activePallet && permission?.granted && isCameraRunning) {
       scanTimer = setInterval(() => {
         runAutoScanCycle();
       }, 750);
@@ -168,7 +195,7 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
     return () => {
       if (scanTimer) clearInterval(scanTimer);
     };
-  }, [isAutoScan, activePallet, permission?.granted]);
+  }, [isAutoScan, activePallet, permission?.granted, isCameraRunning]);
 
   function showSuccessFlash(msg: string) {
     setSuccessBanner(msg);
@@ -302,7 +329,6 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
 
   // MANUAL CAPTURE BUTTON (Triggered by either on-screen button OR Hardware Volume Down Key)
   async function handleManualCapture() {
-    if (!cameraRef.current) return;
     if (!activePallet) {
       Alert.alert('Chưa có Pallet', 'Vui lòng bấm [+ Nhập STT Pallet] trước khi quét', [
         { text: 'Huỷ', style: 'cancel' },
@@ -310,6 +336,12 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
       ]);
       return;
     }
+    if (!cameraEnabled) {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      setCameraEnabled(true);
+      return;
+    }
+    if (!cameraRef.current) return;
 
     setIsScanning(true);
     setDuplicateWarning(null);
@@ -614,38 +646,21 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
           <Text style={styles.volumeKeyHintText}>Bấm [Giảm âm lượng] để chụp</Text>
         </View>
 
-        <TouchableOpacity style={styles.torchBtn} onPress={() => setTorch(t => !t)}>
-          <Ionicons name={torch ? "flash" : "flash-outline"} size={18} color={torch ? "#facc15" : "#94a3b8"} />
+        <TouchableOpacity
+          style={[styles.torchBtn, !isCameraRunning && { opacity: 0.45 }]}
+          onPress={() => {
+            if (!isCameraRunning) return;
+            setTorch(t => !t);
+          }}
+          disabled={!isCameraRunning}
+        >
+          <Ionicons name={torch && isCameraRunning ? "flash" : "flash-outline"} size={18} color={torch && isCameraRunning ? "#facc15" : "#94a3b8"} />
         </TouchableOpacity>
       </View>
 
       {/* 📷 CAMERA VIEWPORT */}
       <View style={styles.cameraBox}>
-        <CameraView
-          ref={cameraRef}
-          style={StyleSheet.absoluteFill}
-          facing="back"
-          enableTorch={torch}
-        />
-
-        {/* Viewfinder Overlay Frame */}
-        <View style={styles.viewfinderFrame}>
-          <View style={[styles.cornerTL, (isAutoScan && activePallet) && styles.cornerActive]} />
-          <View style={[styles.cornerTR, (isAutoScan && activePallet) && styles.cornerActive]} />
-          <View style={[styles.cornerBL, (isAutoScan && activePallet) && styles.cornerActive]} />
-          <View style={[styles.cornerBR, (isAutoScan && activePallet) && styles.cornerActive]} />
-
-          <View style={styles.scanHintBox}>
-            <Text style={styles.scanHintText}>
-              {!activePallet
-                ? "CHỌN PALLET ĐỂ BẮT ĐẦU"
-                : (isAutoScan ? "⚡ ĐANG TỰ ĐỘNG QUÉT TEM..." : "BẤM NÚT HOẶC GIẢM ÂM LƯỢNG ĐỂ QUÉT")}
-            </Text>
-          </View>
-        </View>
-
-        {/* Overlay when no active pallet */}
-        {!activePallet && (
+        {!activePallet ? (
           <View style={styles.noPalletOverlay}>
             <Ionicons name="cube-outline" size={36} color="#38bdf8" />
             <Text style={styles.noPalletOverlayTitle}>Chưa chọn Pallet</Text>
@@ -653,6 +668,53 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
             <TouchableOpacity style={styles.selectPalletOverlayBtn} onPress={() => setIsNewPalletModal(true)}>
               <Ionicons name="add-circle-outline" size={18} color="#fff" />
               <Text style={styles.selectPalletOverlayBtnText}>Chọn / Nhập Pallet Ngay</Text>
+            </TouchableOpacity>
+          </View>
+        ) : isCameraRunning ? (
+          <>
+            <CameraView
+              ref={cameraRef}
+              style={StyleSheet.absoluteFill}
+              facing="back"
+              enableTorch={torch}
+            />
+
+            {/* Viewfinder Overlay Frame */}
+            <View style={styles.viewfinderFrame}>
+              <View style={[styles.cornerTL, (isAutoScan && activePallet) && styles.cornerActive]} />
+              <View style={[styles.cornerTR, (isAutoScan && activePallet) && styles.cornerActive]} />
+              <View style={[styles.cornerBL, (isAutoScan && activePallet) && styles.cornerActive]} />
+              <View style={[styles.cornerBR, (isAutoScan && activePallet) && styles.cornerActive]} />
+
+              <View style={styles.scanHintBox}>
+                <Text style={styles.scanHintText}>
+                  {isAutoScan ? "⚡ ĐANG TỰ ĐỘNG QUÉT TEM..." : "BẤM NÚT HOẶC GIẢM ÂM LƯỢNG ĐỂ QUÉT"}
+                </Text>
+              </View>
+            </View>
+
+            {/* Nút tắt camera nhanh để tiết kiệm pin */}
+            <TouchableOpacity
+              style={styles.cameraTogglePill}
+              onPress={toggleCamera}
+              activeOpacity={0.8}
+            >
+              <Ionicons name="videocam-off-outline" size={14} color="#fca5a5" />
+              <Text style={styles.cameraTogglePillText}>Tắt Camera</Text>
+            </TouchableOpacity>
+          </>
+        ) : (
+          <View style={styles.cameraPausedContainer}>
+            <Ionicons name="videocam-off-outline" size={34} color="#94a3b8" />
+            <Text style={styles.cameraPausedTitle}>Camera đang tắt</Text>
+            <Text style={styles.cameraPausedSub}>Tạm tắt để tiết kiệm pin. Bạn vẫn có thể Sửa / Nhập tay.</Text>
+            <TouchableOpacity
+              style={styles.cameraEnableBtn}
+              onPress={toggleCamera}
+              activeOpacity={0.85}
+            >
+              <Ionicons name="videocam" size={16} color="#0f172a" />
+              <Text style={styles.cameraEnableBtnText}>Bật Camera</Text>
             </TouchableOpacity>
           </View>
         )}
@@ -1415,5 +1477,58 @@ const styles = StyleSheet.create({
   modalCancelBtn: { paddingHorizontal: 16, paddingVertical: 10, borderRadius: 8, backgroundColor: '#334155' },
   modalCancelText: { color: '#fff', fontWeight: '600' },
   modalSaveBtn: { paddingHorizontal: 20, paddingVertical: 10, borderRadius: 8, backgroundColor: '#10b981' },
-  modalSaveText: { color: '#fff', fontWeight: '700' }
+  modalSaveText: { color: '#fff', fontWeight: '700' },
+  cameraTogglePill: {
+    position: 'absolute',
+    top: 10,
+    right: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: 'rgba(15, 23, 42, 0.85)',
+    borderWidth: 1,
+    borderColor: 'rgba(248, 113, 113, 0.45)',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 999,
+  },
+  cameraTogglePillText: {
+    color: '#fecaca',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  cameraPausedContainer: {
+    flex: 1,
+    backgroundColor: '#0b1220',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+  },
+  cameraPausedTitle: {
+    color: '#f8fafc',
+    fontSize: 15,
+    fontWeight: '800',
+    marginTop: 8,
+    marginBottom: 4,
+  },
+  cameraPausedSub: {
+    color: '#94a3b8',
+    fontSize: 12,
+    textAlign: 'center',
+    marginBottom: 12,
+  },
+  cameraEnableBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#10b981',
+    paddingHorizontal: 16,
+    paddingVertical: 9,
+    borderRadius: 10,
+  },
+  cameraEnableBtnText: {
+    color: '#0f172a',
+    fontSize: 13,
+    fontWeight: '800',
+  },
 });

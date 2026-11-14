@@ -9,6 +9,7 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   DeliveryShift,
   JournalRecord,
@@ -64,6 +65,7 @@ export default function AggregatedReportModal({
   onClose,
   onOpenShiftDetail,
 }: Props) {
+  const insets = useSafeAreaInsets();
   // Trạng thái thu / mở rộng từng khối (Mặc định mở để xem ngay)
   const [expandProducts, setExpandProducts] = useState(true);
   const [expandUnits, setExpandUnits] = useState(true);
@@ -87,7 +89,7 @@ export default function AggregatedReportModal({
     >
       <View style={styles.container}>
         {/* ── HEADER ── */}
-        <View style={styles.header}>
+        <View style={[styles.header, { paddingTop: Math.max(insets.top, 14) }]}>
           <View style={{ flex: 1 }}>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
               <Ionicons name="bar-chart" size={20} color="#6366f1" />
@@ -111,7 +113,7 @@ export default function AggregatedReportModal({
             <Text style={styles.loadingText}>Đang tổng hợp số liệu báo cáo...</Text>
           </View>
         ) : (
-          <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 12, paddingBottom: 60 }}>
+          <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 12, paddingBottom: Math.max(insets.bottom, 20) + 40 }}>
             {/* ── 1. CHI TIẾT THEO MẶT HÀNG ── */}
             <View style={styles.card}>
               <TouchableOpacity

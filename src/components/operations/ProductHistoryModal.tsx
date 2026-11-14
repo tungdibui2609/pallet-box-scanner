@@ -11,6 +11,7 @@ import {
   Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ShiftProductItem, JournalRecord, getShiftJournals } from '../../services/operationsService';
 
 interface Props {
@@ -21,6 +22,7 @@ interface Props {
 }
 
 export default function ProductHistoryModal({ visible, product, shiftId, onClose }: Props) {
+  const insets = useSafeAreaInsets();
   const [loading, setLoading] = useState(false);
   const [records, setRecords] = useState<JournalRecord[]>([]);
 
@@ -54,7 +56,7 @@ export default function ProductHistoryModal({ visible, product, shiftId, onClose
       <TouchableWithoutFeedback onPress={onClose}>
         <View style={styles.overlay}>
           <TouchableWithoutFeedback>
-            <View style={styles.sheetContainer}>
+            <View style={[styles.sheetContainer, { paddingBottom: Math.max(insets.bottom, 16) + 8 }]}>
               <View style={styles.handle} />
 
               <View style={styles.header}>

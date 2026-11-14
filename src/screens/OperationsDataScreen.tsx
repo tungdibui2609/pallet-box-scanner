@@ -38,6 +38,8 @@ import {
   AggregatedUnitItem,
   getPendingOperationsCount,
   syncOperationsOfflineQueue,
+  getJobTemplates,
+  getOrderTypes,
 } from '../services/operationsService';
 import OperationNumberPadModal from '../components/operations/OperationNumberPadModal';
 import OpenJobModal from '../components/operations/OpenJobModal';
@@ -428,6 +430,29 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
     }
   }, [selectedShift, selectShift]);
 
+  const [downloadingOpsOffline, setDownloadingOpsOffline] = useState(false);
+
+  const handleSyncOperationsOffline = useCallback(async () => {
+    if (downloadingOpsOffline) return;
+    setDownloadingOpsOffline(true);
+    try {
+      await syncOperationsOfflineQueue().catch(() => {});
+      const [templates] = await Promise.all([
+        getJobTemplates().catch(() => []),
+        getOrderTypes().catch(() => []),
+        handleRefresh(),
+      ]);
+      Alert.alert(
+        'Đã tải dữ liệu Số Liệu',
+        `Đã cập nhật danh sách ca làm việc, sản phẩm và ${Array.isArray(templates) ? templates.length : 0} công việc mẫu về bộ nhớ máy.`
+      );
+    } catch (e: any) {
+      Alert.alert('Lỗi', e?.message || 'Không thể tải dữ liệu số liệu.');
+    } finally {
+      setDownloadingOpsOffline(false);
+    }
+  }, [downloadingOpsOffline, handleRefresh]);
+
   // Danh sách các ngày phát sinh từ pastShifts (Gom cả ngày mở và ngày đóng ca như Web)
   const availableDates = useMemo(() => {
     const dateMap: Record<string, number> = {};
@@ -646,32 +671,59 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
     return aggregateShiftsProducts(prodShifts, prodJournals, allProducts);
   }, [prodShifts, prodJournals, allProducts]);
 
-  // Danh sách các tên sản phẩm độc nhất để làm thanh chip lọc nhanh
+  // Helper dựng đối tượng tìm kiếm đầy đủ (kèm aliases, internal_code, internal_name từ danh mục allProducts)
+  const buildAggregatedProductSearchObj = useCallback(
+    (r: { product_id?: string | null; sku?: string | null; product_name?: string | null; jobs?: { name: string }[] }) => {
+      const rName = (r.product_name || '').trim().toLowerCase();
+      const rSku = (r.sku || '').trim().toLowerCase();
+      const prod = allProducts.find(
+        p =>
+          (r.product_id && p.id === r.product_id) ||
+          (rSku && p.sku && p.sku.trim().toLowerCase() === rSku) ||
+          (rName && p.name && p.name.trim().toLowerCase() === rName)
+      );
+      return {
+        name: r.product_name || '',
+        sku: r.sku || prod?.sku || '',
+        aliases: prod?.aliases || '',
+        internal_code: prod?.internal_code || '',
+        internal_name: prod?.internal_name || '',
+        notes: (r.jobs || []).map(j => j.name).join(' '),
+      };
+    },
+    [allProducts]
+  );
+
+  // Danh sách các tên sản phẩm độc nhất để làm thanh chip lọc nhanh (lọc theo từ khóa tìm kiếm nếu có)
   const uniqueProductNames = useMemo(() => {
     const names = new Set<string>();
+    const q = prodSearchQuery.trim();
     rawProductReportRows.forEach(r => {
-      if (r.product_name) names.add(r.product_name.trim());
+      if (!r.product_name) return;
+      if (q && !matchSearch(buildAggregatedProductSearchObj(r), q)) return;
+      names.add(r.product_name.trim());
     });
     return Array.from(names);
-  }, [rawProductReportRows]);
+  }, [rawProductReportRows, prodSearchQuery, buildAggregatedProductSearchObj]);
 
-  // Lọc theo từ khóa tìm kiếm và chip sản phẩm đã chọn
+  // Lọc theo từ khóa tìm kiếm (hỗ trợ tên viết tắt / aliases, không dấu, SKU, tên nội bộ) và chip sản phẩm đã chọn
   const productReportRows = useMemo(() => {
     let rows = rawProductReportRows;
     if (selectedProductFilter !== 'all') {
       rows = rows.filter(r => (r.product_name || '').trim() === selectedProductFilter);
     }
-    if (prodSearchQuery.trim()) {
-      const q = prodSearchQuery.trim().toLowerCase();
-      rows = rows.filter(r => {
-        const name = (r.product_name || '').toLowerCase();
-        const sku = (r.sku || '').toLowerCase();
-        const jobs = (r.jobs || []).map(j => j.name.toLowerCase()).join(' ');
-        return name.includes(q) || sku.includes(q) || jobs.includes(q);
-      });
+    const q = prodSearchQuery.trim();
+    if (q) {
+      rows = rows
+        .filter(r => matchSearch(buildAggregatedProductSearchObj(r), q))
+        .sort(
+          (a, b) =>
+            calculateSearchScore(buildAggregatedProductSearchObj(b), q) -
+            calculateSearchScore(buildAggregatedProductSearchObj(a), q)
+        );
     }
     return rows;
-  }, [rawProductReportRows, selectedProductFilter, prodSearchQuery]);
+  }, [rawProductReportRows, selectedProductFilter, prodSearchQuery, buildAggregatedProductSearchObj]);
 
   const productReportUnits = useMemo(() => {
     return aggregateShiftsUnits(productReportRows);
@@ -1040,6 +1092,28 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
           <Text style={[styles.tabBtnText, activeTab === 'done' && styles.tabBtnTextActive]}>
             Đã hoàn thành ({pastShifts.length})
           </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          onPress={handleSyncOperationsOffline}
+          disabled={downloadingOpsOffline || refreshing}
+          style={{
+            width: 36,
+            height: 36,
+            borderRadius: 10,
+            backgroundColor: '#1e293b',
+            borderWidth: 1,
+            borderColor: '#38bdf844',
+            justifyContent: 'center',
+            alignItems: 'center',
+          }}
+          accessibilityLabel="Tải dữ liệu số liệu"
+        >
+          {downloadingOpsOffline ? (
+            <ActivityIndicator size="small" color="#38bdf8" />
+          ) : (
+            <Ionicons name="cloud-download-outline" size={17} color="#38bdf8" />
+          )}
         </TouchableOpacity>
       </View>
 
@@ -2513,9 +2587,9 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
                     [
                       { id: 'today', label: 'Hôm nay', icon: 'today-outline' },
                       { id: 'yesterday', label: 'Hôm qua', icon: 'time-outline' },
+                      { id: 'range', label: 'Khoảng ngày', icon: 'swap-horizontal' },
                       { id: '7days', label: '7 ngày qua', icon: 'calendar-outline' },
                       { id: '30days', label: '30 ngày', icon: 'calendar-outline' },
-                      { id: 'range', label: 'Khoảng ngày', icon: 'swap-horizontal' },
                       { id: 'all', label: 'Tất cả', icon: 'infinite-outline' },
                     ] as const
                   ).map(item => {

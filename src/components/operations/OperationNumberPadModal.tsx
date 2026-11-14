@@ -11,6 +11,7 @@ import {
   Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ShiftProductItem } from '../../services/operationsService';
 
 interface Props {
@@ -23,6 +24,7 @@ interface Props {
 }
 
 export default function OperationNumberPadModal({ visible, product, defaultUnit, onClose, onSubmit, currentStats }: Props) {
+  const insets = useSafeAreaInsets();
   const [valueStr, setValueStr] = useState<string>('');
   const [selectedUnit, setSelectedUnit] = useState<string>('Thùng');
   const [note, setNote] = useState<string>('');
@@ -118,7 +120,7 @@ export default function OperationNumberPadModal({ visible, product, defaultUnit,
       <TouchableWithoutFeedback onPress={onClose}>
         <View style={styles.overlay}>
           <TouchableWithoutFeedback>
-            <View style={styles.sheetContainer}>
+            <View style={[styles.sheetContainer, { paddingBottom: Math.max(insets.bottom, 16) + 8 }]}>
               {/* Thanh kéo handle */}
               <View style={styles.handle} />
 

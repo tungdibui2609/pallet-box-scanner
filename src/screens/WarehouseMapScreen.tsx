@@ -33,6 +33,7 @@ import {
   DraftProposal,
   ProposalItem,
   syncOfflineAdjustmentProposals,
+  getSubmittedAdjustmentProposals,
 } from '../services/warehouseAdjustmentService';
 import { matchPalletSearch, calculateSearchScore, matchSearch, normalizeSearchString } from '../utils/searchUtils';
 import { formatMaterialZoneList } from '../utils/provinces';
@@ -1087,7 +1088,6 @@ export default function WarehouseMapScreen({
 
   useEffect(() => {
     refreshDraft();
-    syncOfflineAdjustmentProposals().catch(() => { });
   }, [refreshDraft]);
 
   // Danh sách các sảnh có kèm theo kho cha (VD: Kho Đông 1 › SẢNH 1)
@@ -1241,6 +1241,16 @@ export default function WarehouseMapScreen({
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
       const res = await syncWarehouseMapOffline();
       if (res.success) {
+        // Tải luôn dữ liệu phiếu nháp đã gửi và đồng bộ hàng đợi offline (nếu có)
+        let submittedCount = 0;
+        try {
+          await syncOfflineAdjustmentProposals();
+          const submitted = await getSubmittedAdjustmentProposals('KHO_DONG_LANH');
+          submittedCount = submitted.length;
+        } catch {
+          // ignore
+        }
+
         if ((res as any).zones && (res as any).positions) {
           setZones((res as any).zones);
           setPositions((res as any).positions);
@@ -1258,7 +1268,7 @@ export default function WarehouseMapScreen({
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         Alert.alert(
           'Tải Ngoại Tuyến Thành Công!',
-          `Đã lưu toàn bộ ${res.totalPositions} vị trí (${res.totalWarehouses} kho) vào bộ nhớ máy.\n\nNhân viên có thể yên tâm mang điện thoại vào kho đông để kiểm tra vị trí ngay cả khi không có sóng Wi-Fi/4G.`
+          `Đã lưu ${res.totalPositions} vị trí (${res.totalWarehouses} kho) và ${submittedCount} phiếu nháp đã gửi vào bộ nhớ máy.\n\nNhân viên có thể yên tâm mang điện thoại vào kho đông xem sơ đồ và lịch sử nháp ngay cả khi mất sóng.`
         );
       } else {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
@@ -2454,8 +2464,8 @@ export default function WarehouseMapScreen({
   return (
     <View style={styles.container}>
       {/* ── HEADER ────────────────────────────────────────────── */}
-      <View style={styles.header}>
-        <View style={styles.headerLeft}>
+      <View style={[styles.header, { gap: 8 }]}>
+        <View style={[styles.headerLeft, { flex: 1, minWidth: 0 }]}>
           <TouchableOpacity
             style={styles.backBtn}
             onPress={onBackToScanner}
@@ -2463,34 +2473,35 @@ export default function WarehouseMapScreen({
           >
             <Ionicons name="arrow-back" size={20} color="#cbd5e1" />
           </TouchableOpacity>
-          <View>
+          <View style={{ flex: 1, minWidth: 0 }}>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-              <Text style={styles.headerTitle}>SƠ ĐỒ VỊ TRÍ KHO</Text>
+              <Text style={styles.headerTitle} numberOfLines={1}>SƠ ĐỒ KHO</Text>
               <View style={styles.badgeColdStorage}>
-                <Text style={styles.badgeColdText}>KHO ĐÔNG LẠNH</Text>
+                <Text style={styles.badgeColdText}>KHO ĐÔNG</Text>
               </View>
             </View>
-            <Text style={styles.headerSub}>
-              {positions.length} vị trí ({positions.filter(p => p.lot_id).length} có hàng)
+            <Text style={styles.headerSub} numberOfLines={1}>
+              {positions.length} ô · {positions.filter(p => p.lot_id).length} có hàng
               {cachedAt
-                ? ` · 🕒 ${new Date(cachedAt).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })} ${new Date(cachedAt).toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit' })}`
+                ? ` · ${new Date(cachedAt).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })}`
                 : ''}
             </Text>
           </View>
         </View>
 
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-          {/* Nút bật / tắt Chế độ Ghi Nháp Điều Chỉnh Vị Trí */}
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+          {/* Nút bật / tắt Chế độ Ghi Nháp */}
           <TouchableOpacity
             style={[
               styles.downloadOfflineBtn,
               {
                 flexDirection: 'row',
                 alignItems: 'center',
-                gap: 4,
-                paddingHorizontal: 9,
+                gap: 5,
+                paddingHorizontal: 10,
+                height: 36,
                 backgroundColor: isDraftMode ? '#78350f' : '#1e293b',
-                borderColor: isDraftMode ? '#f59e0b' : '#f59e0b44',
+                borderColor: isDraftMode ? '#f59e0b' : '#f59e0b55',
                 borderWidth: 1,
               },
             ]}
@@ -2501,17 +2512,17 @@ export default function WarehouseMapScreen({
           >
             <Ionicons
               name={isDraftMode ? 'pencil' : 'pencil-outline'}
-              size={15}
+              size={14}
               color={isDraftMode ? '#fef08a' : '#f59e0b'}
             />
             <Text
               style={{
                 color: isDraftMode ? '#fef08a' : '#f59e0b',
-                fontSize: 11,
+                fontSize: 11.5,
                 fontWeight: '800',
               }}
             >
-              {isDraftMode ? 'Đang Nháp' : 'Ghi Nháp'}
+              {isDraftMode ? 'Đang nháp' : 'Ghi nháp'}
             </Text>
             {draftProposal.items.length > 0 && (
               <View
@@ -2520,7 +2531,6 @@ export default function WarehouseMapScreen({
                   borderRadius: 10,
                   paddingHorizontal: 5,
                   paddingVertical: 1,
-                  marginLeft: 2,
                 }}
               >
                 <Text style={{ color: '#000', fontSize: 9.5, fontWeight: '900' }}>
@@ -2531,17 +2541,14 @@ export default function WarehouseMapScreen({
           </TouchableOpacity>
 
           <TouchableOpacity
-            style={[styles.downloadOfflineBtn, { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10 }]}
+            style={[styles.downloadOfflineBtn, { width: 36, height: 36, paddingHorizontal: 0, justifyContent: 'center', alignItems: 'center' }]}
             onPress={handleDownloadOffline}
             disabled={downloadingOffline || refreshing}
           >
             {downloadingOffline || refreshing ? (
               <ActivityIndicator size="small" color="#34d399" />
             ) : (
-              <>
-                <Ionicons name="cloud-download-outline" size={16} color="#34d399" />
-                <Text style={{ color: '#34d399', fontSize: 11, fontWeight: '800' }}>Tải mới</Text>
-              </>
+              <Ionicons name="cloud-download-outline" size={17} color="#34d399" />
             )}
           </TouchableOpacity>
         </View>
@@ -2571,33 +2578,28 @@ export default function WarehouseMapScreen({
         </View>
       )}
 
-      {/* ── DRAFT MODE ACTIVE BANNER ── */}
+      {/* ── DRAFT MODE ACTIVE BANNER (Compact 1-row) ── */}
       {isDraftMode && (
-        <View style={styles.draftModeBanner}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 }}>
-            <Ionicons name="pencil" size={16} color="#fbbf24" />
-            <View style={{ flex: 1 }}>
-              <Text style={styles.draftModeBannerTitle}>
-                Chế độ Ghi Nháp Vị Trí đang BẬT
-              </Text>
-              <Text style={styles.draftModeBannerSub}>
-                Chạm vào bất kỳ ô nào để Xuất rỗng (X), Sửa SL lẻ hoặc Chuyển ô
-              </Text>
-            </View>
+        <View style={[styles.draftModeBanner, { paddingVertical: 8 }]}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1, minWidth: 0 }}>
+            <Ionicons name="pencil" size={14} color="#fbbf24" />
+            <Text style={styles.draftModeBannerTitle} numberOfLines={1}>
+              Chạm vào ô để ghi nháp
+            </Text>
           </View>
-          {draftProposal.items.length > 0 && (
-            <TouchableOpacity
-              onPress={() => {
-                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                setIsDraftListVisible(true);
-              }}
-              style={styles.draftModeViewBtn}
-            >
-              <Text style={styles.draftModeViewBtnText}>
-                Xem ({draftProposal.items.length})
-              </Text>
-            </TouchableOpacity>
-          )}
+          <TouchableOpacity
+            onPress={() => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              setIsDraftListVisible(true);
+            }}
+            style={styles.draftModeViewBtn}
+          >
+            <Text style={styles.draftModeViewBtnText}>
+              {draftProposal.items.length > 0
+                ? `Phiếu nháp (${draftProposal.items.length})`
+                : 'Phiếu đã gửi'}
+            </Text>
+          </TouchableOpacity>
         </View>
       )}
 
@@ -4494,6 +4496,7 @@ export default function WarehouseMapScreen({
         }}
         position={draftTargetPos}
         initialItem={editingDraftItem}
+        availablePositions={positions}
         onSaveDraftItem={async (savedItem) => {
           await upsertDraftItem(savedItem);
           await refreshDraft();

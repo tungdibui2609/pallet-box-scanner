@@ -11,6 +11,7 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { JournalRecord } from '../../services/operationsService';
 
 interface Props {
@@ -21,6 +22,7 @@ interface Props {
 }
 
 export default function EditJournalModal({ visible, record, onClose, onSubmit }: Props) {
+  const insets = useSafeAreaInsets();
   const [quantity, setQuantity] = useState('');
   const [unit, setUnit] = useState('Thùng (20kg)');
   const [type, setType] = useState<'in' | 'out'>('in');
@@ -78,7 +80,7 @@ export default function EditJournalModal({ visible, record, onClose, onSubmit }:
       <TouchableWithoutFeedback onPress={onClose}>
         <View style={styles.overlay}>
           <TouchableWithoutFeedback>
-            <View style={styles.sheetContainer}>
+            <View style={[styles.sheetContainer, { paddingBottom: Math.max(insets.bottom, 16) + 8 }]}>
               <View style={styles.handle} />
 
               <View style={styles.header}>
