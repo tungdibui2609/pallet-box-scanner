@@ -19,6 +19,14 @@ const LOCAL_AUTO_DELETE_DAYS_KEY = 'solieu_local_auto_delete_days';
 
 export type OperationImageScope = 'journal' | 'sub_shift' | 'shift';
 
+export function parseRefPhase(notes?: string | null): 'start' | 'end' | 'legacy' | null {
+  const m = notes?.match(/^\[THAM_CHIEU:([^\]:]+)(?::(start|end))?\]/);
+  if (!m) return null;
+  if (m[2] === 'start') return 'start';
+  if (m[2] === 'end') return 'end';
+  return 'legacy';
+}
+
 export interface LocalPickedImage {
   localId: string;
   uri: string;

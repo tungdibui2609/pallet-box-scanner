@@ -63,6 +63,11 @@ export default function WarehouseAlbumModal({ visible, systemCode, companyId, on
   const [expandedJobNames, setExpandedJobNames] = useState<Record<string, boolean>>({});
   const [expandedRefAlbums, setExpandedRefAlbums] = useState<Record<string, boolean>>({});
   const [selectedImage, setSelectedImage] = useState<OperationImageRecord | null>(null);
+  const [viewerScopeList, setViewerScopeList] = useState<OperationImageRecord[] | null>(null);
+  const openViewer = (img: OperationImageRecord, list: OperationImageRecord[]) => {
+    setViewerScopeList(list);
+    setSelectedImage(img);
+  };
   const [warehouseProducts, setWarehouseProducts] = useState<any[]>([]);
   const [skuToNameMap, setSkuToNameMap] = useState<Record<string, string>>({});
   const [nameToSkuMap, setNameToSkuMap] = useState<Record<string, string>>({});
@@ -627,7 +632,7 @@ export default function WarehouseAlbumModal({ visible, systemCode, companyId, on
                       <TouchableOpacity
                         key={item.id}
                         style={styles.gridItem}
-                        onPress={() => setSelectedImage(item)}
+                        onPress={() => openViewer(item, list)}
                         activeOpacity={0.85}
                       >
                         <Image source={{ uri: getOperationImageDisplayUrl(item) }} style={styles.gridImage} />
@@ -956,21 +961,75 @@ export default function WarehouseAlbumModal({ visible, systemCode, companyId, on
           animationType="fade"
           onRequestClose={() => setSelectedImage(null)}
         >
-          {selectedImage && (
+          {selectedImage && (() => {
+            const navList = viewerScopeList && viewerScopeList.length > 0 ? viewerScopeList : filteredImages;
+            const curIdx = navList.findIndex(x => x.id === selectedImage.id);
+            const hasPrev = curIdx > 0;
+            const hasNext = curIdx >= 0 && curIdx < navList.length - 1;
+            return (
             <View style={styles.viewerOverlay}>
-              <View style={styles.viewerHeader}>
-                <TouchableOpacity onPress={() => handleDelete(selectedImage)} style={styles.viewerDeleteBtn}>
-                  <Ionicons name="trash-outline" size={20} color="#fda4af" />
-                </TouchableOpacity>
-                <TouchableOpacity onPress={() => setSelectedImage(null)} style={styles.viewerCloseBtn}>
-                  <Ionicons name="close" size={24} color="#fff" />
-                </TouchableOpacity>
+              <View style={[styles.viewerHeader, { justifyContent: 'space-between', alignItems: 'center', width: '100%' }]}>
+                <View style={{ paddingHorizontal: 12, paddingVertical: 6, borderRadius: 16, backgroundColor: 'rgba(30,41,59,0.85)' }}>
+                  <Text style={{ color: '#fff', fontSize: 12, fontWeight: '800' }}>
+                    {curIdx >= 0 ? `${curIdx + 1} / ${navList.length}` : '1 / 1'}
+                  </Text>
+                </View>
+                <View style={{ flexDirection: 'row', gap: 10 }}>
+                  <TouchableOpacity onPress={() => handleDelete(selectedImage)} style={styles.viewerDeleteBtn}>
+                    <Ionicons name="trash-outline" size={20} color="#fda4af" />
+                  </TouchableOpacity>
+                  <TouchableOpacity onPress={() => setSelectedImage(null)} style={styles.viewerCloseBtn}>
+                    <Ionicons name="close" size={24} color="#fff" />
+                  </TouchableOpacity>
+                </View>
               </View>
-              <Image
-                source={{ uri: getOperationImageDisplayUrl(selectedImage) }}
-                style={styles.viewerImage}
-                resizeMode="contain"
-              />
+              <View style={{ flex: 1, width: '100%', justifyContent: 'center', alignItems: 'center', position: 'relative' }}>
+                {hasPrev && (
+                  <TouchableOpacity
+                    onPress={() => setSelectedImage(navList[curIdx - 1])}
+                    style={{
+                      position: 'absolute',
+                      left: 6,
+                      zIndex: 10,
+                      width: 44,
+                      height: 44,
+                      borderRadius: 22,
+                      backgroundColor: 'rgba(15,23,42,0.8)',
+                      borderWidth: 1,
+                      borderColor: 'rgba(255,255,255,0.25)',
+                      justifyContent: 'center',
+                      alignItems: 'center',
+                    }}
+                  >
+                    <Ionicons name="chevron-back" size={26} color="#fff" />
+                  </TouchableOpacity>
+                )}
+                <Image
+                  source={{ uri: getOperationImageDisplayUrl(selectedImage) }}
+                  style={styles.viewerImage}
+                  resizeMode="contain"
+                />
+                {hasNext && (
+                  <TouchableOpacity
+                    onPress={() => setSelectedImage(navList[curIdx + 1])}
+                    style={{
+                      position: 'absolute',
+                      right: 6,
+                      zIndex: 10,
+                      width: 44,
+                      height: 44,
+                      borderRadius: 22,
+                      backgroundColor: 'rgba(15,23,42,0.8)',
+                      borderWidth: 1,
+                      borderColor: 'rgba(255,255,255,0.25)',
+                      justifyContent: 'center',
+                      alignItems: 'center',
+                    }}
+                  >
+                    <Ionicons name="chevron-forward" size={26} color="#fff" />
+                  </TouchableOpacity>
+                )}
+              </View>
               <View style={styles.viewerMeta}>
                 <Text style={styles.viewerTitle}>
                   {selectedImage.item_name
@@ -986,7 +1045,8 @@ export default function WarehouseAlbumModal({ visible, systemCode, companyId, on
                 </Text>
               </View>
             </View>
-          )}
+            );
+          })()}
         </Modal>
       </View>
     </Modal>

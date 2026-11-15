@@ -8,6 +8,7 @@ import {
   ScrollView,
   ActivityIndicator,
   Alert,
+  Image,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -19,7 +20,11 @@ import {
   deleteShift,
 } from '../../services/operationsService';
 import OperationImagesModal, { JournalImageTarget } from './OperationImagesModal';
-import { getShiftOperationImages } from '../../services/operationImagesService';
+import {
+  getShiftOperationImages,
+  getOperationImageDisplayUrl,
+  OperationImageRecord,
+} from '../../services/operationImagesService';
 
 interface Props {
   visible: boolean;
@@ -121,16 +126,43 @@ export default function PastShiftDetailModal({
   const [isImagesVisible, setIsImagesVisible] = useState(false);
   const [journalTarget, setJournalTarget] = useState<JournalImageTarget | null>(null);
   const [imageCount, setImageCount] = useState(0);
+  const [shiftImages, setShiftImages] = useState<OperationImageRecord[]>([]);
+  const [previewContext, setPreviewContext] = useState<{
+    uris: string[];
+    items?: { uri: string; direction?: 'in' | 'out' | null }[];
+    index: number;
+    title?: string;
+    showDirectionFilter?: boolean;
+    directionFilter?: 'all' | 'in' | 'out';
+  } | null>(null);
+
+  const getProductImages = (productName: string) => {
+    const target = (productName || '').trim().toLowerCase();
+    if (!target) return [];
+    const matchingJournalIds = new Set(
+      (journals || [])
+        .filter(j => (j.item_name || '').trim().toLowerCase() === target)
+        .map(j => j.id)
+    );
+    return shiftImages.filter(img => {
+      const imgItem = (img.item_name || '').trim().toLowerCase();
+      return imgItem === target || (img.journal_id && matchingJournalIds.has(img.journal_id));
+    });
+  };
 
   useEffect(() => {
     if (visible && shift?.id) {
       getShiftOperationImages(shift.id)
-        .then((list) => setImageCount(list.length))
+        .then((list) => {
+          setShiftImages(list);
+          setImageCount(list.length);
+        })
         .catch(() => {});
       return;
     }
     const timer = setTimeout(() => {
       setImageCount(0);
+      setShiftImages([]);
     }, 0);
     return () => clearTimeout(timer);
   }, [visible, shift?.id]);
@@ -405,20 +437,60 @@ export default function PastShiftDetailModal({
                             <Text style={[styles.summaryTh, { flex: 1, textAlign: 'right', color: '#4ade80' }]}>Nhập (+)</Text>
                             <Text style={[styles.summaryTh, { flex: 1, textAlign: 'right', color: '#f87171' }]}>Xuất (-)</Text>
                           </View>
-                          {productSummaryList.map(row => (
+                          {productSummaryList.map(row => {
+                            const prodItems = getProductImages(row.name)
+                              .map(img => ({
+                                uri: getOperationImageDisplayUrl(img),
+                                direction: (img.direction === 'in' || img.direction === 'out' ? img.direction : null) as 'in' | 'out' | null,
+                              }))
+                              .filter(x => Boolean(x.uri));
+                            return (
                             <View key={`${row.name}_${row.unit}`} style={styles.summaryTableRow}>
-                              <View style={{ flex: 3 }}>
+                              <View style={{ flex: 3, paddingRight: 4 }}>
                                 <Text style={[styles.summaryTd, { fontWeight: '700', color: '#f8fafc' }]} numberOfLines={2}>
                                   {row.name}
                                 </Text>
-                                <Text style={{ fontSize: 10, color: '#a5b4fc', fontWeight: '800' }}>
-                                  {row.unit}
-                                </Text>
+                                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 2 }}>
+                                  <Text style={{ fontSize: 10, color: '#a5b4fc', fontWeight: '800' }}>
+                                    {row.unit}
+                                  </Text>
+                                  {prodItems.length > 0 && (
+                                    <TouchableOpacity
+                                      onPress={() =>
+                                        setPreviewContext({
+                                          uris: prodItems.map(x => x.uri),
+                                          items: prodItems,
+                                          index: 0,
+                                          title: row.name,
+                                          showDirectionFilter: true,
+                                          directionFilter: 'all',
+                                        })
+                                      }
+                                      style={{
+                                        flexDirection: 'row',
+                                        alignItems: 'center',
+                                        gap: 3,
+                                        paddingHorizontal: 6,
+                                        paddingVertical: 2,
+                                        borderRadius: 6,
+                                        backgroundColor: 'rgba(56, 189, 248, 0.16)',
+                                        borderWidth: 1,
+                                        borderColor: 'rgba(56, 189, 248, 0.35)',
+                                      }}
+                                    >
+                                      <Ionicons name="camera-outline" size={11} color="#38bdf8" />
+                                      <Text style={{ fontSize: 10, color: '#38bdf8', fontWeight: '800' }}>
+                                        {prodItems.length} ảnh
+                                      </Text>
+                                    </TouchableOpacity>
+                                  )}
+                                </View>
                               </View>
                               <Text style={[styles.summaryTd, { flex: 1, textAlign: 'right', color: '#4ade80', fontWeight: '800' }]}>+{row.inQty}</Text>
                               <Text style={[styles.summaryTd, { flex: 1, textAlign: 'right', color: '#f87171', fontWeight: '800' }]}>-{row.outQty}</Text>
                             </View>
-                          ))}
+                            );
+                          })}
                         </View>
                       )}
                     </View>
@@ -611,6 +683,50 @@ export default function PastShiftDetailModal({
                             {formatDateTime(record.sent_at)} • {record.sent_by_name || 'Nhân viên'}
                             {userNote ? ` • 💬 ${userNote}` : ''}
                           </Text>
+
+                          {(() => {
+                            const rowUris = shiftImages
+                              .filter(img => img.journal_id === record.id)
+                              .map(img => getOperationImageDisplayUrl(img))
+                              .filter(Boolean);
+                            if (rowUris.length === 0) return null;
+                            return (
+                              <ScrollView
+                                horizontal
+                                showsHorizontalScrollIndicator={false}
+                                style={{ marginTop: 8 }}
+                                contentContainerStyle={{ gap: 6 }}
+                              >
+                                {rowUris.map((uri, imgIdx) => (
+                                  <TouchableOpacity
+                                    key={imgIdx}
+                                    onPress={() =>
+                                      setPreviewContext({
+                                        uris: rowUris,
+                                        index: imgIdx,
+                                        title: record.item_name,
+                                      })
+                                    }
+                                    style={{
+                                      width: 54,
+                                      height: 54,
+                                      borderRadius: 8,
+                                      overflow: 'hidden',
+                                      borderWidth: 1,
+                                      borderColor: '#334155',
+                                      backgroundColor: '#0f172a',
+                                    }}
+                                  >
+                                    <Image
+                                      source={{ uri }}
+                                      style={{ width: '100%', height: '100%' }}
+                                      resizeMode="cover"
+                                    />
+                                  </TouchableOpacity>
+                                ))}
+                              </ScrollView>
+                            );
+                          })()}
                         </View>
                       </View>
                     );
@@ -651,8 +767,224 @@ export default function PastShiftDetailModal({
           setIsImagesVisible(false);
           setJournalTarget(null);
         }}
-        onChanged={(count) => setImageCount(count)}
+        onChanged={(count) => {
+          setImageCount(count);
+          if (shift?.id) {
+            getShiftOperationImages(shift.id)
+              .then(setShiftImages)
+              .catch(() => {});
+          }
+        }}
       />
+
+      <Modal
+        visible={!!previewContext}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setPreviewContext(null)}
+      >
+        {previewContext && (() => {
+          const { uris, items, index: rawIdx, title, showDirectionFilter, directionFilter = 'all' } = previewContext;
+          const allItems = items || uris.map(uri => ({ uri, direction: null as 'in' | 'out' | null }));
+          const inCount = allItems.filter(x => x.direction === 'in').length;
+          const outCount = allItems.filter(x => x.direction === 'out').length;
+          const navItems =
+            directionFilter === 'in'
+              ? allItems.filter(x => x.direction === 'in')
+              : directionFilter === 'out'
+                ? allItems.filter(x => x.direction === 'out')
+                : allItems;
+          const curIdx = Math.min(rawIdx, Math.max(0, navItems.length - 1));
+          const curItem = navItems[curIdx];
+          const curUri = curItem?.uri;
+          const hasPrev = curIdx > 0;
+          const hasNext = curIdx < navItems.length - 1;
+          return (
+            <View
+              style={{
+                flex: 1,
+                backgroundColor: 'rgba(0,0,0,0.94)',
+                justifyContent: 'center',
+                alignItems: 'center',
+                padding: 16,
+              }}
+            >
+              <View
+                style={{
+                  position: 'absolute',
+                  top: Math.max(insets.top, 20) + 14,
+                  left: 16,
+                  right: 64,
+                  zIndex: 10,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  flexWrap: 'wrap',
+                  gap: 6,
+                }}
+              >
+                <View
+                  style={{
+                    paddingHorizontal: 12,
+                    paddingVertical: 6,
+                    borderRadius: 16,
+                    backgroundColor: 'rgba(30,41,59,0.85)',
+                  }}
+                >
+                  <Text style={{ color: '#fff', fontSize: 12, fontWeight: '800' }}>
+                    {navItems.length > 0 ? `${curIdx + 1} / ${navItems.length}` : '0 / 0'}
+                  </Text>
+                </View>
+                {curItem?.direction === 'in' && (
+                  <View style={{ paddingHorizontal: 8, paddingVertical: 4, borderRadius: 10, backgroundColor: '#10b981' }}>
+                    <Text style={{ color: '#fff', fontSize: 10, fontWeight: '800' }}>NHẬP</Text>
+                  </View>
+                )}
+                {curItem?.direction === 'out' && (
+                  <View style={{ paddingHorizontal: 8, paddingVertical: 4, borderRadius: 10, backgroundColor: '#f43f5e' }}>
+                    <Text style={{ color: '#fff', fontSize: 10, fontWeight: '800' }}>XUẤT</Text>
+                  </View>
+                )}
+                {!!title && (
+                  <Text style={{ color: '#e2e8f0', fontSize: 12, fontWeight: '700', maxWidth: 160 }} numberOfLines={1}>
+                    {title}
+                  </Text>
+                )}
+              </View>
+
+              <TouchableOpacity
+                onPress={() => setPreviewContext(null)}
+                style={{
+                  position: 'absolute',
+                  top: Math.max(insets.top, 20) + 10,
+                  right: 16,
+                  zIndex: 10,
+                  width: 40,
+                  height: 40,
+                  borderRadius: 20,
+                  backgroundColor: 'rgba(30,41,59,0.85)',
+                  justifyContent: 'center',
+                  alignItems: 'center',
+                }}
+              >
+                <Ionicons name="close" size={24} color="#fff" />
+              </TouchableOpacity>
+
+              {showDirectionFilter && (
+                <View
+                  style={{
+                    position: 'absolute',
+                    top: Math.max(insets.top, 20) + 60,
+                    zIndex: 10,
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: 6,
+                    padding: 4,
+                    borderRadius: 20,
+                    backgroundColor: 'rgba(15,23,42,0.9)',
+                    borderWidth: 1,
+                    borderColor: 'rgba(148,163,184,0.25)',
+                  }}
+                >
+                  {[
+                    { key: 'all', label: `Tất cả (${allItems.length})` },
+                    { key: 'in', label: `Nhập (${inCount})` },
+                    { key: 'out', label: `Xuất (${outCount})` },
+                  ].map(tab => {
+                    const active = directionFilter === tab.key;
+                    const bgColor = active
+                      ? tab.key === 'in'
+                        ? '#10b981'
+                        : tab.key === 'out'
+                          ? '#f43f5e'
+                          : '#0284c7'
+                      : 'transparent';
+                    return (
+                      <TouchableOpacity
+                        key={tab.key}
+                        onPress={() =>
+                          setPreviewContext(prev =>
+                            prev ? { ...prev, directionFilter: tab.key as any, index: 0 } : null
+                          )
+                        }
+                        style={{
+                          paddingHorizontal: 12,
+                          paddingVertical: 5,
+                          borderRadius: 16,
+                          backgroundColor: bgColor,
+                        }}
+                      >
+                        <Text style={{ color: active ? '#fff' : '#cbd5e1', fontSize: 12, fontWeight: '800' }}>
+                          {tab.label}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              )}
+
+              {hasPrev && (
+                <TouchableOpacity
+                  onPress={() => setPreviewContext(prev => (prev ? { ...prev, index: Math.max(0, curIdx - 1) } : null))}
+                  style={{
+                    position: 'absolute',
+                    left: 12,
+                    top: '50%',
+                    marginTop: -22,
+                    zIndex: 10,
+                    width: 44,
+                    height: 44,
+                    borderRadius: 22,
+                    backgroundColor: 'rgba(15,23,42,0.8)',
+                    borderWidth: 1,
+                    borderColor: 'rgba(255,255,255,0.25)',
+                    justifyContent: 'center',
+                    alignItems: 'center',
+                  }}
+                >
+                  <Ionicons name="chevron-back" size={26} color="#fff" />
+                </TouchableOpacity>
+              )}
+
+              {curUri ? (
+                <Image
+                  source={{ uri: curUri }}
+                  style={{ width: '100%', height: '74%', marginTop: showDirectionFilter ? 36 : 0 }}
+                  resizeMode="contain"
+                />
+              ) : (
+                <View style={{ paddingHorizontal: 20, paddingVertical: 16, borderRadius: 12, backgroundColor: 'rgba(30,41,59,0.85)' }}>
+                  <Text style={{ color: '#cbd5e1', fontSize: 13, fontWeight: '700' }}>
+                    Không có ảnh {directionFilter === 'in' ? 'Nhập' : 'Xuất'} nào cho sản phẩm này.
+                  </Text>
+                </View>
+              )}
+
+              {hasNext && (
+                <TouchableOpacity
+                  onPress={() => setPreviewContext(prev => (prev ? { ...prev, index: curIdx + 1 } : null))}
+                  style={{
+                    position: 'absolute',
+                    right: 12,
+                    top: '50%',
+                    marginTop: -22,
+                    zIndex: 10,
+                    width: 44,
+                    height: 44,
+                    borderRadius: 22,
+                    backgroundColor: 'rgba(15,23,42,0.8)',
+                    borderWidth: 1,
+                    borderColor: 'rgba(255,255,255,0.25)',
+                    justifyContent: 'center',
+                    alignItems: 'center',
+                  }}
+                >
+                  <Ionicons name="chevron-forward" size={26} color="#fff" />
+                </TouchableOpacity>
+              )}
+            </View>
+          );
+        })()}
+      </Modal>
     </Modal>
   );
 }

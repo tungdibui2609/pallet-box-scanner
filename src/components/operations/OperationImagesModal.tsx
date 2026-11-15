@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   View,
   Text,
@@ -28,6 +28,7 @@ import {
   cleanupExpiredLocalOriginals,
   getLocalAutoDeleteDays,
   setLocalAutoDeleteDays,
+  parseRefPhase,
 } from '../../services/operationImagesService';
 import {
   getWatermarkEnabled,
@@ -70,7 +71,7 @@ export default function OperationImagesModal({ visible, shift, user, journalTarg
   const [images, setImages] = useState<OperationImageRecord[]>([]);
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
-  const [filter, setFilter] = useState<'all' | 'in' | 'out' | 'shift'>('all');
+  const [filter, setFilter] = useState<'all' | 'journal' | 'ref' | 'in' | 'out' | 'shift'>('all');
   const [selectedImage, setSelectedImage] = useState<OperationImageRecord | null>(null);
 
   // Folders & Google Drive
@@ -89,18 +90,23 @@ export default function OperationImagesModal({ visible, shift, user, journalTarg
   const [savingDrive, setSavingDrive] = useState(false);
   const [localAutoDeleteDays, setLocalAutoDeleteDaysState] = useState<number | null>(null);
   const [watermarkEnabled, setWatermarkEnabledState] = useState<boolean>(true);
+  const onChangedRef = useRef(onChanged);
+  onChangedRef.current = onChanged;
+  const shiftId = shift?.id || null;
+  const shiftSystemCode = shift?.system_code || '';
+  const shiftCompanyId = shift?.company_id || null;
 
   const loadData = useCallback(async () => {
-    if (!shift) return;
+    if (!shiftId) return;
     setLoading(true);
     try {
       await syncOperationsOfflineQueue().catch(() => {});
       await syncOfflineOperationImages().catch(() => {});
       const [list, folderList, cfg, localDays, wmEnabled] = await Promise.all([
-        getShiftOperationImages(shift.id),
-        listOperationFolders(shift.system_code, shift.company_id || user?.company_id || null).catch(() => []),
-        getDriveSettings(shift.system_code).catch(() => ({
-          system_code: shift.system_code,
+        getShiftOperationImages(shiftId),
+        listOperationFolders(shiftSystemCode, shiftCompanyId || user?.company_id || null).catch(() => []),
+        getDriveSettings(shiftSystemCode).catch(() => ({
+          system_code: shiftSystemCode,
           webhook_url: '',
           root_folder_name: 'WMS_HinhAnh_Kho',
           auto_sync_enabled: false,
@@ -114,20 +120,20 @@ export default function OperationImagesModal({ visible, shift, user, journalTarg
       setDriveSettings(cfg);
       setLocalAutoDeleteDaysState(localDays);
       setWatermarkEnabledState(wmEnabled);
-      onChanged?.(list.length);
-      cleanupExpiredLocalOriginals(shift.system_code, localDays).catch(() => {});
+      onChangedRef.current?.(list.length);
+      cleanupExpiredLocalOriginals(shiftSystemCode, localDays).catch(() => {});
     } finally {
       setLoading(false);
     }
-  }, [shift, user?.company_id, onChanged]);
+  }, [shiftId, shiftSystemCode, shiftCompanyId, user?.company_id]);
 
   useEffect(() => {
-    if (!visible || !shift) return;
+    if (!visible || !shiftId) return;
     const timer = setTimeout(() => {
       void loadData();
     }, 0);
     return () => clearTimeout(timer);
-  }, [visible, shift, loadData]);
+  }, [visible, shiftId, loadData]);
 
   const childFolders = useMemo(
     () => folders.filter((f) => (f.parent_id || null) === selectedFolderId),
@@ -139,16 +145,27 @@ export default function OperationImagesModal({ visible, shift, user, journalTarg
     [folders, selectedFolderId]
   );
 
-  const filteredImages = useMemo(() => {
+  const baseImages = useMemo(() => {
     return images.filter((img) => {
       if (journalTarget && img.journal_id !== journalTarget.id) return false;
       if (selectedFolderId && img.folder_id !== selectedFolderId) return false;
-      if (filter === 'all') return true;
-      if (filter === 'in') return img.direction === 'in';
-      if (filter === 'out') return img.direction === 'out';
-      return img.scope === 'shift' || img.scope === 'sub_shift';
+      return true;
     });
-  }, [images, journalTarget, selectedFolderId, filter]);
+  }, [images, journalTarget, selectedFolderId]);
+
+  const filteredImages = useMemo(() => {
+    return baseImages.filter((img) => {
+      const refPhase = parseRefPhase(img.notes);
+      if (filter === 'all') return true;
+      if (filter === 'ref') return refPhase !== null;
+      if (filter === 'journal') {
+        return !refPhase && (img.scope === 'journal' || img.direction === 'in' || img.direction === 'out');
+      }
+      if (filter === 'in') return !refPhase && img.direction === 'in';
+      if (filter === 'out') return !refPhase && img.direction === 'out';
+      return !refPhase && img.scope !== 'journal' && !img.direction && (img.scope === 'shift' || img.scope === 'sub_shift');
+    });
+  }, [baseImages, filter]);
 
   const unsyncedImages = useMemo(
     () => filteredImages.filter((img) => !img.is_offline && !img.drive_file_id),
@@ -446,19 +463,34 @@ export default function OperationImagesModal({ visible, shift, user, journalTarg
           </View>
         )}
 
-        <View style={styles.filterRow}>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          style={{ flexGrow: 0 }}
+          contentContainerStyle={styles.filterRow}
+        >
           {[
-            { key: 'all', label: `Tất cả (${filteredImages.length})` },
+            { key: 'all', label: `Tất cả (${baseImages.length})` },
+            { key: 'journal', label: 'Số liệu N/X' },
+            { key: 'ref', label: 'Tham chiếu' },
             { key: 'in', label: 'Nhập' },
             { key: 'out', label: 'Xuất' },
             { key: 'shift', label: 'Chung CV/Đợt' },
           ].map((f) => {
             const active = filter === f.key;
+            const activeStyle =
+              active && f.key === 'ref'
+                ? { backgroundColor: '#d97706', borderColor: '#fbbf24' }
+                : active && f.key === 'journal'
+                  ? { backgroundColor: '#059669', borderColor: '#34d399' }
+                  : active
+                    ? styles.filterChipActive
+                    : null;
             return (
               <TouchableOpacity
                 key={f.key}
                 onPress={() => setFilter(f.key as any)}
-                style={[styles.filterChip, active && styles.filterChipActive]}
+                style={[styles.filterChip, activeStyle]}
               >
                 <Text style={[styles.filterText, active && styles.filterTextActive]}>
                   {f.label}
@@ -466,7 +498,7 @@ export default function OperationImagesModal({ visible, shift, user, journalTarg
               </TouchableOpacity>
             );
           })}
-        </View>
+        </ScrollView>
 
         {loading ? (
           <View style={styles.centerBox}>
@@ -485,7 +517,9 @@ export default function OperationImagesModal({ visible, shift, user, journalTarg
             numColumns={3}
             contentContainerStyle={styles.gridContent}
             columnWrapperStyle={{ gap: 8 }}
-            renderItem={({ item }) => (
+            renderItem={({ item }) => {
+              const refPhase = parseRefPhase(item.notes);
+              return (
               <TouchableOpacity
                 style={styles.gridItem}
                 onPress={() => setSelectedImage(item)}
@@ -493,20 +527,30 @@ export default function OperationImagesModal({ visible, shift, user, journalTarg
               >
                 <Image source={{ uri: getOperationImageDisplayUrl(item) }} style={styles.gridImage} />
                 <View style={styles.gridBadgeRow}>
-                  {item.direction === 'in' && (
-                    <View style={[styles.badge, { backgroundColor: '#10b981' }]}>
-                      <Text style={styles.badgeText}>NHẬP</Text>
+                  {refPhase ? (
+                    <View style={[styles.badge, { backgroundColor: '#d97706' }]}>
+                      <Text style={styles.badgeText}>
+                        {refPhase === 'start' ? 'TC ĐẦU' : refPhase === 'end' ? 'TC CUỐI' : 'THAM CHIẾU'}
+                      </Text>
                     </View>
-                  )}
-                  {item.direction === 'out' && (
-                    <View style={[styles.badge, { backgroundColor: '#f43f5e' }]}>
-                      <Text style={styles.badgeText}>XUẤT</Text>
-                    </View>
-                  )}
-                  {item.scope !== 'journal' && (
-                    <View style={[styles.badge, { backgroundColor: '#6366f1' }]}>
-                      <Text style={styles.badgeText}>{item.scope === 'sub_shift' ? 'ĐỢT' : 'CV'}</Text>
-                    </View>
+                  ) : (
+                    <>
+                      {item.direction === 'in' && (
+                        <View style={[styles.badge, { backgroundColor: '#10b981' }]}>
+                          <Text style={styles.badgeText}>NHẬP</Text>
+                        </View>
+                      )}
+                      {item.direction === 'out' && (
+                        <View style={[styles.badge, { backgroundColor: '#f43f5e' }]}>
+                          <Text style={styles.badgeText}>XUẤT</Text>
+                        </View>
+                      )}
+                      {item.scope !== 'journal' && (
+                        <View style={[styles.badge, { backgroundColor: '#6366f1' }]}>
+                          <Text style={styles.badgeText}>{item.scope === 'sub_shift' ? 'ĐỢT' : 'CV'}</Text>
+                        </View>
+                      )}
+                    </>
                   )}
                 </View>
                 {item.drive_file_id ? (
@@ -519,7 +563,8 @@ export default function OperationImagesModal({ visible, shift, user, journalTarg
                   </View>
                 ) : null}
               </TouchableOpacity>
-            )}
+              );
+            }}
           />
         )}
 
@@ -530,31 +575,85 @@ export default function OperationImagesModal({ visible, shift, user, journalTarg
           animationType="fade"
           onRequestClose={() => setSelectedImage(null)}
         >
-          {selectedImage && (
+          {selectedImage && (() => {
+            const navList = filteredImages;
+            const curIdx = navList.findIndex(x => x.id === selectedImage.id);
+            const hasPrev = curIdx > 0;
+            const hasNext = curIdx >= 0 && curIdx < navList.length - 1;
+            return (
             <View style={styles.viewerOverlay}>
-              <View style={styles.viewerHeader}>
-                {!selectedImage.drive_file_id && !selectedImage.is_offline && (
+              <View style={[styles.viewerHeader, { justifyContent: 'space-between', alignItems: 'center', width: '100%' }]}>
+                <View style={{ paddingHorizontal: 12, paddingVertical: 6, borderRadius: 16, backgroundColor: 'rgba(30,41,59,0.85)' }}>
+                  <Text style={{ color: '#fff', fontSize: 12, fontWeight: '800' }}>
+                    {curIdx >= 0 ? `${curIdx + 1} / ${navList.length}` : '1 / 1'}
+                  </Text>
+                </View>
+                <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
+                  {!selectedImage.drive_file_id && !selectedImage.is_offline && (
+                    <TouchableOpacity
+                      onPress={() => handleSyncDrive([selectedImage])}
+                      disabled={syncingDrive}
+                      style={styles.viewerDriveBtn}
+                    >
+                      <Ionicons name="cloud-upload-outline" size={18} color="#34d399" />
+                      <Text style={{ color: '#34d399', fontSize: 12, fontWeight: '700' }}>Đẩy Drive</Text>
+                    </TouchableOpacity>
+                  )}
+                  <TouchableOpacity onPress={() => handleDelete(selectedImage)} style={styles.viewerDeleteBtn}>
+                    <Ionicons name="trash-outline" size={20} color="#fda4af" />
+                  </TouchableOpacity>
+                  <TouchableOpacity onPress={() => setSelectedImage(null)} style={styles.viewerCloseBtn}>
+                    <Ionicons name="close" size={24} color="#fff" />
+                  </TouchableOpacity>
+                </View>
+              </View>
+              <View style={{ flex: 1, width: '100%', justifyContent: 'center', alignItems: 'center', position: 'relative' }}>
+                {hasPrev && (
                   <TouchableOpacity
-                    onPress={() => handleSyncDrive([selectedImage])}
-                    disabled={syncingDrive}
-                    style={styles.viewerDriveBtn}
+                    onPress={() => setSelectedImage(navList[curIdx - 1])}
+                    style={{
+                      position: 'absolute',
+                      left: 6,
+                      zIndex: 10,
+                      width: 44,
+                      height: 44,
+                      borderRadius: 22,
+                      backgroundColor: 'rgba(15,23,42,0.8)',
+                      borderWidth: 1,
+                      borderColor: 'rgba(255,255,255,0.25)',
+                      justifyContent: 'center',
+                      alignItems: 'center',
+                    }}
                   >
-                    <Ionicons name="cloud-upload-outline" size={18} color="#34d399" />
-                    <Text style={{ color: '#34d399', fontSize: 12, fontWeight: '700' }}>Đẩy Drive</Text>
+                    <Ionicons name="chevron-back" size={26} color="#fff" />
                   </TouchableOpacity>
                 )}
-                <TouchableOpacity onPress={() => handleDelete(selectedImage)} style={styles.viewerDeleteBtn}>
-                  <Ionicons name="trash-outline" size={20} color="#fda4af" />
-                </TouchableOpacity>
-                <TouchableOpacity onPress={() => setSelectedImage(null)} style={styles.viewerCloseBtn}>
-                  <Ionicons name="close" size={24} color="#fff" />
-                </TouchableOpacity>
+                <Image
+                  source={{ uri: getOperationImageDisplayUrl(selectedImage) }}
+                  style={styles.viewerImage}
+                  resizeMode="contain"
+                />
+                {hasNext && (
+                  <TouchableOpacity
+                    onPress={() => setSelectedImage(navList[curIdx + 1])}
+                    style={{
+                      position: 'absolute',
+                      right: 6,
+                      zIndex: 10,
+                      width: 44,
+                      height: 44,
+                      borderRadius: 22,
+                      backgroundColor: 'rgba(15,23,42,0.8)',
+                      borderWidth: 1,
+                      borderColor: 'rgba(255,255,255,0.25)',
+                      justifyContent: 'center',
+                      alignItems: 'center',
+                    }}
+                  >
+                    <Ionicons name="chevron-forward" size={26} color="#fff" />
+                  </TouchableOpacity>
+                )}
               </View>
-              <Image
-                source={{ uri: getOperationImageDisplayUrl(selectedImage) }}
-                style={styles.viewerImage}
-                resizeMode="contain"
-              />
               <View style={styles.viewerMeta}>
                 {selectedImage.item_name ? (
                   <Text style={styles.viewerTitle}>
@@ -575,7 +674,8 @@ export default function OperationImagesModal({ visible, shift, user, journalTarg
                 ) : null}
               </View>
             </View>
-          )}
+            );
+          })()}
         </Modal>
 
         {/* Modal Cài đặt Google Drive */}
