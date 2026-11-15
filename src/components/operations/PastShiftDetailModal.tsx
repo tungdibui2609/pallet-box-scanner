@@ -121,6 +121,50 @@ export default function PastShiftDetailModal({
   const [expandUnitSummary, setExpandUnitSummary] = useState(false);
   const [expandProductSummary, setExpandProductSummary] = useState(false);
   const [expandSubShiftsSummary, setExpandSubShiftsSummary] = useState(false);
+  const [expandedSubShiftIds, setExpandedSubShiftIds] = useState<Record<string, boolean>>({});
+
+  const toggleSubShiftItem = (id: string) => {
+    setExpandedSubShiftIds(prev => ({ ...prev, [id]: !prev[id] }));
+  };
+
+  const effectiveSubShifts = useMemo(() => {
+    if (!shift || !subShifts || subShifts.length === 0) return [];
+    const sortedSubs = [...subShifts].sort((a, b) => a.sub_shift_number - b.sub_shift_number);
+    const sortedJournals = [...(journals || [])].sort((a, b) => (a.sent_at || '').localeCompare(b.sent_at || ''));
+    const result = sortedSubs.map((ss, idx) => {
+      const prevToTime = idx > 0 ? sortedSubs[idx - 1].to_time : ss.from_time;
+      const subLines = sortedJournals.filter(l =>
+        idx === 0
+          ? l.sent_at >= ss.from_time && l.sent_at <= ss.to_time
+          : l.sent_at > prevToTime && l.sent_at <= ss.to_time
+      );
+      return { ...ss, _subLines: subLines, is_auto_final: false };
+    });
+
+    const lastSS = sortedSubs[sortedSubs.length - 1];
+    const remainingLines = sortedJournals.filter(l => l.sent_at > lastSS.to_time);
+    if (remainingLines.length > 0) {
+      const lastLine = remainingLines[remainingLines.length - 1];
+      result.push({
+        id: `auto_final_${shift.id}`,
+        shift_id: shift.id,
+        sub_shift_number: sortedSubs.length + 1,
+        from_time: lastSS.to_time,
+        to_time: shift.closed_at || lastLine.sent_at,
+        closed_by_name: shift.closed_by_name || lastLine.sent_by_name || 'Nhân viên',
+        notes:
+          shift.status === 'closed'
+            ? 'Đợt cuối ca (tự động tính khi bấm Hoàn thành CV)'
+            : 'Đợt đang nhập (chưa bấm Chốt tạm)',
+        summary_data: {
+          total_records: remainingLines.length,
+        },
+        _subLines: remainingLines,
+        is_auto_final: true,
+      } as any);
+    }
+    return result;
+  }, [shift, subShifts, journals]);
 
   const [actionLoading, setActionLoading] = useState(false);
   const [isImagesVisible, setIsImagesVisible] = useState(false);
@@ -147,6 +191,30 @@ export default function PastShiftDetailModal({
     return shiftImages.filter(img => {
       const imgItem = (img.item_name || '').trim().toLowerCase();
       return imgItem === target || (img.journal_id && matchingJournalIds.has(img.journal_id));
+    });
+  };
+
+  const getSubShiftProductImages = (
+    productName: string,
+    subLines: JournalRecord[],
+    fromTime: string,
+    toTime: string
+  ) => {
+    const target = (productName || '').trim().toLowerCase();
+    if (!target) return [];
+    const matchingSubIds = new Set(
+      (subLines || [])
+        .filter(l => (l.item_name || '').trim().toLowerCase() === target)
+        .map(l => l.id)
+    );
+    return shiftImages.filter(img => {
+      if (img.journal_id && subLines.length > 0) {
+        return matchingSubIds.has(img.journal_id);
+      }
+      const imgItem = (img.item_name || '').trim().toLowerCase();
+      if (imgItem !== target) return false;
+      const cap = img.captured_at || '';
+      return (!fromTime || cap >= fromTime) && (!toTime || cap <= toTime);
     });
   };
 
@@ -553,7 +621,7 @@ export default function PastShiftDetailModal({
                       <Ionicons name="time-outline" size={16} color="#f59e0b" />
                       <Text style={styles.accordionTitle}>3. Các Lần Chốt Ca Tạm</Text>
                       <View style={[styles.accordionBadge, { backgroundColor: 'rgba(245, 158, 11, 0.2)' }]}>
-                        <Text style={[styles.accordionBadgeText, { color: '#fbbf24' }]}>{subShifts.length} Đợt</Text>
+                        <Text style={[styles.accordionBadgeText, { color: '#fbbf24' }]}>{effectiveSubShifts.length} Đợt</Text>
                       </View>
                     </View>
                     <Ionicons
@@ -565,22 +633,189 @@ export default function PastShiftDetailModal({
 
                   {expandSubShiftsSummary && (
                     <View style={styles.accordionBody}>
-                      {subShifts.length === 0 ? (
+                      {effectiveSubShifts.length === 0 ? (
                         <Text style={styles.emptyText}>Công việc này không có đợt chốt ca tạm nào.</Text>
                       ) : (
-                        <View style={styles.subShiftSummaryBox}>
-                          {subShifts.map(ss => (
-                            <View key={ss.id} style={styles.subShiftSummaryRow}>
-                              <View style={{ flex: 1 }}>
-                                <Text style={styles.subShiftSummaryTitle}>
-                                  Đợt #{ss.sub_shift_number}: {ss.notes || 'Chốt tạm'}
-                                </Text>
-                                <Text style={styles.subShiftSummaryTime}>
-                                  {formatCompactRange(ss.from_time, ss.to_time)} • Bởi: {ss.closed_by_name || 'Nhân viên'}
-                                </Text>
+                        <View style={{ gap: 8 }}>
+                          {effectiveSubShifts.map((ss: any) => {
+                            const isSubExpanded = !!expandedSubShiftIds[ss.id];
+                            const subLines: JournalRecord[] = ss._subLines || [];
+                            const subProdsMap: Record<string, { name: string; unit: string; inQty: number; outQty: number; count: number }> = {};
+                            if (subLines.length > 0) {
+                              subLines.forEach(j => {
+                                const name = (j.item_name || '').trim() || 'Hàng hóa';
+                                const u = standardizeUnitLabel((j.unit || 'Thùng (20kg)').trim());
+                                const key = `${name}___${u}`;
+                                if (!subProdsMap[key]) subProdsMap[key] = { name, unit: u, inQty: 0, outQty: 0, count: 0 };
+                                const isImp = j.to_department === 'Kho' || (j.notes && j.notes.includes('Nhập kho'));
+                                const q = Number(j.quantity_sent || (j as any).result_quantity || 0);
+                                if (isImp) subProdsMap[key].inQty += q;
+                                else subProdsMap[key].outQty += q;
+                                subProdsMap[key].count += 1;
+                              });
+                            } else {
+                              Object.values(ss.summary_data?.products_summary || {}).forEach((p: any) => {
+                                const name = p.product_name || 'Hàng hóa';
+                                const u = standardizeUnitLabel((p.unit || 'Thùng').trim());
+                                const key = `${name}___${u}`;
+                                subProdsMap[key] = {
+                                  name,
+                                  unit: u,
+                                  inQty: Number(p.in_qty ?? p.received ?? 0),
+                                  outQty: Number(p.out_qty ?? p.sent ?? 0),
+                                  count: Number(p.count ?? (p.in_count || 0) + (p.out_count || 0)),
+                                };
+                              });
+                            }
+                            const subProds = Object.values(subProdsMap);
+                            const totalIn = subProds.reduce((s, p) => s + p.inQty, 0);
+                            const totalOut = subProds.reduce((s, p) => s + p.outQty, 0);
+                            const totalCount = subLines.length > 0 ? subLines.length : (ss.summary_data?.total_records ?? subProds.reduce((s, p) => s + p.count, 0));
+
+                            return (
+                              <View
+                                key={ss.id}
+                                style={{
+                                  borderRadius: 10,
+                                  backgroundColor: '#0f172a',
+                                  borderWidth: 1,
+                                  borderColor: '#334155',
+                                  overflow: 'hidden',
+                                }}
+                              >
+                                <TouchableOpacity
+                                  onPress={() => toggleSubShiftItem(ss.id)}
+                                  activeOpacity={0.75}
+                                  style={{ padding: 10, gap: 6 }}
+                                >
+                                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
+                                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1, flexWrap: 'wrap' }}>
+                                      <Text style={[styles.subShiftSummaryTitle, { color: '#fbbf24' }]}>
+                                        Lần chốt tạm #{ss.sub_shift_number}
+                                      </Text>
+                                      {ss.is_auto_final && (
+                                        <View style={{ paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6, backgroundColor: 'rgba(99,102,241,0.2)', borderWidth: 1, borderColor: 'rgba(99,102,241,0.4)' }}>
+                                          <Text style={{ fontSize: 10, color: '#a5b4fc', fontWeight: '700' }}>
+                                            {shift.status === 'closed' ? 'Đợt cuối ca' : 'Đợt đang nhập'}
+                                          </Text>
+                                        </View>
+                                      )}
+                                    </View>
+                                    <Ionicons
+                                      name={isSubExpanded ? 'chevron-up' : 'chevron-down'}
+                                      size={16}
+                                      color="#94a3b8"
+                                    />
+                                  </View>
+
+                                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 6 }}>
+                                    <Text style={styles.subShiftSummaryTime}>
+                                      {formatCompactRange(ss.from_time, ss.to_time)}
+                                    </Text>
+                                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8, backgroundColor: '#1e293b' }}>
+                                      <Text style={{ fontSize: 11, fontWeight: '800', color: '#4ade80' }}>+{totalIn}</Text>
+                                      <Text style={{ fontSize: 11, color: '#475569' }}>|</Text>
+                                      <Text style={{ fontSize: 11, fontWeight: '800', color: '#f87171' }}>-{totalOut}</Text>
+                                      <Text style={{ fontSize: 11, color: '#475569' }}>|</Text>
+                                      <Text style={{ fontSize: 11, fontWeight: '700', color: '#cbd5e1' }}>{totalCount} đợt</Text>
+                                    </View>
+                                  </View>
+                                </TouchableOpacity>
+
+                                {isSubExpanded && (
+                                  <View style={{ padding: 10, paddingTop: 6, borderTopWidth: 1, borderTopColor: '#1e293b', gap: 8 }}>
+                                    <Text style={{ fontSize: 10, fontWeight: '800', color: '#94a3b8', textTransform: 'uppercase' }}>
+                                      Hàng hóa giao nhận trong đợt #{ss.sub_shift_number}
+                                    </Text>
+                                    {subProds.length === 0 ? (
+                                      <Text style={styles.emptyText}>Không có phát sinh sản phẩm trong đợt này.</Text>
+                                    ) : (
+                                      <View style={{ borderRadius: 8, backgroundColor: '#1e293b', paddingHorizontal: 8 }}>
+                                        {subProds.map((p, pIdx) => {
+                                          const subProdItems = getSubShiftProductImages(p.name, subLines, ss.from_time, ss.to_time)
+                                            .map(img => ({
+                                              uri: getOperationImageDisplayUrl(img),
+                                              direction: (img.direction === 'in' || img.direction === 'out' ? img.direction : null) as 'in' | 'out' | null,
+                                            }))
+                                            .filter(x => Boolean(x.uri));
+                                          return (
+                                          <View
+                                            key={`${p.name}_${p.unit}_${pIdx}`}
+                                            style={{
+                                              flexDirection: 'row',
+                                              alignItems: 'center',
+                                              paddingVertical: 6,
+                                              borderBottomWidth: pIdx < subProds.length - 1 ? 1 : 0,
+                                              borderBottomColor: '#334155',
+                                            }}
+                                          >
+                                            <View style={{ flex: 3, paddingRight: 6 }}>
+                                              <Text style={{ fontSize: 12, fontWeight: '700', color: '#f8fafc' }} numberOfLines={2}>
+                                                {p.name}
+                                              </Text>
+                                              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 2 }}>
+                                                <Text style={{ fontSize: 10, color: '#a5b4fc', fontWeight: '700' }}>{p.unit}</Text>
+                                                {subProdItems.length > 0 && (
+                                                  <TouchableOpacity
+                                                    onPress={() =>
+                                                      setPreviewContext({
+                                                        uris: subProdItems.map(x => x.uri),
+                                                        items: subProdItems,
+                                                        index: 0,
+                                                        title: `${p.name} (Đợt #${ss.sub_shift_number})`,
+                                                        showDirectionFilter: true,
+                                                        directionFilter: 'all',
+                                                      })
+                                                    }
+                                                    style={{
+                                                      flexDirection: 'row',
+                                                      alignItems: 'center',
+                                                      gap: 3,
+                                                      paddingHorizontal: 6,
+                                                      paddingVertical: 2,
+                                                      borderRadius: 6,
+                                                      backgroundColor: 'rgba(56, 189, 248, 0.16)',
+                                                      borderWidth: 1,
+                                                      borderColor: 'rgba(56, 189, 248, 0.35)',
+                                                    }}
+                                                  >
+                                                    <Ionicons name="camera-outline" size={11} color="#38bdf8" />
+                                                    <Text style={{ fontSize: 10, color: '#38bdf8', fontWeight: '800' }}>
+                                                      {subProdItems.length} ảnh
+                                                    </Text>
+                                                  </TouchableOpacity>
+                                                )}
+                                              </View>
+                                            </View>
+                                            <Text style={{ flex: 1, textAlign: 'right', fontSize: 12, fontWeight: '800', color: '#4ade80' }}>
+                                              +{p.inQty}
+                                            </Text>
+                                            <Text style={{ flex: 1, textAlign: 'right', fontSize: 12, fontWeight: '800', color: '#f87171' }}>
+                                              -{p.outQty}
+                                            </Text>
+                                            <Text style={{ width: 42, textAlign: 'right', fontSize: 10, color: '#94a3b8' }}>
+                                              {p.count} đợt
+                                            </Text>
+                                          </View>
+                                          );
+                                        })}
+                                      </View>
+                                    )}
+                                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 6 }}>
+                                      <Text style={{ fontSize: 11, color: '#94a3b8' }}>
+                                        Người bàn giao: <Text style={{ color: '#e2e8f0', fontWeight: '700' }}>{ss.closed_by_name || 'Nhân viên'}</Text>
+                                      </Text>
+                                      {!!ss.notes && (
+                                        <Text style={{ fontSize: 11, color: '#94a3b8', fontStyle: 'italic' }}>
+                                          &ldquo;{ss.notes}&rdquo;
+                                        </Text>
+                                      )}
+                                    </View>
+                                  </View>
+                                )}
                               </View>
-                            </View>
-                          ))}
+                            );
+                          })}
                         </View>
                       )}
                     </View>

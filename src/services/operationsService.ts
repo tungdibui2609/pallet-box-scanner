@@ -2,6 +2,11 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getSupabaseClient } from './supabase';
 import { getProductsFromCache } from './database';
 import { generateUuidV4, syncOfflineOperationImages } from './operationImagesService';
+import {
+  addHiddenId,
+  reconcileHiddenIds,
+  submitMobileApprovalRequest,
+} from './approvalService';
 
 export interface ShiftProductItem {
   id: string;
@@ -342,9 +347,10 @@ export async function getOpenShifts(): Promise<DeliveryShift[]> {
         queue.filter(q => q.type === 'CLOSE_SHIFT' || q.type === 'DELETE_SHIFT').map(q => q.shiftId)
       );
 
+      const hiddenShifts = await reconcileHiddenIds('shifts', 'delivery_shifts');
       const merged = [
         ...offlineCreatedShifts,
-        ...data.filter(s => !offlineClosedShiftIds.has(s.id)),
+        ...data.filter(s => !offlineClosedShiftIds.has(s.id) && !hiddenShifts.has(s.id)),
       ];
 
       await setCachedOpenShifts(merged);
@@ -355,7 +361,8 @@ export async function getOpenShifts(): Promise<DeliveryShift[]> {
   }
 
   // Fallback đọc từ cache nội bộ
-  return cached;
+  const hiddenShifts = await reconcileHiddenIds('shifts', 'delivery_shifts');
+  return cached.filter(s => !hiddenShifts.has(s.id));
 }
 
 // 2. Tải danh sách công việc đã đóng (Status: 'closed') - Offline-First
@@ -378,14 +385,17 @@ export async function getPastShifts(limit = 50): Promise<DeliveryShift[]> {
     );
 
     if (!error && Array.isArray(data)) {
-      await setCachedPastShifts(data);
-      return data;
+      const hiddenShifts = await reconcileHiddenIds('shifts', 'delivery_shifts');
+      const visible = data.filter(s => !hiddenShifts.has(s.id));
+      await setCachedPastShifts(visible);
+      return visible;
     }
   } catch (e) {
     console.warn('[Offline Mode] Không thể kết nối máy chủ, nạp ca đã hoàn thành từ bộ nhớ máy:', e);
   }
 
-  return cached;
+  const hiddenShifts = await reconcileHiddenIds('shifts', 'delivery_shifts');
+  return cached.filter(s => !hiddenShifts.has(s.id));
 }
 
 // 3. Tải danh sách loại phiếu theo phân hệ (Có cache)
@@ -607,12 +617,13 @@ export async function getShiftJournals(shiftId: string): Promise<JournalRecord[]
     );
 
     if (!error && Array.isArray(data)) {
+      const hiddenJournals = await reconcileHiddenIds('journals', 'delivery_journal');
       // Merge với các bản ghi offline
       const merged = [
         ...offlineJournalsInQueue,
         ...data.filter(d => !offlineJournalsInQueue.some(o => o.id === d.id)),
       ]
-        .filter(r => !deletedRecordIds.has(r.id))
+        .filter(r => !deletedRecordIds.has(r.id) && !hiddenJournals.has(r.id))
         .map(r => {
           const up = updatedRecordMap.get(r.id);
           return up ? { ...r, quantity_sent: up.quantity, unit: up.unit, notes: up.notes || r.notes } : r;
@@ -626,7 +637,8 @@ export async function getShiftJournals(shiftId: string): Promise<JournalRecord[]
     console.warn('[Offline Mode] Mất mạng khi tải nhật ký, dùng cache nội bộ:', e);
   }
 
-  return buildOfflineMerged();
+  const hiddenJournals = await reconcileHiddenIds('journals', 'delivery_journal');
+  return buildOfflineMerged().filter(r => !hiddenJournals.has(r.id));
 }
 
 // 6. Ghi nhận 1 lượt Nhập / Xuất (Offline-First: Phản hồi 0ms, không sợ rớt mạng)
@@ -798,22 +810,26 @@ export async function updateJournalEntry(params: {
     }
   }
 
-  // Thử online
-  try {
-    const supabase = await getSupabaseClient();
-    const { error } = await withNetworkTimeout(
-      supabase.from('delivery_journal').update(payload).eq('id', params.id),
-      2000
-    );
-    if (!error) return true;
-  } catch (e) {
-    console.warn('[Offline Mode] Mất mạng khi sửa nhật ký, lưu hàng đợi:', e);
-  }
+  // Gửi yêu cầu sửa lên Web Số liệu để duyệt (không tự ý sửa trực tiếp bản ghi đã đồng bộ)
+  const supabase = await getSupabaseClient();
+  const baseSys = await getCurrentSystemCode();
+  const shiftSys = getShiftSystemCode(baseSys);
+  const { data: beforeRow } = await supabase
+    .from('delivery_journal')
+    .select('*')
+    .eq('id', params.id)
+    .maybeSingle();
 
-  await addToOfflineOperationsQueue({
-    type: 'UPDATE_JOURNAL',
-    payload: { id: params.id, payload, shiftId: params.shiftId },
+  await submitMobileApprovalRequest({
+    systemCode: beforeRow?.system_code || shiftSys,
+    companyId: beforeRow?.company_id || null,
+    actionType: 'update_journal',
+    targetTable: 'delivery_journal',
+    targetId: params.id,
     shiftId: params.shiftId,
+    targetLabel: beforeRow?.item_name || 'Dòng số liệu',
+    beforeData: beforeRow || null,
+    afterData: payload,
   });
 
   return true;
@@ -835,23 +851,27 @@ export async function deleteJournalEntry(id: string, shiftId?: string): Promise<
     return true;
   }
 
-  // Thử online
-  try {
-    const supabase = await getSupabaseClient();
-    const { error } = await withNetworkTimeout(
-      supabase.from('delivery_journal').delete().eq('id', id),
-      2000
-    );
-    if (!error) return true;
-  } catch (e) {
-    console.warn('[Offline Mode] Mất mạng khi xóa nhật ký, lưu hàng đợi:', e);
-  }
+  // Gửi yêu cầu xóa lên Web Số liệu để duyệt & tạm ẩn trên máy này
+  const supabase = await getSupabaseClient();
+  const baseSys = await getCurrentSystemCode();
+  const shiftSys = getShiftSystemCode(baseSys);
+  const { data: beforeRow } = await supabase
+    .from('delivery_journal')
+    .select('*')
+    .eq('id', id)
+    .maybeSingle();
 
-  await addToOfflineOperationsQueue({
-    type: 'DELETE_JOURNAL',
-    payload: { recordId: id, shiftId },
-    shiftId,
+  await submitMobileApprovalRequest({
+    systemCode: beforeRow?.system_code || shiftSys,
+    companyId: beforeRow?.company_id || null,
+    actionType: 'delete_journal',
+    targetTable: 'delivery_journal',
+    targetId: id,
+    shiftId: shiftId || null,
+    targetLabel: beforeRow?.item_name || 'Dòng số liệu',
+    beforeData: beforeRow || { id },
   });
+  await addHiddenId('journals', id);
 
   return true;
 }
@@ -1133,6 +1153,130 @@ export async function getWarehouseProducts(): Promise<ShiftProductItem[]> {
 }
 
 // ── TIẾN TRÌNH ĐỒNG BỘ TOÀN BỘ SỐ LIỆU OFFLINE LÊN MÁY CHỦ (SYNC ENGINE) ──
+function mergePinnedProducts(serverPinned: any, localPinned: any): any[] | undefined {
+  const sArr = Array.isArray(serverPinned) ? serverPinned : [];
+  const lArr = Array.isArray(localPinned) ? localPinned : [];
+  if (!Array.isArray(serverPinned) && !Array.isArray(localPinned)) return undefined;
+
+  const seen = new Set<string>();
+  const merged: any[] = [];
+  const getKey = (item: any) =>
+    item?.id ? `id:${item.id}` : `sku:${item?.sku || ''}::name:${item?.name || ''}`;
+
+  for (const item of [...sArr, ...lArr]) {
+    if (!item) continue;
+    const key = getKey(item);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(item);
+  }
+  return merged;
+}
+
+function mergeReconcileSessions(serverRecs: any, localRecs: any): any {
+  if (!serverRecs && !localRecs) return undefined;
+  if (Array.isArray(serverRecs) || Array.isArray(localRecs)) {
+    const sArr = Array.isArray(serverRecs) ? serverRecs : [];
+    const lArr = Array.isArray(localRecs) ? localRecs : [];
+    const map = new Map<string, any>();
+    for (const item of [...sArr, ...lArr]) {
+      if (!item) continue;
+      const key = String(item.key || item.id || Math.random());
+      const prev = map.get(key);
+      if (!prev) {
+        map.set(key, item);
+      } else {
+        const prevTs = new Date(prev.updated_at || 0).getTime();
+        const curTs = new Date(item.updated_at || 0).getTime();
+        map.set(key, curTs >= prevTs ? item : prev);
+      }
+    }
+    return Array.from(map.values());
+  }
+  if (typeof serverRecs === 'object' || typeof localRecs === 'object') {
+    return { ...(serverRecs || {}), ...(localRecs || {}) };
+  }
+  return localRecs ?? serverRecs;
+}
+
+async function fetchAndMergeMobileShiftSummary(
+  supabase: any,
+  realShiftId: string,
+  localSummary: any
+): Promise<{ mergedSummary: Record<string, any>; serverStatus?: string }> {
+  const { data: serverShift } = await supabase
+    .from('delivery_shifts')
+    .select('id, status, system_code, summary_data')
+    .eq('id', realShiftId)
+    .maybeSingle();
+
+  const serverSummary = serverShift?.summary_data || {};
+  const mergedPinned = mergePinnedProducts(serverSummary.pinned_products, localSummary?.pinned_products);
+  const mergedRecs = mergeReconcileSessions(serverSummary.reconciliations, localSummary?.reconciliations);
+
+  const mergedSummary: Record<string, any> = {
+    ...serverSummary,
+    ...(localSummary || {}),
+  };
+  if (mergedPinned !== undefined) mergedSummary.pinned_products = mergedPinned;
+  if (mergedRecs !== undefined) mergedSummary.reconciliations = mergedRecs;
+
+  const shiftSys = serverShift?.system_code;
+  const baseSys = shiftSys?.endsWith('__solieu') ? shiftSys.slice(0, -8) : shiftSys;
+  let q = supabase
+    .from('delivery_journal')
+    .select('id, item_name, unit, quantity_sent, to_department')
+    .ilike('notes', `%[CV_ID: ${realShiftId}]%`);
+  if (shiftSys) {
+    q =
+      baseSys && baseSys !== shiftSys
+        ? q.in('system_code', [shiftSys, baseSys])
+        : q.eq('system_code', shiftSys);
+  }
+  const { data: journalRows, error: jErr } = await q;
+  if (!jErr && Array.isArray(journalRows)) {
+    const productsSummary: Record<
+      string,
+      { product_name: string; unit: string; in_qty: number; out_qty: number; count: number }
+    > = {};
+    const unitsSummary: Record<string, { in_qty: number; out_qty: number; count: number }> = {};
+
+    for (const r of journalRows) {
+      const pName = (r.item_name || 'Sản phẩm').trim();
+      const uName = (r.unit || 'Thùng').trim();
+      const key = `${pName}___${uName}`;
+      const qty = Number(r.quantity_sent) || 0;
+      const isIn = r.to_department === 'Kho';
+
+      if (!productsSummary[key]) {
+        productsSummary[key] = { product_name: pName, unit: uName, in_qty: 0, out_qty: 0, count: 0 };
+      }
+      if (isIn) {
+        productsSummary[key].in_qty = Number((productsSummary[key].in_qty + qty).toFixed(2));
+      } else {
+        productsSummary[key].out_qty = Number((productsSummary[key].out_qty + qty).toFixed(2));
+      }
+      productsSummary[key].count += 1;
+
+      if (!unitsSummary[uName]) {
+        unitsSummary[uName] = { in_qty: 0, out_qty: 0, count: 0 };
+      }
+      if (isIn) {
+        unitsSummary[uName].in_qty = Number((unitsSummary[uName].in_qty + qty).toFixed(2));
+      } else {
+        unitsSummary[uName].out_qty = Number((unitsSummary[uName].out_qty + qty).toFixed(2));
+      }
+      unitsSummary[uName].count += 1;
+    }
+
+    mergedSummary.products_summary = productsSummary;
+    mergedSummary.units_summary = unitsSummary;
+    mergedSummary.total_records = journalRows.length;
+  }
+
+  return { mergedSummary, serverStatus: serverShift?.status };
+}
+
 export async function syncOperationsOfflineQueue(): Promise<{
   success: boolean;
   syncedCount: number;
@@ -1148,6 +1292,8 @@ export async function syncOperationsOfflineQueue(): Promise<{
   let lastErrorMsg = '';
   const tempShiftIdMap: Record<string, string> = {};
   const remainingQueue: OperationsQueueAction[] = [];
+  const touchedShiftIds = new Set<string>();
+  const closedInSync = new Set<string>();
 
   for (let i = 0; i < queue.length; i++) {
     const action = queue[i];
@@ -1218,6 +1364,7 @@ export async function syncOperationsOfflineQueue(): Promise<{
 
         const { error: jnErr } = await supabase.from('delivery_journal').insert([journalPayload]);
         if (jnErr) throw jnErr;
+        if (realShiftId) touchedShiftIds.add(String(realShiftId));
         syncedCount++;
       } else if (action.type === 'UPDATE_JOURNAL') {
         const { id, payload } = action.payload;
@@ -1227,6 +1374,9 @@ export async function syncOperationsOfflineQueue(): Promise<{
         } else {
           const { error: upErr } = await supabase.from('delivery_journal').update(payload).eq('id', id);
           if (upErr) throw upErr;
+          const rawShiftId = action.shiftId || action.payload?.shiftId;
+          const realShiftId = rawShiftId ? tempShiftIdMap[rawShiftId] || rawShiftId : null;
+          if (realShiftId) touchedShiftIds.add(String(realShiftId));
           syncedCount++;
         }
       } else if (action.type === 'DELETE_JOURNAL') {
@@ -1236,6 +1386,9 @@ export async function syncOperationsOfflineQueue(): Promise<{
         } else {
           const { error: delErr } = await supabase.from('delivery_journal').delete().eq('id', recordId);
           if (delErr) throw delErr;
+          const rawShiftId = action.shiftId || action.payload?.shiftId;
+          const realShiftId = rawShiftId ? tempShiftIdMap[rawShiftId] || rawShiftId : null;
+          if (realShiftId) touchedShiftIds.add(String(realShiftId));
           syncedCount++;
         }
       } else if (action.type === 'CLOSE_SHIFT') {
@@ -1245,12 +1398,19 @@ export async function syncOperationsOfflineQueue(): Promise<{
           throw new Error('Ca làm việc chưa đồng bộ ID lên máy chủ');
         }
 
+        const { mergedSummary } = await fetchAndMergeMobileShiftSummary(
+          supabase,
+          realShiftId,
+          payload?.summary_data
+        );
+
         const { error: closeErr } = await supabase
           .from('delivery_shifts')
-          .update(payload)
+          .update({ ...payload, summary_data: mergedSummary })
           .eq('id', realShiftId);
 
         if (closeErr) throw closeErr;
+        closedInSync.add(String(realShiftId));
         syncedCount++;
       }
     } catch (err: any) {
@@ -1271,6 +1431,25 @@ export async function syncOperationsOfflineQueue(): Promise<{
         ...action,
         retryCount: (action.retryCount || 0) + 1,
       });
+    }
+  }
+
+  for (const sId of Array.from(touchedShiftIds)) {
+    if (closedInSync.has(sId) || sId.startsWith('offline_shift_')) continue;
+    try {
+      const { mergedSummary, serverStatus } = await fetchAndMergeMobileShiftSummary(
+        supabase,
+        sId,
+        null
+      );
+      if (serverStatus === 'closed') {
+        await supabase
+          .from('delivery_shifts')
+          .update({ summary_data: mergedSummary })
+          .eq('id', sId);
+      }
+    } catch (e) {
+      console.warn('[Sync] Lỗi cập nhật tổng kết ca đã đóng sau sync:', sId, e);
     }
   }
 
@@ -1425,17 +1604,45 @@ export async function reopenShift(shiftId: string): Promise<boolean> {
   return true;
 }
 
-// 13. Xóa ca công việc và toàn bộ nhật ký liên quan
+// 13. Xóa ca công việc (Tạm ẩn trên App & gửi yêu cầu duyệt lên Web Số liệu)
 export async function deleteShift(shiftId: string): Promise<boolean> {
+  if (String(shiftId).startsWith('offline_shift_')) {
+    const openShifts = await getCachedOpenShifts();
+    await setCachedOpenShifts(openShifts.filter(s => s.id !== shiftId));
+    const queue = await getOfflineOperationsQueue();
+    await saveOfflineOperationsQueue(
+      queue.filter(q => q.shiftId !== shiftId && q.payload?.tempShiftId !== shiftId)
+    );
+    return true;
+  }
+
   const supabase = await getSupabaseClient();
   const baseSys = await getCurrentSystemCode();
   const shiftSys = getShiftSystemCode(baseSys);
+  const { data: serverShift } = await supabase
+    .from('delivery_shifts')
+    .select('id, system_code, company_id, notes, summary_data, status, opened_at')
+    .eq('id', shiftId)
+    .maybeSingle();
 
-  await supabase.from('delivery_journal').delete().or(`system_code.eq.${shiftSys},system_code.eq.${baseSys}`).ilike('notes', `%[CV_ID: ${shiftId}]%`);
-  await supabase.from('delivery_sub_shifts').delete().eq('shift_id', shiftId);
-  const { error } = await supabase.from('delivery_shifts').delete().eq('id', shiftId);
+  const shiftName = serverShift?.summary_data?.job_name || serverShift?.notes || 'Công việc';
+  await submitMobileApprovalRequest({
+    systemCode: serverShift?.system_code || shiftSys,
+    companyId: serverShift?.company_id || null,
+    actionType: 'delete_shift',
+    targetTable: 'delivery_shifts',
+    targetId: shiftId,
+    shiftId,
+    shiftName,
+    targetLabel: shiftName,
+    beforeData: serverShift || { id: shiftId, job_name: shiftName },
+  });
+  await addHiddenId('shifts', shiftId);
 
-  if (error) throw error;
+  const openShifts = await getCachedOpenShifts();
+  await setCachedOpenShifts(openShifts.filter(s => s.id !== shiftId));
+  const pastShifts = await getCachedPastShifts();
+  await setCachedPastShifts(pastShifts.filter(s => s.id !== shiftId));
   return true;
 }
 

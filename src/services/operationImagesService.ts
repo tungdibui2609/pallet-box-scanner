@@ -5,6 +5,11 @@ import { File } from 'expo-file-system';
 import * as LegacyFileSystem from 'expo-file-system/legacy';
 import { getSupabaseClient } from './supabase';
 import {
+  addHiddenId,
+  reconcileHiddenIds,
+  submitMobileApprovalRequest,
+} from './approvalService';
+import {
   buildFolderPathMap,
   getDriveSettings,
   listOperationFolders,
@@ -700,25 +705,46 @@ export async function getShiftOperationImages(shiftId: string): Promise<Operatio
       .order('captured_at', { ascending: false });
 
     if (error) throw error;
-    const onlineList = (data || []) as OperationImageRecord[];
-    const offlineOnly = cached.filter((c) => c.is_offline);
+    const hidden = await reconcileHiddenIds('images', 'operation_images');
+    const onlineList = ((data || []) as OperationImageRecord[]).filter((img) => !hidden.has(img.id));
+    const offlineOnly = cached.filter((c) => c.is_offline && !hidden.has(c.id));
     const merged = [...offlineOnly, ...onlineList];
     await setCachedShiftImages(shiftId, merged);
     return merged;
   } catch (err) {
     console.warn('getShiftOperationImages fallback to cache:', err);
-    return cached;
+    const hidden = await reconcileHiddenIds('images', 'operation_images');
+    return cached.filter((img) => !hidden.has(img.id));
   }
 }
 
 export async function deleteOperationImage(image: OperationImageRecord): Promise<void> {
-  if (!image.is_offline) {
-    const supabase = await getSupabaseClient();
-    if (image.storage_path) {
-      await supabase.storage.from(image.storage_bucket || OPERATION_IMAGES_BUCKET).remove([image.storage_path]);
-    }
-    const { error } = await supabase.from('operation_images').delete().eq('id', image.id);
-    if (error) throw error;
+  if (!image.is_offline && !String(image.id).startsWith('offline_')) {
+    await submitMobileApprovalRequest({
+      systemCode: image.system_code,
+      companyId: image.company_id || null,
+      actionType: 'delete_image',
+      targetTable: 'operation_images',
+      targetId: image.id,
+      shiftId: image.shift_id || null,
+      shiftName: image.job_name || null,
+      targetLabel: image.item_name
+        ? `Ảnh SP: ${image.item_name}`
+        : image.job_name
+        ? `Ảnh công việc: ${image.job_name}`
+        : 'Hình ảnh kho',
+      beforeData: {
+        id: image.id,
+        image_url: image.public_url,
+        storage_path: image.storage_path,
+        item_name: image.item_name,
+        shift_name: image.job_name,
+        scope: image.scope,
+      },
+      requestedBy: (image as any).captured_by || null,
+      requestedByName: image.captured_by_name || 'Nhân viên App',
+    });
+    await addHiddenId('images', image.id);
   } else {
     const queue = await getOfflineQueue();
     await setOfflineQueue(queue.filter((q) => q.localId !== image.id));
@@ -784,9 +810,13 @@ export async function listSystemOperationImages(params: {
 
     const { data, error } = await query;
     if (error) throw error;
-    return [...offlineRecords, ...((data || []) as OperationImageRecord[])];
+    const hidden = await reconcileHiddenIds('images', 'operation_images');
+    return [...offlineRecords, ...((data || []) as OperationImageRecord[])].filter(
+      (img) => !hidden.has(img.id)
+    );
   } catch (err) {
     console.warn('listSystemOperationImages fallback offline only:', err);
-    return offlineRecords;
+    const hidden = await reconcileHiddenIds('images', 'operation_images');
+    return offlineRecords.filter((img) => !hidden.has(img.id));
   }
 }

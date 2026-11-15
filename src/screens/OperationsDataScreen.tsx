@@ -54,12 +54,21 @@ import AggregatedReportModal from '../components/operations/AggregatedReportModa
 import { CalendarPickerModal } from '../components/operations/CalendarPickerModal';
 import OperationImagesModal, { JournalImageTarget } from '../components/operations/OperationImagesModal';
 import WarehouseAlbumModal from '../components/operations/WarehouseAlbumModal';
+import QuickSnapQueueModal from '../components/operations/QuickSnapQueueModal';
+import QuickSnapCameraModal from '../components/operations/QuickSnapCameraModal';
 import {
   LocalPickedImage,
   OperationImageRecord,
   uploadOperationImages,
   getShiftOperationImages,
 } from '../services/operationImagesService';
+import {
+  QuickSnapItem,
+  getAllQuickSnaps,
+  addQuickSnap,
+  updateQuickSnapShift,
+  removeQuickSnap,
+} from '../services/quickSnapStore';
 import { formatDateDisplay, formatDateTime, toTimestamp } from '../utils/dateUtils';
 import { matchSearch, calculateSearchScore } from '../utils/searchUtils';
 
@@ -299,6 +308,11 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
   const [isImagesModalVisible, setIsImagesModalVisible] = useState(false);
   const [journalTargetForImages, setJournalTargetForImages] = useState<JournalImageTarget | null>(null);
   const [shiftImageCount, setShiftImageCount] = useState(0);
+  const [bgUploadingCount, setBgUploadingCount] = useState(0);
+  const [quickSnaps, setQuickSnaps] = useState<QuickSnapItem[]>([]);
+  const [isQuickSnapModalVisible, setIsQuickSnapModalVisible] = useState(false);
+  const [isQuickCameraVisible, setIsQuickCameraVisible] = useState(false);
+  const [isQuickSnapBarCollapsed, setIsQuickSnapBarCollapsed] = useState(false);
   const [historyProduct, setHistoryProduct] = useState<ShiftProductItem | null>(null);
   const [isHistoryVisible, setIsHistoryVisible] = useState(false);
   const [isShiftDropdownOpen, setIsShiftDropdownOpen] = useState(false);
@@ -973,6 +987,34 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
     return productStats[key] || { inQty: 0, outQty: 0, count: 0, unit: unit || '' };
   };
 
+  // SP vừa thao tác gần nhất trong ca (đẩy lên đầu danh sách & dùng cho Quick Snap)
+  const recentProductOrder = useMemo(() => {
+    const order = new Map<string, number>();
+    allJournals.forEach((j, idx) => {
+      const key = (j.item_name || '').trim().toLowerCase();
+      if (key && !order.has(key)) {
+        order.set(key, idx);
+      }
+    });
+    return order;
+  }, [allJournals]);
+
+  const recentProducts = useMemo(() => {
+    if (recentProductOrder.size === 0) return [];
+    return [...allProducts]
+      .filter(p => recentProductOrder.has(p.name.trim().toLowerCase()))
+      .sort(
+        (a, b) =>
+          (recentProductOrder.get(a.name.trim().toLowerCase()) ?? 9999) -
+          (recentProductOrder.get(b.name.trim().toLowerCase()) ?? 9999)
+      )
+      .slice(0, 8);
+  }, [allProducts, recentProductOrder]);
+
+  useEffect(() => {
+    getAllQuickSnaps().then(setQuickSnaps);
+  }, []);
+
   // Danh sách sản phẩm hiển thị theo thanh tìm kiếm
   const displayedProducts = useMemo(() => {
     const q = searchQuery.trim();
@@ -984,11 +1026,21 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
         .sort((a, b) => calculateSearchScore(b, q) - calculateSearchScore(a, q))
         .slice(0, 30);
     } else {
-      // Chế độ Nhập: Tìm trong các sản phẩm đã ghim
-      if (!q) return pinnedProducts;
+      // Chế độ Nhập: Tìm trong các sản phẩm đã ghim (đẩy SP vừa làm lên đầu nếu chưa tìm kiếm)
+      if (!q) {
+        if (recentProductOrder.size === 0) return pinnedProducts;
+        return [...pinnedProducts].sort((a, b) => {
+          const ia = recentProductOrder.get(a.name.trim().toLowerCase());
+          const ib = recentProductOrder.get(b.name.trim().toLowerCase());
+          if (ia !== undefined && ib !== undefined) return ia - ib;
+          if (ia !== undefined) return -1;
+          if (ib !== undefined) return 1;
+          return 0;
+        });
+      }
       return pinnedProducts.filter(p => matchSearch(p, q));
     }
-  }, [searchMode, searchQuery, allProducts, pinnedProducts]);
+  }, [searchMode, searchQuery, allProducts, pinnedProducts, recentProductOrder]);
 
   // Ghim / Bỏ ghim 1 sản phẩm
   const togglePin = async (product: ShiftProductItem) => {
@@ -1000,6 +1052,20 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
     } else {
       next = [product, ...pinnedProducts];
     }
+    setPinnedProducts(next);
+    await syncPinnedProducts(selectedShift.id, selectedShift.summary_data, next);
+  };
+
+  // Ghim tất cả sản phẩm đang hiển thị (hoặc toàn bộ kho)
+  const handlePinAll = async () => {
+    if (!selectedShift) return;
+    const targetList = searchQuery.trim() ? displayedProducts : allProducts;
+    if (targetList.length === 0) return;
+    const existingIds = new Set(pinnedProducts.map(p => p.id));
+    const toAdd = targetList.filter(p => !existingIds.has(p.id));
+    if (toAdd.length === 0) return;
+
+    const next = [...pinnedProducts, ...toAdd];
     setPinnedProducts(next);
     await syncPinnedProducts(selectedShift.id, selectedShift.summary_data, next);
   };
@@ -1071,34 +1137,41 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
   };
 
   // Ghi nhận lượt bấm từ Bàn phím số (Siêu tốc 0ms lag - Optimistic Update cho Kho Đông)
-  const handlePadSubmit = async ({ quantity, unit, type, note, images }: { quantity: number; unit: string; type: 'in' | 'out'; note?: string; images?: LocalPickedImage[] }) => {
-    if (!selectedShift || !padProduct) return;
+  const submitEntryZeroLag = async (
+    targetProduct: ShiftProductItem,
+    { quantity, unit, type, note, images }: { quantity: number; unit: string; type: 'in' | 'out'; note?: string; images?: LocalPickedImage[] },
+    overrideShift?: DeliveryShift
+  ) => {
+    const targetShift = overrideShift || selectedShift;
+    if (!targetShift) return;
 
     // 1. CẬP NHẬT TỨC THỜI TRÊN GIAO DIỆN (OPTIMISTIC UI UPDATE - 0ms phản hồi tức thì)
-    const tempId = `opt_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-    const optRecord: JournalRecord = {
-      id: tempId,
-      delivery_code: `SO-LIEU-${Date.now().toString().slice(-6)}`,
-      item_name: padProduct.name,
-      quantity_sent: quantity,
-      unit: unit,
-      from_department: type === 'in' ? 'Sản xuất' : 'Kho',
-      to_department: type === 'in' ? 'Kho' : 'Sản xuất',
-      status: type === 'in' ? 'received_by_warehouse' : 'received_by_production',
-      notes: `[CV_ID: ${selectedShift.id}] [PID: ${padProduct.id}] [SKU: ${padProduct.sku || ''}] ${type === 'in' ? 'Nhập kho' : 'Xuất kho'}${note ? ` - ${note}` : ''}`,
-      sent_by_name: user?.full_name || 'Nhân viên kho',
-      sent_at: new Date().toISOString(),
-      system_code: selectedShift.system_code,
-      is_offline: true,
-    };
+    const isCurrentShift = targetShift.id === selectedShift?.id;
+    if (isCurrentShift) {
+      const tempId = `opt_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+      const optRecord: JournalRecord = {
+        id: tempId,
+        delivery_code: `SO-LIEU-${Date.now().toString().slice(-6)}`,
+        item_name: targetProduct.name,
+        quantity_sent: quantity,
+        unit: unit,
+        from_department: type === 'in' ? 'Sản xuất' : 'Kho',
+        to_department: type === 'in' ? 'Kho' : 'Sản xuất',
+        status: type === 'in' ? 'received_by_warehouse' : 'received_by_production',
+        notes: `[CV_ID: ${targetShift.id}] [PID: ${targetProduct.id}] [SKU: ${targetProduct.sku || ''}] ${type === 'in' ? 'Nhập kho' : 'Xuất kho'}${note ? ` - ${note}` : ''}`,
+        sent_by_name: user?.full_name || 'Nhân viên kho',
+        sent_at: new Date().toISOString(),
+        system_code: targetShift.system_code,
+        is_offline: true,
+      };
+      setAllJournals(prev => [optRecord, ...prev]);
+    }
 
-    setAllJournals(prev => [optRecord, ...prev]);
-
-    // 2. GHI NHẬN VÀO BỘ NHỚ LOCAL & HÀNG ĐỢI OFFLINE
+    // 2. GHI NHẬN VÀO BỘ NHỚ LOCAL & HÀNG ĐỢI OFFLINE + UPLOAD NGẦM
     try {
       const journalId = await submitJournalEntry({
-        shift: selectedShift,
-        product: padProduct,
+        shift: targetShift,
+        product: targetProduct,
         quantity,
         unit,
         type,
@@ -1106,33 +1179,128 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
         userNote: note,
       });
       if (images && images.length > 0) {
+        const count = images.length;
+        setBgUploadingCount(c => c + count);
         uploadOperationImages({
           images,
-          systemCode: selectedShift.system_code,
-          companyId: selectedShift.company_id || user?.company_id || null,
-          shiftId: selectedShift.id,
+          systemCode: targetShift.system_code,
+          companyId: targetShift.company_id || user?.company_id || null,
+          shiftId: targetShift.id,
           journalId,
           scope: 'journal',
           direction: type,
-          jobName: selectedShift.summary_data?.job_name || selectedShift.notes || 'Công việc',
-          itemName: padProduct.name,
-          itemSku: padProduct.sku || null,
+          jobName: targetShift.summary_data?.job_name || targetShift.notes || 'Công việc',
+          itemName: targetProduct.name,
+          itemSku: targetProduct.sku || null,
           quantity,
           unit,
           user,
           notes: note || null,
         })
           .then(() => {
-            setShiftImageCount((c) => c + images.length);
+            if (isCurrentShift) setShiftImageCount((c) => c + count);
           })
-          .catch((e) => console.warn('Upload journal images error:', e));
+          .catch((e) => console.warn('Upload journal images error:', e))
+          .finally(() => {
+            setBgUploadingCount(c => Math.max(0, c - count));
+          });
       }
       refreshPendingCount();
-      // Nạp ngầm để đồng bộ dữ liệu chuẩn
-      reloadShiftData(selectedShift.id);
+      if (isCurrentShift) reloadShiftData(targetShift.id);
     } catch (err: any) {
       console.warn('Lỗi ghi nhật ký ngầm:', err);
     }
+  };
+
+  const handlePadSubmit = async (payload: { quantity: number; unit: string; type: 'in' | 'out'; note?: string; images?: LocalPickedImage[] }) => {
+    if (!selectedShift || !padProduct) return;
+    await submitEntryZeroLag(padProduct, payload);
+  };
+
+  const handleQuickSnapCaptured = ({
+    shift,
+    image,
+  }: {
+    shift: DeliveryShift;
+    image: LocalPickedImage;
+  }) => {
+    const snap: QuickSnapItem = {
+      id: `snap_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      shiftId: shift.id,
+      jobName: shift.summary_data?.job_name || shift.notes || 'Công việc',
+      systemCode: shift.system_code,
+      capturedAt: new Date().toISOString(),
+      image,
+    };
+    setQuickSnaps(prev => [...prev, snap]);
+    void addQuickSnap(snap);
+  };
+
+  const handleDeleteQuickSnap = async (id: string) => {
+    await removeQuickSnap(id);
+    setQuickSnaps(prev => prev.filter(s => s.id !== id));
+  };
+
+  const handleChangeQuickSnapShift = async (snapId: string, shift: DeliveryShift) => {
+    const jobName = shift.summary_data?.job_name || shift.notes || 'Công việc';
+    setQuickSnaps(prev =>
+      prev.map(s => (s.id === snapId ? { ...s, shiftId: shift.id, jobName } : s))
+    );
+    await updateQuickSnapShift(snapId, shift.id, jobName);
+  };
+
+  const handleSaveQuickSnapToAlbum = (snap: QuickSnapItem) => {
+    const targetShift = openShifts.find(s => s.id === snap.shiftId) || selectedShift;
+    if (!targetShift) return;
+
+    setBgUploadingCount(c => c + 1);
+    uploadOperationImages({
+      images: [snap.image],
+      systemCode: targetShift.system_code,
+      companyId: targetShift.company_id || user?.company_id || null,
+      shiftId: targetShift.id,
+      scope: 'shift',
+      jobName: targetShift.summary_data?.job_name || targetShift.notes || snap.jobName || 'Công việc',
+      user,
+    })
+      .then(() => {
+        if (targetShift.id === selectedShift?.id) {
+          setShiftImageCount(c => c + 1);
+        }
+      })
+      .catch(e => console.warn('Save quick snap to album error:', e))
+      .finally(() => {
+        setBgUploadingCount(c => Math.max(0, c - 1));
+      });
+
+    void removeQuickSnap(snap.id);
+    setQuickSnaps(prev => prev.filter(s => s.id !== snap.id));
+  };
+
+  const handleAssignQuickSnap = (
+    snap: QuickSnapItem,
+    payload: {
+      product: ShiftProductItem;
+      direction: 'in' | 'out';
+      quantity: number;
+      unit: string;
+      note?: string;
+    }
+  ) => {
+    const targetShift = openShifts.find(s => s.id === snap.shiftId) || selectedShift || undefined;
+    void submitEntryZeroLag(
+      payload.product,
+      {
+        quantity: payload.quantity,
+        unit: payload.unit,
+        type: payload.direction,
+        note: payload.note,
+        images: [snap.image],
+      },
+      targetShift
+    );
+    void removeQuickSnap(snap.id);
+    setQuickSnaps(prev => prev.filter(s => s.id !== snap.id));
   };
 
   // Mở modal sửa dòng nhật ký
@@ -1293,6 +1461,26 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
         </TouchableOpacity>
       </View>
 
+      {bgUploadingCount > 0 && (
+        <View
+          style={{
+            flexDirection: 'row',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 6,
+            paddingVertical: 5,
+            backgroundColor: 'rgba(14,165,233,0.14)',
+            borderBottomWidth: 1,
+            borderBottomColor: 'rgba(56,189,248,0.3)',
+          }}
+        >
+          <ActivityIndicator size="small" color="#38bdf8" />
+          <Text style={{ color: '#7dd3fc', fontSize: 11, fontWeight: '700' }}>
+            Đang đẩy ngầm {bgUploadingCount} ảnh lên hệ thống...
+          </Text>
+        </View>
+      )}
+
       {activeTab === 'active' ? (
         <>
           {/* ── SELECTOR CÔNG VIỆC ĐANG LÀM ── */}
@@ -1445,21 +1633,57 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
             </View>
           )}
 
-          {/* Thanh trạng thái Ghim & Nút thùng rác */}
+          {/* Thanh trạng thái Ghim & Nút Ghim tất cả / Bỏ ghim tất cả */}
           {selectedShift && (
             <View style={styles.pinnedStatusRow}>
               <Text style={styles.pinnedCountText}>
                 {searchMode === 'pin' ? 'Đang duyệt kho để ghim:' : 'Đã ghim:'}{' '}
                 <Text style={{ color: '#f8fafc', fontWeight: '800' }}>
-                  {pinnedProducts.length} SP
+                  {pinnedProducts.length}{searchMode === 'pin' ? `/${allProducts.length}` : ''} SP
                 </Text>
               </Text>
 
-              {pinnedProducts.length > 0 && searchMode === 'filter' && (
-                <TouchableOpacity onPress={handleClearPinned} style={styles.trashBtn}>
-                  <Ionicons name="trash-outline" size={15} color="#f43f5e" />
-                </TouchableOpacity>
-              )}
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                {searchMode === 'pin' && (
+                  <TouchableOpacity
+                    onPress={() => void handlePinAll()}
+                    style={{
+                      paddingHorizontal: 10,
+                      paddingVertical: 5,
+                      borderRadius: 8,
+                      backgroundColor: '#f59e0b',
+                    }}
+                  >
+                    <Text style={{ fontSize: 11, fontWeight: '800', color: '#0f172a' }}>
+                      {searchQuery.trim() ? `Ghim lọc (${displayedProducts.length})` : 'Ghim tất cả'}
+                    </Text>
+                  </TouchableOpacity>
+                )}
+
+                {pinnedProducts.length > 0 && searchMode === 'pin' && (
+                  <TouchableOpacity
+                    onPress={handleClearPinned}
+                    style={{
+                      paddingHorizontal: 10,
+                      paddingVertical: 5,
+                      borderRadius: 8,
+                      backgroundColor: 'rgba(244,63,94,0.18)',
+                      borderWidth: 1,
+                      borderColor: 'rgba(244,63,94,0.45)',
+                    }}
+                  >
+                    <Text style={{ fontSize: 11, fontWeight: '700', color: '#fda4af' }}>
+                      Bỏ ghim tất cả
+                    </Text>
+                  </TouchableOpacity>
+                )}
+
+                {pinnedProducts.length > 0 && searchMode === 'filter' && (
+                  <TouchableOpacity onPress={handleClearPinned} style={styles.trashBtn}>
+                    <Ionicons name="trash-outline" size={15} color="#f43f5e" />
+                  </TouchableOpacity>
+                )}
+              </View>
             </View>
           )}
 
@@ -3327,7 +3551,165 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
         </View>
       )}
 
+      {/* ── FLOATING QUICK SNAP BAR (CHỤP NHANH 1 CHẠM KHI DỒN DẬP) ── */}
+      {activeTab === 'active' && selectedShift && (
+        isQuickSnapBarCollapsed ? (
+          <TouchableOpacity
+            onPress={() => setIsQuickSnapBarCollapsed(false)}
+            activeOpacity={0.85}
+            style={{
+              position: 'absolute',
+              right: 0,
+              bottom: 16,
+              zIndex: 40,
+              height: 42,
+              paddingLeft: 10,
+              paddingRight: 8,
+              borderTopLeftRadius: 21,
+              borderBottomLeftRadius: 21,
+              backgroundColor: 'rgba(15, 23, 42, 0.94)',
+              borderWidth: 1,
+              borderRightWidth: 0,
+              borderColor: quickSnaps.length > 0 ? '#f59e0b' : '#38bdf8',
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 5,
+              elevation: 8,
+            }}
+          >
+            <Ionicons name="chevron-back" size={16} color="#94a3b8" />
+            <Ionicons name="camera" size={17} color="#38bdf8" />
+            {quickSnaps.length > 0 && (
+              <View
+                style={{
+                  backgroundColor: '#f59e0b',
+                  minWidth: 18,
+                  height: 18,
+                  paddingHorizontal: 5,
+                  borderRadius: 9,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                <Text style={{ color: '#0f172a', fontSize: 10, fontWeight: '900' }}>
+                  {quickSnaps.length}
+                </Text>
+              </View>
+            )}
+          </TouchableOpacity>
+        ) : (
+          <View
+            style={{
+              position: 'absolute',
+              right: 10,
+              bottom: 16,
+              zIndex: 40,
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 6,
+            }}
+          >
+            {quickSnaps.length > 0 && (
+              <TouchableOpacity
+                onPress={() => setIsQuickSnapModalVisible(true)}
+                activeOpacity={0.85}
+                style={{
+                  height: 44,
+                  paddingHorizontal: 13,
+                  borderRadius: 22,
+                  backgroundColor: '#f59e0b',
+                  borderWidth: 1,
+                  borderColor: '#fde68a',
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 6,
+                  elevation: 6,
+                }}
+              >
+                <Text style={{ color: '#0f172a', fontSize: 12, fontWeight: '900' }}>Chờ gán</Text>
+                <View
+                  style={{
+                    backgroundColor: '#0f172a',
+                    paddingHorizontal: 7,
+                    paddingVertical: 2,
+                    borderRadius: 999,
+                  }}
+                >
+                  <Text style={{ color: '#fcd34d', fontSize: 11, fontWeight: '900' }}>
+                    {quickSnaps.length}
+                  </Text>
+                </View>
+              </TouchableOpacity>
+            )}
+            <TouchableOpacity
+              onPress={() => setIsQuickCameraVisible(true)}
+              activeOpacity={0.85}
+              style={{
+                height: 44,
+                paddingHorizontal: 13,
+                borderRadius: 22,
+                backgroundColor: '#0284c7',
+                borderWidth: 1,
+                borderColor: '#38bdf8',
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 6,
+                elevation: 6,
+              }}
+            >
+              <Ionicons name="camera" size={18} color="#fff" />
+              <Text style={{ color: '#fff', fontSize: 12, fontWeight: '900' }}>Chụp nhanh</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => setIsQuickSnapBarCollapsed(true)}
+              activeOpacity={0.85}
+              style={{
+                width: 34,
+                height: 44,
+                borderRadius: 17,
+                backgroundColor: 'rgba(15, 23, 42, 0.92)',
+                borderWidth: 1,
+                borderColor: '#475569',
+                alignItems: 'center',
+                justifyContent: 'center',
+                elevation: 6,
+              }}
+            >
+              <Ionicons name="chevron-forward" size={18} color="#cbd5e1" />
+            </TouchableOpacity>
+          </View>
+        )
+      )}
+
       {/* ── CÁC MODAL THAO TÁC ── */}
+      <QuickSnapCameraModal
+        visible={isQuickCameraVisible}
+        openShifts={openShifts}
+        initialShiftId={selectedShift?.id || null}
+        totalQueueCount={quickSnaps.length}
+        lastThumbUri={quickSnaps[quickSnaps.length - 1]?.image?.uri || null}
+        onClose={() => setIsQuickCameraVisible(false)}
+        onOpenQueue={() => setIsQuickSnapModalVisible(true)}
+        onCaptured={handleQuickSnapCaptured}
+      />
+
+      <QuickSnapQueueModal
+        visible={isQuickSnapModalVisible}
+        snaps={quickSnaps}
+        openShifts={openShifts}
+        allProducts={allProducts}
+        recentProducts={recentProducts}
+        onClose={() => setIsQuickSnapModalVisible(false)}
+        onCaptureMore={() => {
+          setIsQuickSnapModalVisible(false);
+          setIsQuickCameraVisible(true);
+        }}
+        onDeleteSnap={handleDeleteQuickSnap}
+        onChangeSnapShift={handleChangeQuickSnapShift}
+        onSaveToShiftAlbum={handleSaveQuickSnapToAlbum}
+        onAssignSnap={handleAssignQuickSnap}
+      />
+
       {/* 1. Bàn phím số nhập nhanh */}
       <OperationNumberPadModal
         visible={isPadVisible}
