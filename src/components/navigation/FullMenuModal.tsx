@@ -42,9 +42,9 @@ export const FullMenuModal: React.FC<FullMenuModalProps> = ({
     onClose();
   };
 
-  const menuSections: Array<{
+  const menuSections: {
     title: string;
-    items: Array<{
+    items: {
       tab: AppTab;
       label: string;
       desc: string;
@@ -52,8 +52,8 @@ export const FullMenuModal: React.FC<FullMenuModalProps> = ({
       color: string;
       bgColor: string;
       isPrimary?: boolean;
-    }>;
-  }> = [
+    }[];
+  }[] = [
     {
       title: 'CHỨC NĂNG CHÍNH VẬN HÀNH',
       items: [

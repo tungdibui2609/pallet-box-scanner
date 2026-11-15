@@ -9,7 +9,6 @@ import {
   KeyboardAvoidingView,
   Platform,
   ScrollView,
-  Alert,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../contexts/AuthContext';
@@ -25,10 +24,6 @@ export default function LoginScreen({ onOpenSettings }: { onOpenSettings?: () =>
   const [offlineLoading, setOfflineLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [cachedUser, setCachedUser] = useState<UserProfile | null>(null);
-
-  useEffect(() => {
-    loadCachedAccount();
-  }, []);
 
   async function loadCachedAccount() {
     try {
@@ -46,6 +41,13 @@ export default function LoginScreen({ onOpenSettings }: { onOpenSettings?: () =>
       }
     } catch {}
   }
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      void loadCachedAccount();
+    }, 0);
+    return () => clearTimeout(timer);
+  }, []);
 
   async function handleSignIn() {
     if (!username.trim()) {

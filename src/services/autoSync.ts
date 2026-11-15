@@ -76,7 +76,7 @@ export async function triggerBackgroundAutoSync(options?: {
 
     // 2. Tải ngầm danh sách LOT, Quy tắc & Sơ đồ kho tuần tự
     const palletRes = await syncCloudPalletsOffline().catch(e => ({ success: false, count: 0, message: e.message }));
-    const stampRes = await syncStampDictionariesFromSupabase().catch(e => ({ success: false, count: 0, message: e.message }));
+    await syncStampDictionariesFromSupabase().catch(e => ({ success: false, count: 0, message: e.message }));
     const whMapRes = await syncWarehouseMapOffline().catch(e => ({ success: false, totalPositions: 0, message: e.message }));
 
     await AsyncStorage.setItem(LAST_AUTO_SYNC_KEY, String(Date.now()));
@@ -118,7 +118,7 @@ export async function syncAllWarehouseDataMaster(): Promise<{
       return list.length;
     };
 
-    const [whMapRes, palletRes, stampRes, proposalCount, templatesList, orderTypesList] = await Promise.all([
+    const [whMapRes, palletRes, , proposalCount, templatesList] = await Promise.all([
       syncWarehouseMapOffline().catch(e => ({ success: false, totalPositions: 0, totalWarehouses: 0, message: e.message })),
       syncCloudPalletsOffline().catch(e => ({ success: false, count: 0, message: e.message })),
       syncStampDictionariesFromSupabase().catch(e => ({ success: false, count: 0, message: e.message })),

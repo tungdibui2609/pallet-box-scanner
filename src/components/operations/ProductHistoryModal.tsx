@@ -40,16 +40,7 @@ export default function ProductHistoryModal({ visible, product, shiftId, onClose
   const [directionFilter, setDirectionFilter] = useState<'all' | 'in' | 'out'>('all');
   const [previewImage, setPreviewImage] = useState<OperationImageRecord | null>(null);
 
-  useEffect(() => {
-    if (visible && product && shiftId) {
-      setActiveTab('history');
-      setDirectionFilter('all');
-      setPreviewImage(null);
-      loadHistory();
-    }
-  }, [visible, product, shiftId]);
-
-  const loadHistory = async () => {
+  const loadHistory = React.useCallback(async () => {
     if (!shiftId || !product) return;
     setLoading(true);
     try {
@@ -75,7 +66,18 @@ export default function ProductHistoryModal({ visible, product, shiftId, onClose
     } finally {
       setLoading(false);
     }
-  };
+  }, [shiftId, product]);
+
+  useEffect(() => {
+    if (!visible || !product || !shiftId) return;
+    const timer = setTimeout(() => {
+      setActiveTab('history');
+      setDirectionFilter('all');
+      setPreviewImage(null);
+      void loadHistory();
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [visible, product, shiftId, loadHistory]);
 
   const inRecords = useMemo(() => records.filter(r => r.to_department === 'Kho'), [records]);
   const outRecords = useMemo(() => records.filter(r => r.to_department !== 'Kho'), [records]);

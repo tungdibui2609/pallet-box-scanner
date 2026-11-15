@@ -17,10 +17,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<UserProfile | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
 
-  useEffect(() => {
-    initAuth();
-  }, []);
-
   async function initAuth() {
     setIsLoading(true);
     try {
@@ -46,6 +42,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setIsLoading(false);
     }
   }
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      void initAuth();
+    }, 0);
+    return () => clearTimeout(timer);
+  }, []);
 
   async function handleLogin(userOrEmail: string, pass: string) {
     setIsLoading(true);

@@ -112,9 +112,11 @@ export default function WarehouseAlbumModal({ visible, systemCode, companyId, on
   }, [systemCode, companyId]);
 
   useEffect(() => {
-    if (visible) {
-      loadImages();
-    }
+    if (!visible) return;
+    const timer = setTimeout(() => {
+      void loadImages();
+    }, 0);
+    return () => clearTimeout(timer);
   }, [visible, loadImages]);
 
   const filteredImages = useMemo(() => {
@@ -318,20 +320,15 @@ export default function WarehouseAlbumModal({ visible, systemCode, companyId, on
   }, [filteredImages]);
 
   const jobTree = useMemo(() => {
-    type JobDateGroup = { dateKey: string; dateLabel: string; items: OperationImageRecord[] };
+    type RefSubGroup = { subKey: string; label: string; phase: 'start' | 'end' | 'legacy'; items: OperationImageRecord[] };
+    type JobDateGroup = { dateKey: string; dateLabel: string; items: OperationImageRecord[]; refSubs: Map<string, RefSubGroup> };
     type JobRootGroup = { jobName: string; count: number; latestDateKey: string; items: OperationImageRecord[]; dates: Map<string, JobDateGroup> };
 
     const jobs = new Map<string, JobRootGroup>();
     for (const img of filteredImages) {
       const { dateKey, dateLabel } = getDayInfo(img.captured_at);
       const jobName = img.job_name || 'Công việc không tên';
-      const refMatch = img.notes?.match(/^\[THAM_CHIEU:([^\]:]+)(?::(start|end))?\]/);
-      const childKey = refMatch
-        ? (refMatch[2] === 'end' ? '__REF_END__' : refMatch[2] === 'start' ? '__REF_START__' : '__REF__')
-        : dateKey;
-      const childLabel = refMatch
-        ? (refMatch[2] === 'end' ? '📌 Tham chiếu Cuối' : refMatch[2] === 'start' ? '📌 Tham chiếu Đầu' : '📌 Tham chiếu')
-        : dateLabel;
+      const refPhase = parseRefPhase(img.notes);
 
       let jNode = jobs.get(jobName);
       if (!jNode) {
@@ -342,40 +339,65 @@ export default function WarehouseAlbumModal({ visible, systemCode, companyId, on
       jNode.items.push(img);
       if (dateKey > jNode.latestDateKey) jNode.latestDateKey = dateKey;
 
-      let dNode = jNode.dates.get(childKey);
+      let dNode = jNode.dates.get(dateKey);
       if (!dNode) {
-        dNode = { dateKey: childKey, dateLabel: childLabel, items: [] };
-        jNode.dates.set(childKey, dNode);
+        dNode = { dateKey, dateLabel, items: [], refSubs: new Map() };
+        jNode.dates.set(dateKey, dNode);
       }
       dNode.items.push(img);
+
+      if (refPhase) {
+        const refTag = refPhase === 'start' ? 'REF_START' : refPhase === 'end' ? 'REF_END' : 'REF';
+        const subKey = `${jobName}::${dateKey}::${refTag}`;
+        const label =
+          refPhase === 'start'
+            ? '📌 Tham chiếu Đầu'
+            : refPhase === 'end'
+              ? '📌 Tham chiếu Cuối'
+              : '📌 Tham chiếu';
+        let sNode = dNode.refSubs.get(subKey);
+        if (!sNode) {
+          sNode = { subKey, label, phase: refPhase, items: [] };
+          dNode.refSubs.set(subKey, sNode);
+        }
+        sNode.items.push(img);
+      }
     }
 
-    const refOrder: Record<string, number> = { __REF_START__: 0, __REF_END__: 1, __REF__: 2 };
+    const phaseOrder: Record<'start' | 'end' | 'legacy', number> = { start: 0, end: 1, legacy: 2 };
     return Array.from(jobs.values())
       .sort((a, b) => b.latestDateKey.localeCompare(a.latestDateKey) || a.jobName.localeCompare(b.jobName))
       .map((j) => ({
         ...j,
-        dates: Array.from(j.dates.values()).sort((a, b) => {
-          const ra = refOrder[a.dateKey];
-          const rb = refOrder[b.dateKey];
-          if (ra !== undefined && rb !== undefined) return ra - rb;
-          if (ra !== undefined) return -1;
-          if (rb !== undefined) return 1;
-          return b.dateKey.localeCompare(a.dateKey);
-        }),
+        dates: Array.from(j.dates.values())
+          .sort((a, b) => b.dateKey.localeCompare(a.dateKey))
+          .map((d) => ({
+            ...d,
+            refSubs: Array.from(d.refSubs.values()).sort(
+              (a, b) => phaseOrder[a.phase] - phaseOrder[b.phase]
+            ),
+          })),
       }));
   }, [filteredImages]);
 
-  const selectedJobData = useMemo(() => {
+  const selectedJobData = (() => {
     if (treeMode === 'job' && selectedJobGroupKey) {
-      const sepIdx = selectedJobGroupKey.lastIndexOf('::');
-      if (sepIdx !== -1) {
-        const jName = selectedJobGroupKey.slice(0, sepIdx);
-        const dKey = selectedJobGroupKey.slice(sepIdx + 2);
+      const parts = selectedJobGroupKey.split('::');
+      if (parts.length >= 2) {
+        const lastPart = parts[parts.length - 1];
+        const hasRefTag = lastPart === 'REF_START' || lastPart === 'REF_END' || lastPart === 'REF';
+        const dKey = hasRefTag ? parts[parts.length - 2] : lastPart;
+        const jName = hasRefTag ? parts.slice(0, -2).join('::') : parts.slice(0, -1).join('::');
         const jNode = jobTree.find((j) => j.jobName === jName);
         const dNode = jNode?.dates.find((d) => d.dateKey === dKey);
         if (dNode) {
-          return { dateLabel: dNode.dateLabel, jobName: jName, items: dNode.items, isDirectRef: dKey.startsWith('__REF') };
+          if (hasRefTag) {
+            const sub = dNode.refSubs.find((s) => s.subKey === selectedJobGroupKey);
+            if (sub) {
+              return { dateLabel: dNode.dateLabel, jobName: `${jName} › ${sub.label}`, items: sub.items, isDirectRef: true };
+            }
+          }
+          return { dateLabel: dNode.dateLabel, jobName: jName, items: dNode.items, isDirectRef: false };
         }
       } else {
         const jNode = jobTree.find((j) => j.jobName === selectedJobGroupKey);
@@ -401,7 +423,7 @@ export default function WarehouseAlbumModal({ visible, systemCode, companyId, on
       }
     }
     return null;
-  }, [treeMode, folderTree, jobTree, selectedJobKey, selectedJobGroupKey]);
+  })();
 
   const totalSynced = useMemo(
     () => filteredImages.filter((i) => !!i.drive_file_id && !i.is_offline).length,
@@ -592,7 +614,7 @@ export default function WarehouseAlbumModal({ visible, systemCode, companyId, on
               style={styles.breadcrumbBar}
             >
               <Ionicons name="arrow-back" size={18} color="#38bdf8" />
-              <Text style={styles.breadcrumbText} numberOfLines={1}>
+              <Text style={styles.breadcrumbText}>
                 {selectedJobData.dateLabel} › {selectedJobData.jobName} ({selectedJobData.items.length})
               </Text>
             </TouchableOpacity>
@@ -740,7 +762,7 @@ export default function WarehouseAlbumModal({ visible, systemCode, companyId, on
                         color="#94a3b8"
                       />
                       <Ionicons name="folder-open" size={18} color="#34d399" />
-                      <Text style={styles.monthTitle} numberOfLines={1}>
+                      <Text style={styles.monthTitle}>
                         {jobNode.jobName}
                       </Text>
                       <TouchableOpacity
@@ -754,18 +776,38 @@ export default function WarehouseAlbumModal({ visible, systemCode, companyId, on
                     {isJobOpen && (
                       <View style={styles.datesContainer}>
                         {jobNode.dates.map((dt) => (
-                          <TouchableOpacity
-                            key={`${jobNode.jobName}::${dt.dateKey}`}
-                            style={styles.jobRow}
-                            onPress={() => setSelectedJobGroupKey(`${jobNode.jobName}::${dt.dateKey}`)}
-                          >
-                            <Ionicons name="calendar" size={15} color="#818cf8" />
-                            <Text style={styles.jobTitle}>{dt.dateLabel}</Text>
-                            <View style={styles.jobCountBadge}>
-                              <Text style={styles.jobCountText}>{dt.items.length} ảnh</Text>
-                            </View>
-                            <Ionicons name="chevron-forward" size={16} color="#64748b" />
-                          </TouchableOpacity>
+                          <View key={`${jobNode.jobName}::${dt.dateKey}`} style={{ gap: 4 }}>
+                            <TouchableOpacity
+                              style={styles.jobRow}
+                              onPress={() => setSelectedJobGroupKey(`${jobNode.jobName}::${dt.dateKey}`)}
+                            >
+                              <Ionicons name="calendar" size={15} color="#818cf8" />
+                              <Text style={styles.jobTitle}>{dt.dateLabel}</Text>
+                              <View style={styles.jobCountBadge}>
+                                <Text style={styles.jobCountText}>{dt.items.length} ảnh</Text>
+                              </View>
+                              <Ionicons name="chevron-forward" size={16} color="#64748b" />
+                            </TouchableOpacity>
+                            {dt.refSubs.length > 0 && (
+                              <View style={{ paddingLeft: 20, gap: 4 }}>
+                                {dt.refSubs.map((sub) => (
+                                  <TouchableOpacity
+                                    key={sub.subKey}
+                                    style={[styles.jobRow, { backgroundColor: 'rgba(251,191,36,0.08)', borderColor: 'rgba(251,191,36,0.28)' }]}
+                                    onPress={() => setSelectedJobGroupKey(sub.subKey)}
+                                  >
+                                    <Text style={[styles.jobTitle, { color: '#fde68a' }]}>
+                                      {sub.label}
+                                    </Text>
+                                    <View style={styles.jobCountBadge}>
+                                      <Text style={styles.jobCountText}>{sub.items.length} ảnh</Text>
+                                    </View>
+                                    <Ionicons name="chevron-forward" size={16} color="#fbbf24" />
+                                  </TouchableOpacity>
+                                ))}
+                              </View>
+                            )}
+                          </View>
                         ))}
                       </View>
                     )}
@@ -863,7 +905,7 @@ export default function WarehouseAlbumModal({ visible, systemCode, companyId, on
                                           }}
                                         >
                                           <Ionicons name="folder-open" size={16} color="#34d399" />
-                                          <Text style={styles.jobTitle} numberOfLines={1}>
+                                          <Text style={styles.jobTitle}>
                                             {job.jobName}
                                           </Text>
                                           <View style={styles.jobCountBadge}>
@@ -880,7 +922,7 @@ export default function WarehouseAlbumModal({ visible, systemCode, companyId, on
                                               style={[styles.jobRow, { backgroundColor: 'rgba(251,191,36,0.08)', borderColor: 'rgba(251,191,36,0.28)' }]}
                                               onPress={() => setSelectedJobKey(sub.subKey)}
                                             >
-                                              <Text style={[styles.jobTitle, { color: '#fde68a' }]} numberOfLines={1}>
+                                              <Text style={[styles.jobTitle, { color: '#fde68a' }]}>
                                                 {sub.label}
                                               </Text>
                                               <View style={styles.jobCountBadge}>
@@ -1150,6 +1192,7 @@ const styles = StyleSheet.create({
   },
   monthTitle: {
     flex: 1,
+    flexShrink: 1,
     color: '#f8fafc',
     fontSize: 14,
     fontWeight: '800',
@@ -1211,9 +1254,11 @@ const styles = StyleSheet.create({
   },
   jobTitle: {
     flex: 1,
+    flexShrink: 1,
     color: '#f8fafc',
     fontSize: 13,
     fontWeight: '600',
+    lineHeight: 18,
   },
   jobCountBadge: {
     backgroundColor: 'rgba(16,185,129,0.16)',

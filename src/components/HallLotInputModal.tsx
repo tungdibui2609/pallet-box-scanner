@@ -83,21 +83,32 @@ export default function HallLotInputModal({
       .filter(s => s.length > 0);
   };
 
-  const createEmptyRow = (seqIndex: number): ExcelLotRow => {
+  const nextRowIdRef = React.useRef(1);
+
+  const createEmptyRow = React.useCallback((seqIndex: number): ExcelLotRow => {
     const today = getTodayStr();
+    const nextId = `row-${nextRowIdRef.current++}`;
     return {
-      id: Math.random().toString(36).substring(2, 9),
+      id: nextId,
       seq: String(seqIndex),
       info: '',
       tag: '',
       date: today,
       dates: [today],
     };
-  };
+  }, []);
 
-  const [excelRows, setExcelRows] = useState<ExcelLotRow[]>([
-    createEmptyRow(1),
-  ]);
+  const [excelRows, setExcelRows] = useState<ExcelLotRow[]>(() => {
+    const today = getTodayStr();
+    return [{
+      id: 'row-init-1',
+      seq: '1',
+      info: '',
+      tag: '',
+      date: today,
+      dates: [today],
+    }];
+  });
 
   // State Modal Lịch chọn ngày (Hỗ trợ chọn nhiều ngày)
   const [calendarTargetRowId, setCalendarTargetRowId] = useState<string | null>(null);
@@ -261,7 +272,8 @@ export default function HallLotInputModal({
   };
 
   useEffect(() => {
-    if (visible) {
+    if (!visible) return;
+    const timer = setTimeout(() => {
       if (initialHall) {
         // Tìm sảnh khớp trong danh sách theo thứ tự ưu tiên chặt chẽ:
         // 1. Khớp chính xác ID (nếu có id hợp lệ và khác 'custom')
@@ -319,8 +331,9 @@ export default function HallLotInputModal({
 
       // Tự động đẩy dữ liệu ngoại tuyến còn tồn đọng (nếu có mạng)
       syncOfflineHallLotUpdates().catch(() => {});
-    }
-  }, [visible, initialHall, availableHalls]);
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [visible, initialHall, availableHalls, createEmptyRow]);
 
   const handleAddSeqs = (text: string) => {
     if (!text.trim()) return;

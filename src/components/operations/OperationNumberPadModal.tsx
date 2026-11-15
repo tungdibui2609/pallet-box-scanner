@@ -32,10 +32,11 @@ export default function OperationNumberPadModal({ visible, product, defaultUnit,
   const [note, setNote] = useState<string>('');
   const [showNoteInput, setShowNoteInput] = useState<boolean>(false);
   const [images, setImages] = useState<LocalPickedImage[]>([]);
-  const [submitting, setSubmitting] = useState<boolean>(false);
+  const [submitting] = useState<boolean>(false);
 
   useEffect(() => {
-    if (visible && product) {
+    if (!visible || !product) return;
+    const timer = setTimeout(() => {
       setValueStr('');
       setNote('');
       setShowNoteInput(false);
@@ -61,7 +62,8 @@ export default function OperationNumberPadModal({ visible, product, defaultUnit,
         chosen = units[0] || 'Kg';
       }
       setSelectedUnit(chosen);
-    }
+    }, 0);
+    return () => clearTimeout(timer);
   }, [visible, product, currentStats, defaultUnit]);
 
   if (!product) return null;

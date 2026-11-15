@@ -77,7 +77,7 @@ export default function ReconcileTabView({
   const prodRows = Object.values(prodMap);
   const totalIn = Math.round(prodRows.reduce((s, r) => s + r.inQty, 0) * 1000) / 1000;
   const totalOut = Math.round(prodRows.reduce((s, r) => s + r.outQty, 0) * 1000) / 1000;
-  const rows: Array<{ name: string; unit: string; inQty: number; outQty: number; isTotal?: boolean }> = [
+  const rows: { name: string; unit: string; inQty: number; outQty: number; isTotal?: boolean }[] = [
     {
       name: 'Tổng tất cả sản phẩm (Tham chiếu tổng)',
       unit: 'Tổng cả việc',

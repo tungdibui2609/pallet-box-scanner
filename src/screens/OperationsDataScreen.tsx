@@ -10,7 +10,6 @@ import {
   ActivityIndicator,
   Alert,
   RefreshControl,
-  Platform,
   Image,
   Modal,
 } from 'react-native';
@@ -31,14 +30,9 @@ import {
   deleteJournalEntry,
   syncPinnedProducts,
   getWarehouseProducts,
-  normalizeUnitMatch,
   getSubShifts,
-  reopenShift,
-  deleteShift,
   aggregateShiftsProducts,
   aggregateShiftsUnits,
-  AggregatedProductItem,
-  AggregatedUnitItem,
   getPendingOperationsCount,
   syncOperationsOfflineQueue,
   getJobTemplates,
@@ -66,6 +60,7 @@ import {
   uploadOperationImages,
   getShiftOperationImages,
 } from '../services/operationImagesService';
+import { formatDateDisplay, formatDateTime, toTimestamp } from '../utils/dateUtils';
 import { matchSearch, calculateSearchScore } from '../utils/searchUtils';
 
 interface OperationsDataScreenProps {
@@ -87,16 +82,6 @@ function getShiftDateString(isoString?: string | null): string {
   }
 }
 
-// Helper định dạng ngày hiển thị (DD/MM/YYYY)
-function formatDateDisplay(dateKey: string): string {
-  if (!dateKey) return '';
-  const parts = dateKey.split('-');
-  if (parts.length === 3) {
-    return `${parts[2]}/${parts[1]}/${parts[0]}`;
-  }
-  return dateKey;
-}
-
 // Helper kiểm tra ca có đóng sang ngày hôm sau không
 function isOvernightShift(shift?: DeliveryShift | null): boolean {
   if (!shift?.opened_at || !shift?.closed_at) return false;
@@ -116,35 +101,6 @@ function standardizeUnitLabel(u?: string | null): string {
   const norm = u.trim().toLowerCase();
   if (norm === 'thùng' || norm === 'thung') return 'Thùng (20kg)';
   return u.trim();
-}
-
-// Helper chuyển chuỗi thời gian thành timestamp mili-giây an toàn tuyệt đối
-function toTimestamp(dateStr?: string | null): number {
-  if (!dateStr) return 0;
-  let s = String(dateStr).trim();
-  if (s.includes(' ')) s = s.replace(' ', 'T');
-  if (/[+-]\d{2}$/.test(s)) {
-    s = `${s}:00`;
-  }
-  const t = new Date(s).getTime();
-  if (!isNaN(t)) return t;
-  const fallback = new Date(dateStr).getTime();
-  return isNaN(fallback) ? 0 : fallback;
-}
-
-// Helper định dạng ngày giờ chuẩn Việt Nam (HH:mm:ss DD/MM/YYYY)
-function formatDateTime(isoString?: string | null): string {
-  if (!isoString) return '-';
-  try {
-    const ts = toTimestamp(isoString);
-    if (!ts) return isoString;
-    const d = new Date(ts);
-    const time = d.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
-    const date = d.toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit', year: 'numeric' });
-    return `${time} ${date}`;
-  } catch {
-    return isoString;
-  }
 }
 
 // Helper định dạng khoảng thời gian gọn (HH:mm - HH:mm)
@@ -195,7 +151,9 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
   // Danh mục sản phẩm & Bàn làm việc
   const [allProducts, setAllProducts] = useState<ShiftProductItem[]>([]);
   const allProductsRef = useRef<ShiftProductItem[]>([]);
-  allProductsRef.current = allProducts;
+  useEffect(() => {
+    allProductsRef.current = allProducts;
+  }, [allProducts]);
   const [pinnedProducts, setPinnedProducts] = useState<ShiftProductItem[]>([]);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [searchMode, setSearchMode] = useState<'filter' | 'pin'>('filter');
@@ -220,19 +178,23 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
   const [previewReconcileImage, setPreviewReconcileImage] = useState<OperationImageRecord | null>(null);
 
   useEffect(() => {
-    if (!selectedShift?.id) {
-      setReconcileMap({});
-      return;
-    }
+    const shiftId = selectedShift?.id;
     const fromShift = (selectedShift as any)?.summary_data?.reconciliations;
-    if (fromShift && typeof fromShift === 'object') {
-      setReconcileMap(fromShift);
-      return;
-    }
-    getCachedShiftReconciliations(selectedShift.id)
-      .then(setReconcileMap)
-      .catch(() => setReconcileMap({}));
-  }, [selectedShift?.id]);
+    const timer = setTimeout(() => {
+      if (!shiftId) {
+        setReconcileMap({});
+        return;
+      }
+      if (fromShift && typeof fromShift === 'object') {
+        setReconcileMap(fromShift);
+        return;
+      }
+      getCachedShiftReconciliations(shiftId)
+        .then(setReconcileMap)
+        .catch(() => setReconcileMap({}));
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [selectedShift]);
 
   const handleSaveReconcile = async () => {
     if (!selectedShift?.id) return;
@@ -412,11 +374,16 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
   };
 
   useEffect(() => {
-    refreshPendingCount();
+    const initialTimer = setTimeout(() => {
+      void refreshPendingCount();
+    }, 0);
     const interval = setInterval(() => {
-      refreshPendingCount();
+      void refreshPendingCount();
     }, 10000);
-    return () => clearInterval(interval);
+    return () => {
+      clearTimeout(initialTimer);
+      clearInterval(interval);
+    };
   }, [refreshPendingCount]);
 
   // Mở xem chi tiết báo cáo ca đã hoàn thành
@@ -479,7 +446,12 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
     } catch (e) {
       console.warn('Lỗi lấy nhật ký & đợt chốt tạm:', e);
     }
-  }, []);
+  }, [setShiftImageCount]);
+
+  const reloadShiftDataRef = useRef(reloadShiftData);
+  useEffect(() => {
+    reloadShiftDataRef.current = reloadShiftData;
+  }, [reloadShiftData]);
 
   // Chọn ca công việc (Khai báo trước để loadInitialData gọi an toàn)
   const selectShift = useCallback(async (shift: DeliveryShift, catalog?: ShiftProductItem[]) => {
@@ -503,8 +475,8 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
     setSelectedUnitMap(prev => ({ ...prev, ...unitMap }));
 
     // Tải nhật ký số liệu và danh sách đợt chốt tạm của ca
-    await reloadShiftData(shift.id);
-  }, [enrichProducts, reloadShiftData]);
+    await reloadShiftDataRef.current(shift.id);
+  }, [enrichProducts, setIsShiftDropdownOpen]);
 
   const loadInitialData = useCallback(async () => {
     setLoading(true);
@@ -585,7 +557,7 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
     } finally {
       setDownloadingOpsOffline(false);
     }
-  }, [downloadingOpsOffline, handleRefresh]);
+  }, [downloadingOpsOffline, handleRefresh, refreshPendingCount]);
 
   // Danh sách các ngày phát sinh từ pastShifts (Gom cả ngày mở và ngày đóng ca như Web)
   const availableDates = useMemo(() => {
@@ -613,17 +585,18 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
 
   // Tự động gán ngày mặc định khi chuyển sang tab daily hoặc khi danh sách ngày thay đổi
   useEffect(() => {
-    if (availableDates.length > 0) {
-      if (selectedDates.length === 0) {
-        const latest = availableDates[0].dateKey;
+    if (availableDates.length > 0 && selectedDates.length === 0) {
+      const latest = availableDates[0].dateKey;
+      const timer = setTimeout(() => {
         setSelectedDates([latest]);
         setDailyRangeFrom(latest);
         setDailyRangeTo(latest);
         setProdRangeFrom(latest);
         setProdRangeTo(latest);
-      }
+      }, 0);
+      return () => clearTimeout(timer);
     }
-  }, [availableDates]);
+  }, [availableDates, selectedDates.length]);
 
   // Danh sách các công việc trong các ngày được chọn hoặc khoảng ngày (Khớp chuẩn 100% như Web)
   const dailyShifts = useMemo(() => {
@@ -680,20 +653,29 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
   useEffect(() => {
     if (activeTab === 'done' && doneMode === 'daily' && dailyShifts.length > 0) {
       let cancelled = false;
-      setLoadingDailyJournals(true);
-      getMultiShiftJournals(dailyShifts.map(s => s.id))
-        .then(lines => {
-          if (!cancelled) setDailyJournals(lines);
-        })
-        .catch(err => {
-          console.warn('Lỗi tải nhật ký ca trong ngày:', err);
-        })
-        .finally(() => {
-          if (!cancelled) setLoadingDailyJournals(false);
-        });
-      return () => { cancelled = true; };
+      const timer = setTimeout(() => {
+        if (cancelled) return;
+        setLoadingDailyJournals(true);
+        getMultiShiftJournals(dailyShifts.map(s => s.id))
+          .then(lines => {
+            if (!cancelled) setDailyJournals(lines);
+          })
+          .catch(err => {
+            console.warn('Lỗi tải nhật ký ca trong ngày:', err);
+          })
+          .finally(() => {
+            if (!cancelled) setLoadingDailyJournals(false);
+          });
+      }, 0);
+      return () => {
+        cancelled = true;
+        clearTimeout(timer);
+      };
     } else if (dailyShifts.length === 0) {
-      setDailyJournals([]);
+      const timer = setTimeout(() => {
+        setDailyJournals([]);
+      }, 0);
+      return () => clearTimeout(timer);
     }
   }, [activeTab, doneMode, dailyShifts]);
 
@@ -783,20 +765,29 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
   useEffect(() => {
     if (activeTab === 'done' && doneMode === 'product' && prodShifts.length > 0) {
       let cancelled = false;
-      setLoadingProdJournals(true);
-      getMultiShiftJournals(prodShifts.map(s => s.id))
-        .then(lines => {
-          if (!cancelled) setProdJournals(lines);
-        })
-        .catch(err => {
-          console.warn('Lỗi tải nhật ký ca theo sản phẩm:', err);
-        })
-        .finally(() => {
-          if (!cancelled) setLoadingProdJournals(false);
-        });
-      return () => { cancelled = true; };
+      const timer = setTimeout(() => {
+        if (cancelled) return;
+        setLoadingProdJournals(true);
+        getMultiShiftJournals(prodShifts.map(s => s.id))
+          .then(lines => {
+            if (!cancelled) setProdJournals(lines);
+          })
+          .catch(err => {
+            console.warn('Lỗi tải nhật ký ca theo sản phẩm:', err);
+          })
+          .finally(() => {
+            if (!cancelled) setLoadingProdJournals(false);
+          });
+      }, 0);
+      return () => {
+        cancelled = true;
+        clearTimeout(timer);
+      };
     } else if (prodShifts.length === 0) {
-      setProdJournals([]);
+      const timer = setTimeout(() => {
+        setProdJournals([]);
+      }, 0);
+      return () => clearTimeout(timer);
     }
   }, [activeTab, doneMode, prodShifts]);
 
@@ -918,8 +909,16 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
   };
 
   // Nạp dữ liệu ban đầu duy nhất 1 lần khi mount
+  const loadInitialRef = useRef(loadInitialData);
   useEffect(() => {
-    loadInitialData();
+    loadInitialRef.current = loadInitialData;
+  }, [loadInitialData]);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      void loadInitialRef.current();
+    }, 0);
+    return () => clearTimeout(timer);
   }, []);
 
   // Danh sách các lượt bấm hiển thị trên bàn làm việc

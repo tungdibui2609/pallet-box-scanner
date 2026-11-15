@@ -10,9 +10,15 @@ import {
 } from './database';
 import { DEFAULT_STAMP_DICTIONARY } from './stampParser';
 import { formatMaterialZoneList } from '../utils/provinces';
+import { encodeSTT, decodeSTT } from '../utils/numberUtils';
 
 export const DEFAULT_SUPABASE_URL = 'https://api.chanhthu.click';
 export const DEFAULT_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6ImFub24iLCJleHAiOjE5ODM4MTI5OTZ9.CRXP1A7WOeoJeXxjNni43kdQwgnWNReilDMblYTn_I0';
+
+export async function getConfiguredSupabaseUrl(): Promise<string> {
+  const storedUrl = await AsyncStorage.getItem('config_supabase_url');
+  return storedUrl || DEFAULT_SUPABASE_URL;
+}
 
 let supabaseInstance: any = null;
 
@@ -75,8 +81,6 @@ export function withTimeout<T = any>(
     )
   ]);
 }
-
-import { encodeSTT, decodeSTT } from '../utils/numberUtils';
 
 /**
  * Sync Pallet & Boxes into Supabase:
@@ -1026,7 +1030,7 @@ export async function syncCloudPalletsOffline(options?: {
 }): Promise<{ success: boolean; count: number; message: string; lastSyncedAt?: string }> {
   try {
     const palletRes = await fetchCloudPallets();
-    const products = await fetchProductsForSuggestions();
+    await fetchProductsForSuggestions();
 
     if (!palletRes.success && palletRes.data.length === 0) {
       return {
@@ -1420,7 +1424,7 @@ export async function getWarehouseMapOfflineData(): Promise<WarehouseMapOfflineD
     return memoryWarehouseMapCache;
   }
   try {
-    const [zonesRaw, emptyRaw, occupiedRaw, timeRaw, countRaw, whsRaw] = await Promise.all([
+    const [zonesRaw, emptyRaw, occupiedRaw, timeRaw, , whsRaw] = await Promise.all([
       AsyncStorage.getItem('warehouse_map_offline_zones'),
       AsyncStorage.getItem('warehouse_map_offline_empty_pos'),
       AsyncStorage.getItem('warehouse_map_offline_occupied_pos'),
@@ -1606,7 +1610,7 @@ export async function submitHallLotUpdate(params: {
         isOffline: true,
         message: 'Đã lưu vào máy! Sẽ tự động gửi lên Web ngay khi có mạng.',
       };
-    } catch (cacheErr: any) {
+    } catch {
       return { success: false, message: 'Lỗi gửi dữ liệu: ' + (err.message || 'Không có mạng') };
     }
   }
@@ -1664,13 +1668,13 @@ export interface LookedUpLot {
   unit: string;
   product_name: string;
   sku: string | null;
-  items?: Array<{
+  items?: {
     product_id: string | null;
     product_name: string;
     sku: string | null;
     quantity: number;
     unit: string;
-  }>;
+  }[];
   current_position_id?: string | null;
   current_position_code?: string | null;
 }

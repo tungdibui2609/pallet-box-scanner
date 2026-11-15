@@ -32,15 +32,7 @@ export default function CloseJobModal({ visible, shift, onClose, onSuccess, user
   const [images, setImages] = useState<LocalPickedImage[]>([]);
   const [submitting, setSubmitting] = useState(false);
 
-  useEffect(() => {
-    if (visible && shift) {
-      setCloseNotes('');
-      setImages([]);
-      loadTypes();
-    }
-  }, [visible, shift]);
-
-  const loadTypes = async () => {
+  const loadTypes = React.useCallback(async () => {
     try {
       const types = await getOrderTypes();
       setOrderTypes(types);
@@ -52,7 +44,17 @@ export default function CloseJobModal({ visible, shift, onClose, onSuccess, user
     } catch (e) {
       console.warn('Lỗi lấy loại phiếu:', e);
     }
-  };
+  }, [shift]);
+
+  useEffect(() => {
+    if (!visible || !shift) return;
+    const timer = setTimeout(() => {
+      setCloseNotes('');
+      setImages([]);
+      void loadTypes();
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [visible, shift, loadTypes]);
 
   if (!shift) return null;
 

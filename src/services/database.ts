@@ -1,5 +1,5 @@
 import * as SQLite from 'expo-sqlite';
-import { Pallet, BoxLabel, ParsedLabelData, ParsedStampData, AppConfig, StampDictionaryItem, StampFormat, CloudPallet } from '../types';
+import { Pallet, BoxLabel, ParsedLabelData, ParsedStampData, StampDictionaryItem, StampFormat, CloudPallet } from '../types';
 import { decodeStamp, DEFAULT_STAMP_DICTIONARY } from './stampParser';
 
 let dbInstance: SQLite.SQLiteDatabase | null = null;

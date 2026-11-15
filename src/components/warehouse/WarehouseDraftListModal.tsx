@@ -80,14 +80,16 @@ export default function WarehouseDraftListModal({
   }, []);
 
   useEffect(() => {
-    if (visible) {
+    if (!visible) return;
+    const timer = setTimeout(() => {
       if (draft.items.length === 0) {
         setActiveTab('HISTORY');
       } else {
         setActiveTab('DRAFT');
       }
-      loadCachedProposals();
-    }
+      void loadCachedProposals();
+    }, 0);
+    return () => clearTimeout(timer);
   }, [visible, draft.items.length, loadCachedProposals]);
 
   const filteredSubmitted = useMemo(() => {
@@ -99,7 +101,7 @@ export default function WarehouseDraftListModal({
 
   const matchedPositionHistory = useMemo(() => {
     if (!normalizedHistoryQuery) return [];
-    const entries: Array<{ proposal: SubmittedProposal; item: ProposalItem }> = [];
+    const entries: { proposal: SubmittedProposal; item: ProposalItem }[] = [];
     filteredSubmitted.forEach((prop) => {
       prop.items.forEach((it) => {
         const matchSrc = (it.position_code || '').toUpperCase().includes(normalizedHistoryQuery);
@@ -568,17 +570,17 @@ export default function WarehouseDraftListModal({
                     <View style={styles.emptyContainer}>
                       <Ionicons name="search-outline" size={42} color="#475569" />
                       <Text style={styles.emptyTitle}>
-                        Không tìm thấy vị trí "{historySearchQuery.trim()}"
+                        Không tìm thấy vị trí &ldquo;{historySearchQuery.trim()}&rdquo;
                       </Text>
                       <Text style={styles.emptySub}>
-                        Thử chọn bộ lọc "Tất cả" hoặc kiểm tra lại mã vị trí cần tìm.
+                        Thử chọn bộ lọc &ldquo;Tất cả&rdquo; hoặc kiểm tra lại mã vị trí cần tìm.
                       </Text>
                     </View>
                   ) : (
                     <>
                       <View style={styles.historyMatchBanner}>
                         <Text style={styles.historyMatchBannerText}>
-                          Tìm thấy {matchedPositionHistory.length} lần nháp cho "{normalizedHistoryQuery}"
+                          Tìm thấy {matchedPositionHistory.length} lần nháp cho &ldquo;{normalizedHistoryQuery}&rdquo;
                         </Text>
                       </View>
                       {matchedPositionHistory.map(({ proposal: prop, item: it }, idx) => {

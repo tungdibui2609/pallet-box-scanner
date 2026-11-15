@@ -127,68 +127,71 @@ export default function WarehouseAdjustmentDraftModal({
   useEffect(() => {
     if (!visible || !position) return;
 
-    if (initialItem) {
-      setActionType(initialItem.action_type);
-      setNewQtyStr(
-        initialItem.new_quantity != null ? String(initialItem.new_quantity) : String(currentQty)
-      );
-      setTargetPosCode(initialItem.target_position_code || '');
-      setTargetPosId(initialItem.target_position_id || null);
-      setNote(initialItem.note || '');
+    const timer = setTimeout(() => {
+      if (initialItem) {
+        setActionType(initialItem.action_type);
+        setNewQtyStr(
+          initialItem.new_quantity != null ? String(initialItem.new_quantity) : String(currentQty)
+        );
+        setTargetPosCode(initialItem.target_position_code || '');
+        setTargetPosId(initialItem.target_position_id || null);
+        setNote(initialItem.note || '');
 
-      if (initialItem.sub_items && initialItem.sub_items.length > 0) {
-        setSubItems(initialItem.sub_items);
+        if (initialItem.sub_items && initialItem.sub_items.length > 0) {
+          setSubItems(initialItem.sub_items);
+        } else {
+          const extracted = extractSubItemsFromPosition(position);
+          setSubItems(extracted);
+        }
+        if (initialItem.action_type === 'ASSIGN_LOT' && initialItem.lot_id) {
+          setAssignSttQuery(initialItem.lot_stt || initialItem.lot_code || '');
+          setFoundAssignLot({
+            id: initialItem.lot_id,
+            code: initialItem.lot_code || '',
+            stt: initialItem.lot_stt || null,
+            quantity: initialItem.new_quantity ?? 0,
+            unit: initialItem.unit || 'Thùng',
+            product_name: initialItem.product_name || '',
+            sku: initialItem.sku || null,
+            current_position_id: initialItem.target_position_id || null,
+            current_position_code: initialItem.target_position_code || null,
+          });
+          setAssignLotError(null);
+        } else {
+          setAssignSttQuery('');
+          setFoundAssignLot(null);
+          setAssignLotError(null);
+        }
       } else {
-        const extracted = extractSubItemsFromPosition(position);
-        setSubItems(extracted);
-      }
-      if (initialItem.action_type === 'ASSIGN_LOT' && initialItem.lot_id) {
-        setAssignSttQuery(initialItem.lot_stt || initialItem.lot_code || '');
-        setFoundAssignLot({
-          id: initialItem.lot_id,
-          code: initialItem.lot_code || '',
-          stt: initialItem.lot_stt || null,
-          quantity: initialItem.new_quantity ?? 0,
-          unit: initialItem.unit || 'Thùng',
-          product_name: initialItem.product_name || '',
-          sku: initialItem.sku || null,
-          current_position_id: initialItem.target_position_id || null,
-          current_position_code: initialItem.target_position_code || null,
-        });
-        setAssignLotError(null);
-      } else {
+        const defaultAction: ProposalActionType = 'NOTE';
+        setActionType(defaultAction);
+        setNewQtyStr(String(currentQty));
+        setTargetPosCode('');
+        setTargetPosId(null);
+        setNote('');
         setAssignSttQuery('');
         setFoundAssignLot(null);
         setAssignLotError(null);
+
+        const extracted = extractSubItemsFromPosition(position);
+        setSubItems(extracted);
       }
-    } else {
-      const defaultAction: ProposalActionType = 'NOTE';
-      setActionType(defaultAction);
-      setNewQtyStr(String(currentQty));
-      setTargetPosCode('');
-      setTargetPosId(null);
-      setNote('');
-      setAssignSttQuery('');
-      setFoundAssignLot(null);
-      setAssignLotError(null);
 
-      const extracted = extractSubItemsFromPosition(position);
-      setSubItems(extracted);
-    }
-
-    const shouldAutoOpenAdd = !isCurrentlyOccupied && (!initialItem || initialItem.action_type === 'SET_QTY') && !(initialItem?.sub_items && initialItem.sub_items.length > 0);
-    setShowAddProductPanel(shouldAutoOpenAdd);
-    if (shouldAutoOpenAdd && productCatalog.length === 0 && !loadingCatalog) {
-      setLoadingCatalog(true);
-      fetchProductsForSuggestions()
-        .then(list => setProductCatalog(list || []))
-        .finally(() => setLoadingCatalog(false));
-    }
-    setProductQuery('');
-    setSelectedNewProduct(null);
-    setNewProductQtyStr('1');
-    setNewProductUnit(position?.unit || 'Thùng');
-  }, [visible, position, initialItem, isCurrentlyOccupied, currentQty]);
+      const shouldAutoOpenAdd = !isCurrentlyOccupied && (!initialItem || initialItem.action_type === 'SET_QTY') && !(initialItem?.sub_items && initialItem.sub_items.length > 0);
+      setShowAddProductPanel(shouldAutoOpenAdd);
+      if (shouldAutoOpenAdd && productCatalog.length === 0 && !loadingCatalog) {
+        setLoadingCatalog(true);
+        fetchProductsForSuggestions()
+          .then(list => setProductCatalog(list || []))
+          .finally(() => setLoadingCatalog(false));
+      }
+      setProductQuery('');
+      setSelectedNewProduct(null);
+      setNewProductQtyStr('1');
+      setNewProductUnit(position?.unit || 'Thùng');
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [visible, position, initialItem, isCurrentlyOccupied, currentQty, productCatalog.length, loadingCatalog]);
 
   const hasMultipleProducts = subItems.length > 1 || subItems.some(s => s.is_new);
 

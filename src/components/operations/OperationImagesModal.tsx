@@ -122,9 +122,11 @@ export default function OperationImagesModal({ visible, shift, user, journalTarg
   }, [shift, user?.company_id, onChanged]);
 
   useEffect(() => {
-    if (visible && shift) {
-      loadData();
-    }
+    if (!visible || !shift) return;
+    const timer = setTimeout(() => {
+      void loadData();
+    }, 0);
+    return () => clearTimeout(timer);
   }, [visible, shift, loadData]);
 
   const childFolders = useMemo(

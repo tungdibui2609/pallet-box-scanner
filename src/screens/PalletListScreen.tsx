@@ -9,16 +9,62 @@ import * as Haptics from 'expo-haptics';
 import { Pallet, BoxLabel, CloudPallet, CloudFilterCriteria } from '../types';
 import {
   getAllPallets, getBoxesByPallet, deletePallet,
-  deleteBox, cloneBoxToPallet, saveCloudPalletToLocal,
+  deleteBox, cloneBoxToPallet,
   getCloudPalletsFromCache, getProductsFromCache
 } from '../services/database';
 import {
-  syncPalletToSupabase, testConnection, pullPalletFromSupabase,
-  unlinkBoxOnSupabase, fetchCloudPallets, fetchCloudPalletBoxes,
+  syncPalletToSupabase, testConnection,
+  fetchCloudPallets, fetchCloudPalletBoxes,
   fetchProductsForSuggestions, ProductSuggestion,
   syncCloudPalletsOffline, getLastOfflineSyncInfo
 } from '../services/supabase';
 import { calculateSearchScore, matchSearch, normalizeSearchString } from '../utils/searchUtils';
+
+function normalizeText(text?: string | null): string {
+  return normalizeSearchString(text || '', true);
+}
+
+function matchDate(dateStr?: string | null, filterStr?: string | null): boolean {
+  if (!filterStr || !filterStr.trim()) return true;
+  if (!dateStr || !dateStr.trim()) return false;
+
+  const dNorm = normalizeText(dateStr);
+  const fNorm = normalizeText(filterStr);
+
+  if (dNorm.includes(fNorm)) return true;
+
+  // Filter format YYYY-MM-DD -> check DD/MM/YYYY và DD-MM-YYYY
+  const ymdMatch = filterStr.trim().match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
+  if (ymdMatch) {
+    const [, y, m, d] = ymdMatch;
+    const mPad = m.padStart(2, '0');
+    const dPad = d.padStart(2, '0');
+    const dmySlash = `${dPad}/${mPad}/${y}`;
+    const dmyDash = `${dPad}-${mPad}-${y}`;
+    const ymdDash = `${y}-${mPad}-${dPad}`;
+    if (
+      dNorm.includes(normalizeText(dmySlash)) ||
+      dNorm.includes(normalizeText(dmyDash)) ||
+      dNorm.includes(normalizeText(ymdDash))
+    ) {
+      return true;
+    }
+  }
+
+  // Filter format DD/MM/YYYY -> check YYYY-MM-DD
+  const dmyMatch = filterStr.trim().match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/);
+  if (dmyMatch) {
+    const [, d, m, y] = dmyMatch;
+    const mPad = m.padStart(2, '0');
+    const dPad = d.padStart(2, '0');
+    const ymdDash = `${y}-${mPad}-${dPad}`;
+    if (dNorm.includes(normalizeText(ymdDash))) {
+      return true;
+    }
+  }
+
+  return false;
+}
 
 export interface ProductSuggestionItem {
   product: ProductSuggestion;
@@ -50,7 +96,6 @@ export default function PalletListScreen({
   const [cloudPallets, setCloudPallets] = useState<CloudPallet[]>([]);
   const [loadingCloud, setLoadingCloud] = useState(false);
   const [cloudSearchQuery, setCloudSearchQuery] = useState('');
-  const [pullingCloudStt, setPullingCloudStt] = useState<string | null>(null);
 
   // Offline cache & sync states
   const [isOfflineMode, setIsOfflineMode] = useState(false);
@@ -69,7 +114,6 @@ export default function PalletListScreen({
 
   // Connection status
   const [connectionStatus, setConnectionStatus] = useState<string>('Đang kiểm tra...');
-  const [isOnline, setIsOnline] = useState<boolean>(false);
 
   // Detail Modal
   const [selectedPallet, setSelectedPallet] = useState<Pallet | null>(null);
@@ -77,27 +121,35 @@ export default function PalletListScreen({
   const [selectedBoxes, setSelectedBoxes] = useState<BoxLabel[]>([]);
   const [isLoadingBoxes, setIsLoadingBoxes] = useState(false);
 
+  const palletsLengthRef = useRef(0);
+  useEffect(() => {
+    palletsLengthRef.current = pallets.length;
+  }, [pallets.length]);
+
   useEffect(() => {
     (async () => {
       const hasCachedCloud = await loadCacheFirst();
-      loadLocalPallets();
+      void loadLocalPallets();
       // Chỉ tự tải từ máy chủ nếu máy chưa từng có dữ liệu lưu sẵn (lần đầu cài app).
       // Nếu đã có dữ liệu trong máy, mở tức thì 0ms và để người dùng chủ động bấm nút "Tải dữ liệu" mỗi ca làm việc.
       if (!hasCachedCloud) {
-        loadCloudPallets();
+        void loadCloudPallets();
       }
-      checkNetwork();
-      refreshSyncInfo();
+      void checkNetwork();
+      void refreshSyncInfo();
     })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Tự động làm mới danh sách Pallet từ SQLite ngay lập tức khi người dùng chuyển sang tab Pallet Kho
   useEffect(() => {
-    if (isActive) {
-      loadLocalPallets(pallets.length > 0);
-      checkNetwork();
+    if (!isActive) return;
+    const timer = setTimeout(() => {
+      void loadLocalPallets(palletsLengthRef.current > 0);
+      void checkNetwork();
       setActiveTab('pending');
-    }
+    }, 0);
+    return () => clearTimeout(timer);
   }, [isActive]);
 
   async function refreshSyncInfo() {
@@ -131,7 +183,6 @@ export default function PalletListScreen({
 
   async function checkNetwork() {
     const res = await testConnection();
-    setIsOnline(res.success);
     setConnectionStatus(res.success ? '🟢 api.chanhthu.click (Đã kết nối)' : '🔴 Mất kết nối máy chủ');
   }
 
@@ -277,27 +328,6 @@ export default function PalletListScreen({
     );
   }
 
-  // ── CLOUD ACTIONS (TAB 2) ─────────────────────────────────
-  async function handlePullCloudPallet(cp: CloudPallet) {
-    setPullingCloudStt(cp.stt);
-    try {
-      const resBoxes = await fetchCloudPalletBoxes(cp.stt, cp.lot_id);
-      if (!resBoxes.success || resBoxes.data.length === 0) {
-        Alert.alert('Thông báo', `Không tìm thấy thùng nào cho STT ${cp.stt} trên Web mẹ.`);
-        return;
-      }
-
-      await saveCloudPalletToLocal(cp, resBoxes.data);
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      Alert.alert('Thành công', `Đã lưu ${resBoxes.data.length} thùng của Pallet ${cp.stt} về máy!`);
-      await loadLocalPallets();
-    } catch (err: any) {
-      Alert.alert('Lỗi', err.message);
-    } finally {
-      setPullingCloudStt(null);
-    }
-  }
-
   // ── BOX ACTIONS IN DETAIL MODAL ───────────────────────────
   async function handleOpenLocalDetail(pallet: Pallet) {
     setSelectedPallet(pallet);
@@ -424,75 +454,6 @@ export default function PalletListScreen({
   const CLOUD_PAGE_SIZE = 50;
   const [cloudCurrentPage, setCloudCurrentPage] = useState(1);
   const cloudFlatListRef = useRef<FlatList>(null);
-
-  function normalizeText(text?: string | null): string {
-    if (!text) return '';
-    return text
-      .toLowerCase()
-      .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '')
-      .replace(/đ/g, 'd')
-      .trim();
-  }
-
-  function getInitials(text?: string | null): string[] {
-    if (!text) return [];
-    const clean = normalizeText(text);
-    const words = clean.split(/[^a-z0-9]+/i).filter(Boolean);
-    if (words.length === 0) return [];
-    
-    // 1. Chữ cái đầu mỗi từ: VD "Sau Rieng Monthong C" -> "srmc"
-    const standard = words.map(w => w[0]).join('');
-    // 2. Kèm chữ số: VD "Ri 6" -> "r6", "Ri6" -> "r6"
-    const withDigits = words.map(w => {
-      const d = w.replace(/\D/g, '');
-      return d ? (w[0] + d) : w[0];
-    }).join('');
-
-    return Array.from(new Set([standard, withDigits].filter(Boolean)));
-  }
-
-  function matchDate(dateStr?: string | null, filterStr?: string | null): boolean {
-    if (!filterStr || !filterStr.trim()) return true;
-    if (!dateStr || !dateStr.trim()) return false;
-    
-    const dNorm = normalizeText(dateStr);
-    const fNorm = normalizeText(filterStr);
-
-    if (dNorm.includes(fNorm)) return true;
-
-    // Filter format YYYY-MM-DD -> check DD/MM/YYYY và DD-MM-YYYY
-    const ymdMatch = filterStr.trim().match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
-    if (ymdMatch) {
-      const [_, y, m, d] = ymdMatch;
-      const mPad = m.padStart(2, '0');
-      const dPad = d.padStart(2, '0');
-      const dmySlash = `${dPad}/${mPad}/${y}`;
-      const dmyDash = `${dPad}-${mPad}-${y}`;
-      const ymdDash = `${y}-${mPad}-${dPad}`;
-      if (
-        dNorm.includes(normalizeText(dmySlash)) ||
-        dNorm.includes(normalizeText(dmyDash)) ||
-        dNorm.includes(normalizeText(ymdDash))
-      ) {
-        return true;
-      }
-    }
-
-    // Filter format DD/MM/YYYY -> check YYYY-MM-DD
-    const dmyMatch = filterStr.trim().match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/);
-    if (dmyMatch) {
-      const [_, d, m, y] = dmyMatch;
-      const mPad = m.padStart(2, '0');
-      const dPad = d.padStart(2, '0');
-      const ymdDash = `${y}-${mPad}-${dPad}`;
-      if (dNorm.includes(normalizeText(ymdDash))) {
-        return true;
-      }
-    }
-
-    return false;
-  }
 
   // Tổng hợp sản phẩm từ bảng products trên Supabase VÀ từ các LOT đang tải về
   const allProductSuggestions = useMemo(() => {
@@ -1341,8 +1302,6 @@ export default function PalletListScreen({
               keyExtractor={item => item.id}
               contentContainerStyle={{ padding: 16 }}
               renderItem={({ item }) => {
-                const isPulling = pullingCloudStt === item.stt;
-
                 return (
                   <TouchableOpacity
                     style={styles.palletCard}

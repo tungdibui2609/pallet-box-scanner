@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -22,7 +22,6 @@ import {
   getWarehouseMapOfflineData,
   getMemoryWarehouseMapCache,
   syncWarehouseMapOffline,
-  submitHallLotUpdate,
   syncOfflineHallLotUpdates,
   ZoneItem,
   PositionItem,
@@ -115,7 +114,7 @@ function groupInventoryWarehouseData(
   positions: PositionItem[]
 ): {
   zones: ZoneItem[];
-  positions: Array<PositionItem & { zone_id: string | null; real_zone_id: string | null; real_bin_id: string | null }>;
+  positions: (PositionItem & { zone_id: string | null; real_zone_id: string | null; real_bin_id: string | null })[];
 } {
   const parentToChildren = new Map<string, ZoneItem[]>();
   const zoneParentMap = new Map<string, string>();
@@ -240,15 +239,12 @@ const LevelInventoryModal = ({
   updatePositionNote: (posId: string, note: string) => void;
   bulkCheckPositions: (posIds: string[], checked: boolean) => void;
 }) => {
-  if (!level) return null;
-
   const [fetchedLotItemsMap, setFetchedLotItemsMap] = useState<Record<string, any[]>>({});
+  const fetchedLotItemsRef = useRef<Record<string, any[]>>({});
 
   // Tự động tải chi tiết từng dòng sản phẩm kèm số lượng thực tế từ Supabase nếu máy chưa có
   useEffect(() => {
     if (!visible || !level?.slots || level.slots.length === 0) return;
-    const client = getSupabaseClient();
-    if (!client) return;
 
     const neededLotIds: string[] = [];
     (level.slots || []).forEach((s: any) => {
@@ -257,7 +253,7 @@ const LevelInventoryModal = ({
         Array.isArray(s.items) &&
         s.items.length > 0 &&
         s.items.some((it: any) => it.quantity !== null && it.quantity !== undefined);
-      if (!hasValidItems && !fetchedLotItemsMap[s.lot_id] && !neededLotIds.includes(s.lot_id)) {
+      if (!hasValidItems && !fetchedLotItemsRef.current[s.lot_id] && !neededLotIds.includes(s.lot_id)) {
         neededLotIds.push(s.lot_id);
       }
     });
@@ -283,11 +279,14 @@ const LevelInventoryModal = ({
               unit: it.unit || it.products?.unit || 'Thùng',
             });
           });
+          fetchedLotItemsRef.current = { ...fetchedLotItemsRef.current, ...newMap };
           setFetchedLotItemsMap(prev => ({ ...prev, ...newMap }));
         })
         .catch(() => {});
     }).catch(() => {});
   }, [visible, level?.slots]);
+
+  if (!level) return null;
 
   const allSlotIds: string[] = (level.slots || []).map((s: any) => s.id);
   const allChecked = allSlotIds.length > 0 && allSlotIds.every(id => inventoryResults[id]?.checked);
@@ -848,7 +847,7 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
           }
         }
       }
-    } catch (e: any) {
+    } catch {
       if (forceOnline) {
         showToast('Không thể kết nối máy chủ, đang dùng dữ liệu trong máy', 'warning');
       }
@@ -857,24 +856,39 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
     }
   }, [currentSession, showToast]);
 
+  const initialLoadRef = useRef(loadData);
   useEffect(() => {
-    loadData(false);
+    initialLoadRef.current = loadData;
+  }, [loadData]);
+
+  useEffect(() => {
+    void initialLoadRef.current(false);
   }, []);
+
+  const rawPositionsLenRef = useRef(rawPositions.length);
+  const lastSyncRef = useRef(lastSync);
+  useEffect(() => {
+    rawPositionsLenRef.current = rawPositions.length;
+    lastSyncRef.current = lastSync;
+  }, [rawPositions.length, lastSync]);
 
   // Tự động nhận diện dữ liệu mới nhất từ RAM cache khi chuyển vào tab Kiểm Kê
   useEffect(() => {
     if (isActive) {
       const mem = getMemoryWarehouseMapCache();
       if (mem && mem.positions && mem.positions.length > 0) {
-        if (rawPositions.length === 0 || (mem.cachedAt && mem.cachedAt !== lastSync)) {
-          setZones(mem.zones);
-          setRawPositions(mem.positions);
-          if (mem.cachedAt) {
-            const d = new Date(mem.cachedAt);
-            setLastSync(
-              `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')} ${d.getDate().toString().padStart(2, '0')}/${(d.getMonth() + 1).toString().padStart(2, '0')}`
-            );
-          }
+        if (rawPositionsLenRef.current === 0 || (mem.cachedAt && mem.cachedAt !== lastSyncRef.current)) {
+          const timer = setTimeout(() => {
+            setZones(mem.zones);
+            setRawPositions(mem.positions);
+            if (mem.cachedAt) {
+              const d = new Date(mem.cachedAt);
+              setLastSync(
+                `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')} ${d.getDate().toString().padStart(2, '0')}/${(d.getMonth() + 1).toString().padStart(2, '0')}`
+              );
+            }
+          }, 0);
+          return () => clearTimeout(timer);
         }
       }
     }
@@ -1274,7 +1288,7 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
 
       await AsyncStorage.setItem(INVENTORY_KEYS.SESSIONS, JSON.stringify(updatedSessions));
       showToast(`Đã tạo: ${newSession.name}`, 'success');
-    } catch (e: any) {
+    } catch {
       // Nếu đang ở trong kho lạnh không có mạng -> tạo phiếu Offline ngay trên máy!
       const offlineSession = {
         id: 'off-' + Date.now().toString(),
@@ -1723,7 +1737,7 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
                 <Feather name="clipboard" size={48} color="#475569" />
                 <Text style={styles.emptySessionsTitle}>Chưa có phiếu kiểm kê nào</Text>
                 <Text style={styles.emptySessionsSub}>
-                  Bấm nút "+ Tạo phiếu" để tạo mới hoặc bấm "Tải mới" để nhận phiếu từ Web
+                  Bấm nút &ldquo;+ Tạo phiếu&rdquo; để tạo mới hoặc bấm &ldquo;Tải mới&rdquo; để nhận phiếu từ Web
                 </Text>
               </View>
             )}

@@ -40,16 +40,6 @@ export default function OpenJobModal({ visible, onClose, onSuccess, user, allPro
   const [loadingTemplates, setLoadingTemplates] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
-  useEffect(() => {
-    if (visible) {
-      setJobName('');
-      setNotes('');
-      setSelectedOrderType(null);
-      setSelectedTemplate(null);
-      loadInitialData();
-    }
-  }, [visible]);
-
   const loadInitialData = async () => {
     setLoadingTemplates(true);
     try {
@@ -65,6 +55,18 @@ export default function OpenJobModal({ visible, onClose, onSuccess, user, allPro
       setLoadingTemplates(false);
     }
   };
+
+  useEffect(() => {
+    if (!visible) return;
+    const timer = setTimeout(() => {
+      setJobName('');
+      setNotes('');
+      setSelectedOrderType(null);
+      setSelectedTemplate(null);
+      void loadInitialData();
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [visible]);
 
   const handleSelectTemplate = (tpl: JobTemplate) => {
     if (selectedTemplate?.id === tpl.id && jobName.trim() === tpl.name.trim()) {

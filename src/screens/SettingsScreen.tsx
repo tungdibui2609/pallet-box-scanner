@@ -75,10 +75,6 @@ export default function SettingsScreen({ onBack }: { onBack: () => void }) {
     }
   };
 
-  useEffect(() => {
-    loadSettings();
-  }, []);
-
   async function loadSettings() {
     const savedUrl = await AsyncStorage.getItem('config_supabase_url');
     const savedKey = await AsyncStorage.getItem('config_supabase_key');
@@ -106,6 +102,13 @@ export default function SettingsScreen({ onBack }: { onBack: () => void }) {
       setAutoSyncEnabledState(autoSync);
     } catch {}
   }
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      void loadSettings();
+    }, 0);
+    return () => clearTimeout(timer);
+  }, []);
 
   async function handleSave() {
     await AsyncStorage.setItem('config_supabase_url', url.trim());

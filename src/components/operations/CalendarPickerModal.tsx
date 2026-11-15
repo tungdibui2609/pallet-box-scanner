@@ -5,7 +5,6 @@ import {
   Text,
   TouchableOpacity,
   StyleSheet,
-  ScrollView,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 
@@ -40,7 +39,8 @@ export const CalendarPickerModal: React.FC<CalendarPickerModalProps> = ({
 
   // Khi modal mở, đồng bộ tempSelected với selectedDates và chuyển view tháng tới ngày đầu tiên được chọn
   React.useEffect(() => {
-    if (visible) {
+    if (!visible) return;
+    const timer = setTimeout(() => {
       setTempSelected([...selectedDates]);
       if (selectedDates.length > 0) {
         const first = selectedDates[0];
@@ -50,7 +50,8 @@ export const CalendarPickerModal: React.FC<CalendarPickerModalProps> = ({
           setCurrentMonth(Number(parts[1]));
         }
       }
-    }
+    }, 0);
+    return () => clearTimeout(timer);
   }, [visible, selectedDates]);
 
   // Tiến / lùi tháng
@@ -92,13 +93,13 @@ export const CalendarPickerModal: React.FC<CalendarPickerModalProps> = ({
     // Đổi sang chuẩn T2 = 0, ..., CN = 6
     const startOffset = (firstDayIndex + 6) % 7;
 
-    const days: Array<{
+    const days: ({
       dateKey: string;
       dayNum: number;
       isCurrentMonth: boolean;
       hasData: boolean;
       isToday: boolean;
-    } | null> = [];
+    } | null)[] = [];
 
     // Ô trống đầu tháng
     for (let i = 0; i < startOffset; i++) {

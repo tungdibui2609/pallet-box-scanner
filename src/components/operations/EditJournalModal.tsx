@@ -30,7 +30,8 @@ export default function EditJournalModal({ visible, record, onClose, onSubmit }:
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
-    if (visible && record) {
+    if (!visible || !record) return;
+    const timer = setTimeout(() => {
       setQuantity(String(record.quantity_sent || (record as any).result_quantity || ''));
       setUnit(record.unit || 'Thùng (20kg)');
       const isImport = record.to_department === 'Kho' || (record.notes && record.notes.includes('Nhập kho'));
@@ -45,7 +46,8 @@ export default function EditJournalModal({ visible, record, onClose, onSubmit }:
         .replace(/^[\s-]+/, '')
         .trim();
       setNotes(cleanNote);
-    }
+    }, 0);
+    return () => clearTimeout(timer);
   }, [visible, record]);
 
   if (!record) return null;

@@ -8,24 +8,26 @@ import TextRecognition from '@react-native-ml-kit/text-recognition';
 import * as Haptics from 'expo-haptics';
 import { Ionicons } from '@expo/vector-icons';
 
-let VolumeManager: any = null;
-if (NativeModules && NativeModules.VolumeManager) {
-  try {
-    VolumeManager = require('react-native-volume-manager').VolumeManager;
-  } catch (err) {
-    console.warn('VolumeManager not linked:', err);
-  }
-}
 import { Pallet, BoxLabel, ParsedStampData, StampFormat } from '../types';
 import {
   getActivePallet, createNewPallet, completePallet,
   getBoxesByPallet, addStampBoxToPallet, deleteBox,
   getPalletByCode, activateExistingPallet, getStampDictionariesMap,
   getActiveStampFormat, cloneBoxToPallet, addStampBoxesBulkToPallet,
-  updatePalletTag, updatePalletTagAndNotes, resetPalletBoxes
+  updatePalletTagAndNotes, resetPalletBoxes
 } from '../services/database';
-import { parseStampText, isStampContent, decodeStamp } from '../services/stampParser';
+import { parseStampText, decodeStamp } from '../services/stampParser';
 import { syncStampDictionariesFromSupabase } from '../services/supabase';
+
+let VolumeManager: any = null;
+if (NativeModules && NativeModules.VolumeManager) {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    VolumeManager = require('react-native-volume-manager').VolumeManager;
+  } catch (err) {
+    console.warn('VolumeManager not linked:', err);
+  }
+}
 
 export default function StampScannerScreen({ onNavigateToPallets }: { onNavigateToPallets: () => void }) {
   const [permission, requestPermission] = useCameraPermissions();

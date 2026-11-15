@@ -6,17 +6,6 @@ import {
 } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import TextRecognition from '@react-native-ml-kit/text-recognition';
-
-// Safe dynamic load: Tránh crash runtime trên Expo Go (do Expo Go thiếu native module react-native-volume-manager)
-let VolumeManager: any = null;
-if (NativeModules && NativeModules.VolumeManager) {
-  try {
-    VolumeManager = require('react-native-volume-manager').VolumeManager;
-  } catch (err) {
-    console.warn('VolumeManager not linked:', err);
-  }
-}
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Haptics from 'expo-haptics';
 import { Ionicons } from '@expo/vector-icons';
 import { Pallet, BoxLabel, ParsedLabelData } from '../types';
@@ -24,10 +13,21 @@ import {
   getActivePallet, createNewPallet, completePallet,
   getBoxesByPallet, addBoxToPallet, deleteBox,
   getPalletByCode, resetPalletBoxes, activateExistingPallet,
-  cloneBoxToPallet, updatePalletTag, updatePalletTagAndNotes
+  cloneBoxToPallet, updatePalletTagAndNotes
 } from '../services/database';
 import { parseBoxLabelText, isBoxLabel } from '../services/labelParser';
-import { DEFAULT_SUPABASE_URL } from '../services/supabase';
+import { getConfiguredSupabaseUrl } from '../services/supabase';
+
+// Safe dynamic load: Tránh crash runtime trên Expo Go (do Expo Go thiếu native module react-native-volume-manager)
+let VolumeManager: any = null;
+if (NativeModules && NativeModules.VolumeManager) {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    VolumeManager = require('react-native-volume-manager').VolumeManager;
+  } catch (err) {
+    console.warn('VolumeManager not linked:', err);
+  }
+}
 
 export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPallets: () => void }) {
   const [permission, requestPermission] = useCameraPermissions();
@@ -90,10 +90,10 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
   const [isManualModal, setIsManualModal] = useState(false);
   const [manualIndex, setManualIndex] = useState('');
   const [manualLot, setManualLot] = useState('D009TN08096');
-  const [manualSku, setManualSku] = useState('TP101020104.002');
+  const [manualSku] = useState('TP101020104.002');
   const [manualWeight, setManualWeight] = useState('20');
-  const [manualShift, setManualShift] = useState('Nguyên');
-  const [manualDate, setManualDate] = useState('07/09/2026');
+  const [manualShift] = useState('Nguyên');
+  const [manualDate] = useState('07/09/2026');
 
   // Clone Modal State
   const [cloneModalVisible, setCloneModalVisible] = useState(false);
@@ -146,6 +146,14 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
     }
   }
 
+  const handleManualCaptureRef = useRef<() => void>(() => { });
+  const runAutoScanCycleRef = useRef<() => void>(() => { });
+
+  useEffect(() => {
+    handleManualCaptureRef.current = handleManualCapture;
+    runAutoScanCycleRef.current = runAutoScanCycle;
+  });
+
   // 2. HARDWARE KEY TRIGGER: BẤM NÚT GIẢM ÂM LƯỢNG LÀ CHỤP QUÉT
   useEffect(() => {
     if (!VolumeManager) return;
@@ -160,7 +168,7 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
         volumeListener = VolumeManager.addVolumeListener(async (result: any) => {
           // Khi bấm Giảm âm lượng -> result.volume < lastVolume
           if (result.volume < lastVolumeRef.current) {
-            handleManualCapture();
+            handleManualCaptureRef.current();
           }
 
           // Reset volume về mức 0.5 ngầm để người dùng bấm liên tục nhiều lần mà không bị về 0
@@ -172,13 +180,13 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
       }
     }
 
-    setupVolumeTrigger();
+    void setupVolumeTrigger();
 
     return () => {
       if (volumeListener && typeof volumeListener.remove === 'function') {
         volumeListener.remove();
       }
-      VolumeManager?.showNativeVolumeUI({ enabled: true })?.catch(() => {});
+      VolumeManager?.showNativeVolumeUI({ enabled: true })?.catch(() => { });
     };
   }, [activePallet]);
 
@@ -188,7 +196,7 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
 
     if (isAutoScan && activePallet && permission?.granted && isCameraRunning) {
       scanTimer = setInterval(() => {
-        runAutoScanCycle();
+        runAutoScanCycleRef.current();
       }, 750);
     }
 
@@ -270,15 +278,14 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
           }
         }
       }
-    } catch (mlErr) {
+    } catch {
       // Native ML Kit not available
     }
 
     // 2. Priority 2: Server Fallback via API (when connected)
     if (photo.base64) {
       try {
-        const storedUrl = await AsyncStorage.getItem('config_supabase_url');
-        const baseApiUrl = storedUrl || DEFAULT_SUPABASE_URL;
+        const baseApiUrl = await getConfiguredSupabaseUrl();
         const ocrEndpoint = baseApiUrl.replace(/\/$/, '') + '/api/ocr';
 
         const response = await fetch(ocrEndpoint, {
@@ -290,7 +297,7 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
         if (resJson?.success && resJson?.data && resJson.data.box_index) {
           return resJson.data;
         }
-      } catch (srvErr) {
+      } catch {
         // Offline
       }
     }
@@ -320,7 +327,7 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
         }
         await processBoxData(parsed, true);
       }
-    } catch (err) {
+    } catch {
       // Ignore background hiccups
     } finally {
       isProcessingFrame.current = false;

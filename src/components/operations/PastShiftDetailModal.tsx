@@ -116,7 +116,6 @@ export default function PastShiftDetailModal({
   const [expandUnitSummary, setExpandUnitSummary] = useState(false);
   const [expandProductSummary, setExpandProductSummary] = useState(false);
   const [expandSubShiftsSummary, setExpandSubShiftsSummary] = useState(false);
-  const [expandedSubShifts, setExpandedSubShifts] = useState<Record<string, boolean>>({});
 
   const [actionLoading, setActionLoading] = useState(false);
   const [isImagesVisible, setIsImagesVisible] = useState(false);
@@ -128,9 +127,12 @@ export default function PastShiftDetailModal({
       getShiftOperationImages(shift.id)
         .then((list) => setImageCount(list.length))
         .catch(() => {});
-    } else {
-      setImageCount(0);
+      return;
     }
+    const timer = setTimeout(() => {
+      setImageCount(0);
+    }, 0);
+    return () => clearTimeout(timer);
   }, [visible, shift?.id]);
 
   // Tổng hợp theo ĐVT (Hook phải gọi trước bất kỳ return điều kiện nào)

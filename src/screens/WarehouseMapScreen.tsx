@@ -8,7 +8,6 @@ import {
   TextInput,
   ActivityIndicator,
   Modal,
-  FlatList,
   Platform,
   Alert
 } from 'react-native';
@@ -18,10 +17,8 @@ import {
   getSupabaseClient,
   syncWarehouseMapOffline,
   getWarehouseMapOfflineData,
-  getLastWarehouseMapOfflineSyncInfo,
   getMemoryWarehouseMapCache
 } from '../services/supabase';
-import { decodeSTT } from '../utils/numberUtils';
 import { groupWarehouseData } from '../utils/warehouseUtils';
 import HallLotInputModal, { HallOption } from '../components/HallLotInputModal';
 import WarehouseAdjustmentDraftModal from '../components/warehouse/WarehouseAdjustmentDraftModal';
@@ -29,7 +26,6 @@ import WarehouseDraftListModal from '../components/warehouse/WarehouseDraftListM
 import {
   getLocalDraftProposal,
   upsertDraftItem,
-  removeDraftItem,
   DraftProposal,
   ProposalItem,
   syncOfflineAdjustmentProposals,
@@ -37,6 +33,7 @@ import {
 } from '../services/warehouseAdjustmentService';
 import { matchPalletSearch, calculateSearchScore, matchSearch, normalizeSearchString } from '../utils/searchUtils';
 import { formatMaterialZoneList } from '../utils/provinces';
+import { formatDateVN, formatDateShortVN } from '../utils/dateUtils';
 
 export type DateFilterType = 'packaging_date' | 'peeling_date' | 'raw_material_date' | 'inbound_date';
 
@@ -59,11 +56,11 @@ export interface UniqueProductItem {
   unaccName: string;
   normSku: string;
   unaccSku: string;
-  aliasList: Array<{
+  aliasList: {
     raw: string;
     norm: string;
     unacc: string;
-  }>;
+  }[];
 }
 
 export interface UniqueSttItem {
@@ -124,13 +121,13 @@ export interface PositionItem {
   production_place?: string | null;
   extra_info?: string | null;
   quantity?: number | null;
-  items?: Array<{
+  items?: {
     product_id?: string | null;
     sku?: string | null;
     product_name?: string | null;
     quantity?: number | null;
     unit?: string | null;
-  }> | null;
+  }[] | null;
 }
 
 // ── CHUẨN HÓA VÀ ĐỊNH DẠNG ĐƠN VỊ TÍNH (Thùng / Kg / Sọt...) ──────────────
@@ -273,29 +270,6 @@ export function sortPositionsByDepthAndCol<T extends { code?: string | null }>(l
   });
 }
 
-export const formatDateVN = (d?: string | null): string => {
-  if (!d) return '--/--/----';
-  const clean = String(d).split('T')[0];
-  const parts = clean.split('-');
-  if (parts.length === 3) {
-    const [y, m, day] = parts;
-    if (y.length === 4) return `${day.padStart(2, '0')}/${m.padStart(2, '0')}/${y}`;
-  }
-  return d;
-};
-
-export const formatDateShortVN = (d?: string | null): string => {
-  if (!d) return '';
-  const clean = String(d).split('T')[0];
-  const parts = clean.split('-');
-  if (parts.length === 3) {
-    const [y, m, day] = parts;
-    const shortYear = y.length === 4 ? y.slice(2) : y;
-    return `${day.padStart(2, '0')}/${m.padStart(2, '0')}/${shortYear}`;
-  }
-  return d;
-};
-
 export const getPositionTag = (pos: PositionItem): string | null => {
   if (pos.tags && pos.tags.length > 0) {
     const validTags = pos.tags.filter(t => t && !t.startsWith('MERGED_FROM:') && !t.startsWith('MERGED_DATA:'));
@@ -355,7 +329,10 @@ const MobileWarehouseSearchBar = React.memo(function MobileWarehouseSearchBar({
   const [calYear, setCalYear] = useState(() => new Date().getFullYear());
 
   useEffect(() => {
-    setInputValue(searchQuery);
+    const timer = setTimeout(() => {
+      setInputValue(searchQuery);
+    }, 0);
+    return () => clearTimeout(timer);
   }, [searchQuery]);
 
   const openCalendar = (target: 'start' | 'end') => {
@@ -380,10 +357,10 @@ const MobileWarehouseSearchBar = React.memo(function MobileWarehouseSearchBar({
     const cleanSttQ = unaccQ.replace(/^(#|stt[:\s-#]*)/i, '').trim();
     if (!cleanSttQ) return [];
 
-    const list: Array<{
+    const list: {
       item: UniqueSttItem;
       score: number;
-    }> = [];
+    }[] = [];
 
     for (let i = 0; i < uniqueStts.length; i++) {
       const sttItem = uniqueStts[i];
@@ -415,11 +392,11 @@ const MobileWarehouseSearchBar = React.memo(function MobileWarehouseSearchBar({
     const unaccQ = normalizeSearchString(q, true);
     if (!normQ && !unaccQ) return [];
 
-    const list: Array<{
+    const list: {
       product: UniqueProductItem;
       score: number;
       matchedAlias?: string;
-    }> = [];
+    }[] = [];
 
     for (let i = 0; i < uniqueProducts.length; i++) {
       const prod = uniqueProducts[i];
@@ -964,7 +941,7 @@ const MobileWarehouseSearchBar = React.memo(function MobileWarehouseSearchBar({
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 }}>
               <Ionicons name="search" size={12} color="#38bdf8" />
               <Text style={styles.suggestionDirectText} numberOfLines={1}>
-                Tìm tất cả vị trí cho "{inputValue.trim()}"
+                Tìm tất cả vị trí cho &ldquo;{inputValue.trim()}&rdquo;
               </Text>
             </View>
             <Text style={styles.suggestionDirectSub}>Tìm ngay →</Text>
@@ -1019,6 +996,11 @@ export default function WarehouseMapScreen({
   const [modalLotItemsMap, setModalLotItemsMap] = useState<Record<string, any[]>>({});
 
   // Tự động tải danh sách từng dòng sản phẩm kèm số lượng thực tế từ Supabase khi mở modal xem chi tiết
+  const modalLotItemsRef = React.useRef(modalLotItemsMap);
+  useEffect(() => {
+    modalLotItemsRef.current = modalLotItemsMap;
+  }, [modalLotItemsMap]);
+
   useEffect(() => {
     if (!selectedPosDetail?.lot_id) return;
     const lotId = selectedPosDetail.lot_id;
@@ -1027,7 +1009,7 @@ export default function WarehouseMapScreen({
       selectedPosDetail.items.length > 0 &&
       selectedPosDetail.items.some((it: any) => it.quantity !== null && it.quantity !== undefined);
 
-    if (hasValidItems || modalLotItemsMap[lotId]) return;
+    if (hasValidItems || modalLotItemsRef.current[lotId]) return;
 
     getSupabaseClient().then((client: any) => {
       if (!client) return;
@@ -1087,7 +1069,10 @@ export default function WarehouseMapScreen({
   }, []);
 
   useEffect(() => {
-    refreshDraft();
+    const timer = setTimeout(() => {
+      void refreshDraft();
+    }, 0);
+    return () => clearTimeout(timer);
   }, [refreshDraft]);
 
   // Danh sách các sảnh có kèm theo kho cha (VD: Kho Đông 1 › SẢNH 1)
@@ -1281,26 +1266,40 @@ export default function WarehouseMapScreen({
     }
   };
 
+  const loadMapDataRef = React.useRef(loadMapData);
+  const positionsLenRef = React.useRef(positions.length);
+  const cachedAtRef = React.useRef(cachedAt);
   useEffect(() => {
-    loadMapData();
+    loadMapDataRef.current = loadMapData;
+    positionsLenRef.current = positions.length;
+    cachedAtRef.current = cachedAt;
+  }, [loadMapData, positions.length, cachedAt]);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      void loadMapDataRef.current();
+    }, 0);
+    return () => clearTimeout(timer);
   }, []);
 
   // Khi người dùng chuyển sang tab Sơ Đồ Kho (isActive = true), tự động cập nhật dữ liệu mới nhất nếu vừa tải ở Cài Đặt
   useEffect(() => {
-    if (isActive) {
+    if (!isActive) return;
+    const timer = setTimeout(() => {
       const mem = getMemoryWarehouseMapCache();
       if (mem && mem.positions && mem.positions.length > 0) {
-        if (positions.length === 0 || (mem.cachedAt && mem.cachedAt !== cachedAt)) {
+        if (positionsLenRef.current === 0 || (mem.cachedAt && mem.cachedAt !== cachedAtRef.current)) {
           setZones(mem.zones);
           setPositions(mem.positions);
           setCachedAt(mem.cachedAt);
           setLoading(false);
           setIsOffline(false);
         }
-      } else if (positions.length === 0) {
-        loadMapData(true, false);
+      } else if (positionsLenRef.current === 0) {
+        void loadMapDataRef.current(true, false);
       }
-    }
+    }, 0);
+    return () => clearTimeout(timer);
   }, [isActive]);
 
   // ── Hierarchy Filtering ────────────────────────────────────────
@@ -1443,16 +1442,6 @@ export default function WarehouseMapScreen({
       return zoneDescendantsMap.get(targetZoneId) || new Set<string>([targetZoneId]);
     },
     [zoneDescendantsMap]
-  );
-
-  // Full path helper: Kho > Dãy > Ô > Tầng (O(1) lookup)
-  const getPositionPath = useCallback(
-    (pos: PositionItem) => {
-      const leafZoneId = pos.zone_ids[0];
-      if (!leafZoneId) return pos.code;
-      return zonePathMap.get(leafZoneId) || pos.code;
-    },
-    [zonePathMap]
   );
 
   // ── Danh sách sản phẩm duy nhất đang có trong kho (Pre-indexed cho gợi ý 0ms, hỗ trợ Pallet hỗn hợp nhiều dòng SP) ──────────────
@@ -2020,16 +2009,18 @@ export default function WarehouseMapScreen({
       totalPositions: matchingPositions.length,
       warehouses: sortedWhs
     };
-  }, [isSearchActive, matchingPositions, zoneHierarchyMap]);
+  }, [isSearchActive, matchingPositions, zoneHierarchyMap, exactProductNamesSet, searchQuery]);
 
   // Mặc định THU GỌN HẾT các kho khi tìm kiếm (gọn gàng, dễ nhìn theo từng thẻ Kho)
   useEffect(() => {
-    if (breakdownReport?.warehouses) {
+    if (!breakdownReport?.warehouses) return;
+    const timer = setTimeout(() => {
       setExpandedWhIds(new Set());
       setExpandedAisleIds(new Set());
       setExpandedSlotIds(new Set());
       setExpandedBreakdownTierIds(new Set());
-    }
+    }, 0);
+    return () => clearTimeout(timer);
   }, [breakdownReport]);
 
   const toggleWarehouseExpand = useCallback((whId: string) => {
@@ -2141,7 +2132,7 @@ export default function WarehouseMapScreen({
         });
     }
     return sortZones(list);
-  }, [activeZones, selectedAisleId, isSearchActive, zoneMatchCountMap]);
+  }, [activeZones, selectedAisleId, isSearchActive, zoneMatchCountMap, sortZones]);
 
   // Selected Aisle & Phát hiện khu vực SẢNH (Khu vực không chia Ô / Kệ)
   const selectedAisle = useMemo(() => {
@@ -2201,7 +2192,10 @@ export default function WarehouseMapScreen({
           return targetPos.zone_ids.some(zid => desc.has(zid));
         });
         if (matchingTier) {
-          setExpandedTierIds(prev => new Set([...prev, matchingTier.id]));
+          const timer = setTimeout(() => {
+            setExpandedTierIds(prev => new Set([...prev, matchingTier.id]));
+          }, 0);
+          return () => clearTimeout(timer);
         }
       }
     }
@@ -2406,56 +2400,6 @@ export default function WarehouseMapScreen({
     );
   }, [searchQuery]);
 
-  // ── Jump to Position on Map ──
-  const handleSelectSearchResult = (pos: PositionItem) => {
-    const leafZoneId = pos.zone_ids[0];
-    if (leafZoneId) {
-      const realZoneMap = new Map(zones.map(z => [z.id, z]));
-      let curr = realZoneMap.get(leafZoneId);
-      const realPath: ZoneItem[] = [];
-
-      while (curr) {
-        realPath.unshift(curr);
-        curr = curr.parent_id ? realZoneMap.get(curr.parent_id) : undefined;
-      }
-
-      if (realPath.length >= 1) setSelectedWarehouseId(realPath[0].id);
-      if (realPath.length >= 2) {
-        const aisleId = realPath[1].id;
-        setSelectedAisleId(aisleId);
-
-        if (realPath.length >= 3) {
-          const realSlotId = realPath[2].id;
-          const vSlot = activeZones.find(
-            z => z.parent_id === aisleId && (z.id === realSlotId || virtualToRealMap.get(z.id)?.includes(realSlotId))
-          );
-          if (vSlot) {
-            setSelectedSlotId(vSlot.id);
-
-            if (realPath.length >= 4) {
-              const realTierId = realPath[3].id;
-              const vTier = activeZones.find(
-                z => z.parent_id === vSlot.id && (z.id === realTierId || virtualToRealMap.get(z.id)?.includes(realTierId))
-              );
-              setSelectedTierId(vTier ? vTier.id : null);
-            } else {
-              setSelectedTierId(null);
-            }
-          }
-        }
-      }
-    }
-
-    setHighlightedPosId(pos.id);
-    setSelectedPosDetail(pos);
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-  };
-
-  const handleJumpToMap = (pos: PositionItem) => {
-    handleSelectSearchResult(pos);
-    setSearchTab('map');
-  };
-
   const getZoneName = (id: string | null) => {
     if (!id || id === 'all') return 'Tất cả Kho';
     return activeZones.find(z => z.id === id)?.name || '';
@@ -2637,7 +2581,7 @@ export default function WarehouseMapScreen({
                 {searchQuery.trim() ? (
                   <>
                     <Text style={{ color: '#94a3b8' }}>Kết quả cho: </Text>
-                    <Text style={{ color: '#fcd34d', fontWeight: '800' }}>"{searchQuery}"</Text>
+                    <Text style={{ color: '#fcd34d', fontWeight: '800' }}>&ldquo;{searchQuery}&rdquo;</Text>
                   </>
                 ) : (
                   <>
