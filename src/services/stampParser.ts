@@ -434,19 +434,58 @@ export function parseStampText(
   let line2 = '';
 
   if (numericLines.length >= 2) {
-    const d0 = numericLines[0].replace(/[^0-9]/g, '');
-    const d1 = numericLines[1].replace(/[^0-9]/g, '');
-    const d0IsSpecial = d0.length >= 12 && !!(dict.special_12?.[d0.substring(0, 12)] || DEFAULT_STAMP_DICTIONARY.special_12?.[d0.substring(0, 12)]);
-    const d1IsSpecial = d1.length >= 12 && !!(dict.special_12?.[d1.substring(0, 12)] || DEFAULT_STAMP_DICTIONARY.special_12?.[d1.substring(0, 12)]);
+    const isSpecial = (line: string) => {
+      const d = line.replace(/[^0-9]/g, '');
+      if (d.length < 12) return false;
+      const c12 = d.substring(0, 12);
+      return !!(dict.special_12?.[c12] || DEFAULT_STAMP_DICTIONARY.special_12?.[c12]);
+    };
 
-    // Đảo ngược vị trí nếu OCR đọc ngược Dòng 2 trước Dòng 1
-    if (!d0IsSpecial && d1IsSpecial) {
-      line1 = numericLines[1];
-      line2 = numericLines[0];
-    } else {
-      line1 = numericLines[0];
-      line2 = numericLines[1];
-    }
+    const scoreL1 = (line: string) => {
+      const d = line.replace(/[^0-9]/g, '');
+      let s = 0;
+      if (isSpecial(line)) s += 100;
+      if (/^\d{10,13}-\d{1,2}$/.test(line)) s += 50;
+      else if (line.includes('-')) s += 20;
+      if (d.length >= 12 && d.length <= 14) s += 25;
+      if (d.length >= 15 && !line.includes('-')) s -= 40;
+      return s;
+    };
+
+    const scoreL2 = (line: string) => {
+      const d = line.replace(/[^0-9]/g, '');
+      let s = 0;
+      if (!line.includes('-') && d.length === 16) s += 80;
+      else if (!line.includes('-') && d.length >= 15 && d.length <= 17) s += 50;
+      else if (!line.includes('-') && d.length >= 12) s += 10;
+      if (isSpecial(line)) s -= 100;
+      if (line.includes('-')) s -= 40;
+      return s;
+    };
+
+    let bestL1Idx = 0;
+    let bestL1Score = -Infinity;
+    numericLines.forEach((l, idx) => {
+      const sc = scoreL1(l);
+      if (sc > bestL1Score) {
+        bestL1Score = sc;
+        bestL1Idx = idx;
+      }
+    });
+
+    let bestL2Idx = bestL1Idx === 0 ? 1 : 0;
+    let bestL2Score = -Infinity;
+    numericLines.forEach((l, idx) => {
+      if (idx === bestL1Idx) return;
+      const sc = scoreL2(l);
+      if (sc > bestL2Score) {
+        bestL2Score = sc;
+        bestL2Idx = idx;
+      }
+    });
+
+    line1 = numericLines[bestL1Idx];
+    line2 = numericLines[bestL2Idx];
   } else {
     // Nếu chỉ đọc được 1 dòng, xem nó giống dòng 1 hay dòng 2
     const single = numericLines[0];

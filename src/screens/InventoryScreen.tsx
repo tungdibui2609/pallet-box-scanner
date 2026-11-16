@@ -340,7 +340,18 @@ const LevelInventoryModal = ({
                 const res = inventoryResults[posKey] || { checked: false, note: '' };
                 const isOccupied = Boolean(slot.lot_id);
                 const posCode = slot.code || 'N/A';
-                const suffix = posCode ? `-${posCode.slice(-2)}` : '';
+                const realBinLabel = (() => {
+                  if (!slot.zone_name) return '';
+                  const cleanZone = String(slot.zone_name).replace(/^Ô\s*/i, '').trim();
+                  const rawSuffix = posCode && posCode !== 'N/A' ? posCode.slice(-2) : '';
+                  const posNum = rawSuffix && /^\d+$/.test(rawSuffix) ? String(parseInt(rawSuffix, 10)) : rawSuffix;
+                  const match = cleanZone.match(/^([A-Za-z]+)(\d+)$/);
+                  if (match) {
+                    const [, letter, binNum] = match;
+                    return `Ô ${binNum} - ${letter.toUpperCase()}${posNum}`;
+                  }
+                  return `Ô ${cleanZone}${posNum ? ` - ${posNum}` : ''}`;
+                })();
                 const prodKey = getProductKey(slot);
                 const hasMixed = Boolean(level?.hasMixedProducts);
                 const prodColor = hasMixed && level?.productColorsMap?.[prodKey]
@@ -355,10 +366,10 @@ const LevelInventoryModal = ({
                         <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 6, marginBottom: 4 }}>
                           <Text style={styles.slotPosCode}>{posCode}</Text>
 
-                          {slot.zone_name ? (
+                          {realBinLabel ? (
                             <View style={styles.realBinBadge}>
                               <Text style={styles.realBinBadgeText}>
-                                Ô {slot.zone_name}{suffix}
+                                {realBinLabel}
                               </Text>
                             </View>
                           ) : null}

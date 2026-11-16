@@ -4139,9 +4139,9 @@ export default function WarehouseMapScreen({
 
       {/* ── MODAL: CHI TIẾT VỊ TRÍ & PALLET ────────────────────── */}
       {selectedPosDetail && (
-        <Modal visible={true} transparent animationType="slide">
-          <View style={styles.modalOverlay}>
-            <View style={styles.modalContent}>
+        <Modal visible={true} transparent animationType="slide" onRequestClose={() => setSelectedPosDetail(null)}>
+          <View style={[styles.modalOverlay, { justifyContent: 'center', paddingBottom: 24 }]}>
+            <View style={[styles.modalContent, { maxHeight: '84%' }]}>
               <View style={styles.modalHeader}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
                   <Ionicons name="location" size={18} color="#38bdf8" />
@@ -4151,6 +4151,12 @@ export default function WarehouseMapScreen({
                   <Ionicons name="close" size={22} color="#94a3b8" />
                 </TouchableOpacity>
               </View>
+
+              <ScrollView
+                style={{ flexShrink: 1 }}
+                contentContainerStyle={{ gap: 12 }}
+                showsVerticalScrollIndicator={false}
+              >
 
               {/* Status Banner */}
               {selectedPosDetail.lot_id ? (
@@ -4375,6 +4381,7 @@ export default function WarehouseMapScreen({
                   </View>
                 </View>
               )}
+              </ScrollView>
 
               <TouchableOpacity
                 style={styles.modalDraftActionBtn}
