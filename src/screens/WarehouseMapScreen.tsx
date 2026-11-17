@@ -37,6 +37,58 @@ import { formatDateVN, formatDateShortVN } from '../utils/dateUtils';
 
 export type DateFilterType = 'packaging_date' | 'peeling_date' | 'raw_material_date' | 'inbound_date';
 
+export type WarehouseSearchMode = 'all' | 'name' | 'code' | 'tag' | 'stt';
+
+export const WAREHOUSE_SEARCH_MODES: {
+  id: WarehouseSearchMode;
+  label: string;
+  shortLabel: string;
+  placeholder: string;
+  icon: string;
+  subHint?: string;
+}[] = [
+  {
+    id: 'all',
+    label: 'Tổng hợp',
+    shortLabel: 'Tổng hợp',
+    placeholder: 'Tìm nhanh (hỗ trợ tên viết tắt, mã, mã phụ, STT)...',
+    icon: 'layers-outline',
+    subHint: 'Hỗ trợ tên viết tắt',
+  },
+  {
+    id: 'name',
+    label: 'Theo Tên',
+    shortLabel: 'Theo Tên',
+    placeholder: 'Nhập tên SP hoặc gõ tắt (đô c, dona...)...',
+    icon: 'cube-outline',
+    subHint: 'Hỗ trợ tên viết tắt',
+  },
+  {
+    id: 'code',
+    label: 'Theo Mã',
+    shortLabel: 'Theo Mã',
+    placeholder: 'Nhập SKU, mã LOT, mã vị trí...',
+    icon: 'barcode-outline',
+    subHint: 'SKU, mã LOT, vị trí',
+  },
+  {
+    id: 'tag',
+    label: 'Theo Mã phụ',
+    shortLabel: 'Mã phụ',
+    placeholder: 'Nhập mã phụ (tag)...',
+    icon: 'pricetag-outline',
+    subHint: 'Tag đính kèm',
+  },
+  {
+    id: 'stt',
+    label: 'Theo STT',
+    shortLabel: 'Theo STT',
+    placeholder: 'Nhập STT LOT (VD: G44, 25)...',
+    icon: 'keypad-outline',
+    subHint: 'Số thứ tự LOT',
+  },
+];
+
 export const DATE_FILTER_OPTIONS: { id: DateFilterType; label: string; shortLabel: string }[] = [
   { id: 'packaging_date', label: '📦 Ngày đóng gói (DD/MM)', shortLabel: 'Đóng gói' },
   { id: 'peeling_date', label: '🔪 Ngày sản xuất (bóc múi)', shortLabel: 'Sản xuất' },
@@ -73,6 +125,16 @@ export interface UniqueSttItem {
   positionCount: number;
   totalQuantity: number;
   unit: string;
+}
+
+export interface UniqueTagItem {
+  tag: string;
+  normTag: string;
+  unaccTag: string;
+  positionCount: number;
+  totalQuantity: number;
+  unitsMap: Map<string, number>;
+  sampleProductName: string | null;
 }
 
 export interface ZoneItem {
@@ -282,7 +344,10 @@ export const getPositionTag = (pos: PositionItem): string | null => {
 const MobileWarehouseSearchBar = React.memo(function MobileWarehouseSearchBar({
   uniqueProducts,
   uniqueStts,
+  uniqueTags = [],
   searchQuery,
+  searchMode = 'all',
+  onSearchModeChange,
   onExecuteSearch,
   onClearSearch,
   filterDateType,
@@ -302,7 +367,10 @@ const MobileWarehouseSearchBar = React.memo(function MobileWarehouseSearchBar({
 }: {
   uniqueProducts: UniqueProductItem[];
   uniqueStts: UniqueSttItem[];
+  uniqueTags?: UniqueTagItem[];
   searchQuery: string;
+  searchMode?: WarehouseSearchMode;
+  onSearchModeChange?: (mode: WarehouseSearchMode) => void;
   onExecuteSearch: (query: string) => void;
   onClearSearch: () => void;
   filterDateType: DateFilterType;
@@ -322,6 +390,10 @@ const MobileWarehouseSearchBar = React.memo(function MobileWarehouseSearchBar({
 }) {
   const [inputValue, setInputValue] = useState(searchQuery);
   const [showSuggestions, setShowSuggestions] = useState(false);
+  const [showModeModal, setShowModeModal] = useState(false);
+
+  const activeModeConfig =
+    WAREHOUSE_SEARCH_MODES.find(m => m.id === searchMode) || WAREHOUSE_SEARCH_MODES[0];
 
   // Calendar picker state for mobile Từ ngày / Đến ngày
   const [calendarTarget, setCalendarTarget] = useState<'start' | 'end' | null>(null);
@@ -350,6 +422,7 @@ const MobileWarehouseSearchBar = React.memo(function MobileWarehouseSearchBar({
   };
 
   const sttSuggestions = useMemo(() => {
+    if (searchMode !== 'all' && searchMode !== 'stt') return [];
     const q = inputValue.trim();
     if (!q || q.length < 1) return [];
 
@@ -380,9 +453,44 @@ const MobileWarehouseSearchBar = React.memo(function MobileWarehouseSearchBar({
     }
 
     return list.sort((a, b) => b.score - a.score).slice(0, 6);
-  }, [inputValue, uniqueStts]);
+  }, [inputValue, uniqueStts, searchMode]);
+
+  const tagSuggestions = useMemo(() => {
+    if (searchMode !== 'all' && searchMode !== 'tag') return [];
+    const q = inputValue.trim();
+    if (!q || q.length < 1 || q.startsWith('#')) return [];
+
+    const normQ = normalizeSearchString(q);
+    const unaccQ = normalizeSearchString(q, true);
+    if (!normQ && !unaccQ) return [];
+
+    const list: {
+      item: UniqueTagItem;
+      score: number;
+    }[] = [];
+
+    for (let i = 0; i < uniqueTags.length; i++) {
+      const tItem = uniqueTags[i];
+      let score = 0;
+
+      if (tItem.normTag === normQ || tItem.unaccTag === unaccQ) {
+        score = 4500;
+      } else if (tItem.normTag.startsWith(normQ) || tItem.unaccTag.startsWith(unaccQ)) {
+        score = 3200 - tItem.normTag.length;
+      } else if (tItem.normTag.includes(normQ) || tItem.unaccTag.includes(unaccQ)) {
+        score = 2200 - tItem.normTag.length;
+      }
+
+      if (score > 0) {
+        list.push({ item: tItem, score });
+      }
+    }
+
+    return list.sort((a, b) => b.score - a.score).slice(0, searchMode === 'tag' ? 8 : 4);
+  }, [inputValue, uniqueTags, searchMode]);
 
   const suggestions = useMemo(() => {
+    if (searchMode !== 'all' && searchMode !== 'name' && searchMode !== 'code') return [];
     const q = inputValue.trim();
     if (!q || q.length < 1) return [];
     // Nếu người dùng gõ tiền tố # hoặc stt để tìm đích danh STT thì chỉ hiện gợi ý STT
@@ -403,6 +511,25 @@ const MobileWarehouseSearchBar = React.memo(function MobileWarehouseSearchBar({
       let matched = false;
       let score = 0;
       let matchedAlias: string | undefined;
+
+      if (searchMode === 'code') {
+        if (prod.normSku || prod.unaccSku) {
+          if (prod.normSku === normQ || prod.unaccSku === unaccQ) {
+            matched = true;
+            score = 3000;
+          } else if (prod.normSku.startsWith(normQ) || prod.unaccSku.startsWith(unaccQ)) {
+            matched = true;
+            score = 2000;
+          } else if (prod.normSku.includes(normQ) || prod.unaccSku.includes(unaccQ)) {
+            matched = true;
+            score = 1000;
+          }
+        }
+        if (matched) {
+          list.push({ product: prod, score });
+        }
+        continue;
+      }
 
       // 1. Alias check (tên viết tắt / gõ tắt: VD "đô c" -> "đô c có hạt")
       for (let j = 0; j < prod.aliasList.length; j++) {
@@ -440,7 +567,7 @@ const MobileWarehouseSearchBar = React.memo(function MobileWarehouseSearchBar({
       }
 
       // 3. SKU check
-      if (!matched && (prod.normSku || prod.unaccSku)) {
+      if (!matched && searchMode === 'all' && (prod.normSku || prod.unaccSku)) {
         if (prod.normSku === normQ || prod.unaccSku === unaccQ) {
           matched = true;
           score = 1000;
@@ -456,9 +583,9 @@ const MobileWarehouseSearchBar = React.memo(function MobileWarehouseSearchBar({
     }
 
     return list.sort((a, b) => b.score - a.score).slice(0, 6);
-  }, [inputValue, uniqueProducts]);
+  }, [inputValue, uniqueProducts, searchMode]);
 
-  const totalSuggestionCount = sttSuggestions.length + suggestions.length;
+  const totalSuggestionCount = sttSuggestions.length + tagSuggestions.length + suggestions.length;
 
   const handleSelect = (name: string) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -469,10 +596,17 @@ const MobileWarehouseSearchBar = React.memo(function MobileWarehouseSearchBar({
 
   const handleSelectStt = (stt: string) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    const sttQuery = `#${stt}`;
+    const sttQuery = searchMode === 'stt' ? stt : `#${stt}`;
     setInputValue(sttQuery);
     setShowSuggestions(false);
     onExecuteSearch(sttQuery);
+  };
+
+  const handleSelectTag = (tag: string) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setInputValue(tag);
+    setShowSuggestions(false);
+    onExecuteSearch(tag);
   };
 
   const handleSubmit = (customTerm?: string) => {
@@ -488,7 +622,21 @@ const MobileWarehouseSearchBar = React.memo(function MobileWarehouseSearchBar({
     <View style={styles.searchSection}>
       <View style={styles.searchInputRow}>
         <View style={styles.searchInputWrap}>
-          <Ionicons name="search" size={16} color="#94a3b8" style={styles.searchIcon} />
+          {/* Nút Chọn Chế Độ Tìm Kiếm (Tổng hợp, Theo Tên, Theo Mã, Mã phụ, Theo STT) */}
+          <TouchableOpacity
+            style={styles.modeSelectorBtn}
+            onPress={() => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              setShowModeModal(true);
+            }}
+          >
+            <Ionicons name={activeModeConfig.icon as any} size={13} color="#38bdf8" />
+            <Text style={styles.modeSelectorBtnText} numberOfLines={1}>
+              {activeModeConfig.shortLabel}
+            </Text>
+            <Ionicons name="chevron-down" size={10} color="#94a3b8" />
+          </TouchableOpacity>
+
           <TextInput
             style={styles.searchInput}
             value={inputValue}
@@ -501,7 +649,7 @@ const MobileWarehouseSearchBar = React.memo(function MobileWarehouseSearchBar({
             }}
             onSubmitEditing={() => handleSubmit()}
             returnKeyType="search"
-            placeholder="Tìm STT lot (VD: G44), tên/mã SP, vị trí..."
+            placeholder={activeModeConfig.placeholder}
             placeholderTextColor="#64748b"
           />
           {inputValue.length > 0 && (
@@ -555,6 +703,80 @@ const MobileWarehouseSearchBar = React.memo(function MobileWarehouseSearchBar({
           {hasActiveFilters && <View style={styles.filterActiveDot} />}
         </TouchableOpacity>
       </View>
+
+      {/* Modal Chọn Chế Độ Tìm Kiếm */}
+      <Modal
+        visible={showModeModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowModeModal(false)}
+      >
+        <TouchableOpacity
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={() => setShowModeModal(false)}
+        >
+          <TouchableOpacity
+            activeOpacity={1}
+            style={[styles.modalContent, { padding: 14 }]}
+            onPress={e => e.stopPropagation()}
+          >
+            <View style={styles.modalHeader}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <Ionicons name="options-outline" size={18} color="#38bdf8" />
+                <Text style={styles.modalTitle}>CHỌN CHẾ ĐỘ TÌM KIẾM</Text>
+              </View>
+              <TouchableOpacity onPress={() => setShowModeModal(false)}>
+                <Ionicons name="close" size={20} color="#94a3b8" />
+              </TouchableOpacity>
+            </View>
+
+            <View style={{ gap: 8, marginTop: 8 }}>
+              {WAREHOUSE_SEARCH_MODES.map(mode => {
+                const isSelected = mode.id === searchMode;
+                return (
+                  <TouchableOpacity
+                    key={mode.id}
+                    style={[
+                      styles.modeModalOptionItem,
+                      isSelected && styles.modeModalOptionItemActive
+                    ]}
+                    onPress={() => {
+                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                      onSearchModeChange?.(mode.id);
+                      setShowModeModal(false);
+                      if (inputValue.trim()) {
+                        onExecuteSearch(inputValue.trim());
+                      }
+                    }}
+                  >
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 }}>
+                      <View style={[styles.modeModalIconWrap, isSelected && styles.modeModalIconWrapActive]}>
+                        <Ionicons
+                          name={mode.icon as any}
+                          size={18}
+                          color={isSelected ? '#0f172a' : '#38bdf8'}
+                        />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={[styles.modeModalOptionTitle, isSelected && styles.modeModalOptionTitleActive]}>
+                          {mode.label}
+                        </Text>
+                        {mode.subHint && (
+                          <Text style={styles.modeModalOptionSub}>
+                            {mode.subHint}
+                          </Text>
+                        )}
+                      </View>
+                    </View>
+                    {isSelected && <Ionicons name="checkmark-circle" size={18} color="#38bdf8" />}
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
 
       {/* Thanh Chip hiển thị nhanh các bộ lọc đang áp dụng (Khi đóng bảng lọc) */}
       {hasActiveFilters && !isFilterOpen && (
@@ -834,14 +1056,23 @@ const MobileWarehouseSearchBar = React.memo(function MobileWarehouseSearchBar({
         </TouchableOpacity>
       </Modal>
 
-      {/* ── DROPDOWN GỢI Ý STT LOT & SẢN PHẨM ── */}
+      {/* ── DROPDOWN GỢI Ý STT LOT, MÃ PHỤ & SẢN PHẨM ── */}
       {showSuggestions && inputValue.trim().length > 0 && (
         <View style={styles.suggestionsCard}>
           <View style={styles.suggestionsHeader}>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
               <Ionicons name="sparkles" size={12} color="#fbbf24" />
               <Text style={styles.suggestionsHeaderTitle}>
-                GỢI Ý TÌM KIẾM ({totalSuggestionCount})
+                {searchMode === 'name'
+                  ? 'GỢI Ý TÊN & TÊN VIẾT TẮT'
+                  : searchMode === 'code'
+                  ? 'GỢI Ý MÃ SẢN PHẨM'
+                  : searchMode === 'tag'
+                  ? 'GỢI Ý MÃ PHỤ (TAG)'
+                  : searchMode === 'stt'
+                  ? 'GỢI Ý SỐ THỨ TỰ (STT)'
+                  : 'GỢI Ý TÌM KIẾM'}{' '}
+                ({totalSuggestionCount})
               </Text>
             </View>
             <TouchableOpacity onPress={() => setShowSuggestions(false)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
@@ -851,7 +1082,7 @@ const MobileWarehouseSearchBar = React.memo(function MobileWarehouseSearchBar({
 
           {totalSuggestionCount > 0 ? (
             <ScrollView style={{ maxHeight: 240 }} keyboardShouldPersistTaps="handled">
-              {/* Gợi ý theo STT của LOT */}
+              {/* 1. Gợi ý theo STT của LOT */}
               {sttSuggestions.map((entry, idx) => (
                 <TouchableOpacity
                   key={'stt_' + entry.item.stt + '_' + idx}
@@ -887,29 +1118,78 @@ const MobileWarehouseSearchBar = React.memo(function MobileWarehouseSearchBar({
                 </TouchableOpacity>
               ))}
 
-              {/* Gợi ý theo Tên / Mã Sản phẩm */}
+              {/* 2. Gợi ý theo Mã phụ (Tag) */}
+              {tagSuggestions.map((tItem, tIdx) => (
+                <TouchableOpacity
+                  key={'tag_' + tItem.item.tag + '_' + tIdx}
+                  style={styles.suggestionItem}
+                  onPress={() => handleSelectTag(tItem.item.tag)}
+                >
+                  <View style={{ flex: 1 }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 6 }}>
+                      <View style={[styles.posSttBadge, { backgroundColor: '#78350f', borderColor: '#f59e0b' }]}>
+                        <Text style={[styles.posSttBadgeText, { color: '#fde68a' }]}>🏷️ TAG: {tItem.item.tag}</Text>
+                      </View>
+                      {tItem.item.sampleProductName && (
+                        <Text style={[styles.suggestionTitle, { flex: 1 }]} numberOfLines={1}>
+                          {tItem.item.sampleProductName}
+                        </Text>
+                      )}
+                    </View>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginTop: 3 }}>
+                      <Text style={styles.suggestionCountBadge}>
+                        📍 {tItem.item.positionCount} vị trí
+                      </Text>
+                      {tItem.item.totalQuantity > 0 && (
+                        <Text style={[styles.suggestionMeta, { color: '#34d399', fontWeight: '700' }]}>
+                          📦 {formatUnitsSummary(tItem.item.unitsMap, { short: true })}
+                        </Text>
+                      )}
+                    </View>
+                  </View>
+                  <Ionicons name="chevron-forward" size={14} color="#f59e0b" />
+                </TouchableOpacity>
+              ))}
+
+              {/* 3. Gợi ý theo Tên / Mã Sản phẩm */}
               {suggestions.map((item, idx) => (
                 <TouchableOpacity
                   key={'prod_' + idx}
                   style={styles.suggestionItem}
-                  onPress={() => handleSelect(item.product.name)}
+                  onPress={() => handleSelect(searchMode === 'code' && item.product.sku && item.product.sku !== '---' ? item.product.sku : item.product.name)}
                 >
                   <View style={{ flex: 1 }}>
                     <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 4 }}>
-                      <Text style={styles.suggestionTitle} numberOfLines={1}>
-                        {item.product.name}
-                      </Text>
-                      {item.matchedAlias ? (
-                        <View style={styles.suggestionAliasBadge}>
-                          <Text style={styles.suggestionAliasText}>⚡ {item.matchedAlias}</Text>
-                        </View>
-                      ) : item.product.aliases ? (
-                        <View style={styles.suggestionAliasBadge}>
-                          <Text style={styles.suggestionAliasText}>⚡ {item.product.aliases}</Text>
-                        </View>
-                      ) : null}
+                      {searchMode === 'code' && item.product.sku && item.product.sku !== '---' ? (
+                        <>
+                          <View style={[styles.posSttBadge, { backgroundColor: '#3b0764', borderColor: '#a855f7' }]}>
+                            <Text style={[styles.posSttBadgeText, { color: '#e9d5ff' }]}>SKU: {item.product.sku}</Text>
+                          </View>
+                          <Text style={styles.suggestionTitle} numberOfLines={1}>
+                            {item.product.name}
+                          </Text>
+                        </>
+                      ) : (
+                        <>
+                          <Text style={styles.suggestionTitle} numberOfLines={1}>
+                            {item.product.name}
+                          </Text>
+                          {item.matchedAlias ? (
+                            <View style={styles.suggestionAliasBadge}>
+                              <Text style={styles.suggestionAliasText}>⚡ {item.matchedAlias}</Text>
+                            </View>
+                          ) : item.product.aliases ? (
+                            <View style={styles.suggestionAliasBadge}>
+                              <Text style={styles.suggestionAliasText}>⚡ {item.product.aliases}</Text>
+                            </View>
+                          ) : null}
+                        </>
+                      )}
                     </View>
                     <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginTop: 2 }}>
+                      {item.product.sku && searchMode !== 'code' && (
+                        <Text style={styles.suggestionMeta}>SKU: {item.product.sku}</Text>
+                      )}
                       <Text style={styles.suggestionCountBadge}>
                         📍 {item.product.positionCount} vị trí
                       </Text>
@@ -918,9 +1198,6 @@ const MobileWarehouseSearchBar = React.memo(function MobileWarehouseSearchBar({
                           📦 {formatUnitsSummary(item.product.unitsMap, { short: true })}
                         </Text>
                       )}
-                      {item.product.sku && item.product.sku !== '---' ? (
-                        <Text style={styles.suggestionMeta}>SKU: {item.product.sku}</Text>
-                      ) : null}
                     </View>
                   </View>
                   <Ionicons name="chevron-forward" size={14} color="#38bdf8" />
@@ -929,7 +1206,9 @@ const MobileWarehouseSearchBar = React.memo(function MobileWarehouseSearchBar({
             </ScrollView>
           ) : (
             <View style={{ padding: 12, alignItems: 'center' }}>
-              <Text style={{ color: '#94a3b8', fontSize: 11 }}>Không có STT hoặc sản phẩm nào khớp từ khóa</Text>
+              <Text style={{ color: '#94a3b8', fontSize: 11 }}>
+                Không có gợi ý trong chế độ {activeModeConfig.label}
+              </Text>
             </View>
           )}
 
@@ -941,7 +1220,7 @@ const MobileWarehouseSearchBar = React.memo(function MobileWarehouseSearchBar({
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1 }}>
               <Ionicons name="search" size={12} color="#38bdf8" />
               <Text style={styles.suggestionDirectText} numberOfLines={1}>
-                Tìm tất cả vị trí cho &ldquo;{inputValue.trim()}&rdquo;
+                Tìm [{activeModeConfig.label}] cho &ldquo;{inputValue.trim()}&rdquo;
               </Text>
             </View>
             <Text style={styles.suggestionDirectSub}>Tìm ngay →</Text>
@@ -977,6 +1256,7 @@ export default function WarehouseMapScreen({
 
   // Search state (searchQuery drives the map, while typing is fully isolated in MobileWarehouseSearchBar)
   const [searchQuery, setSearchQuery] = useState('');
+  const [searchMode, setSearchMode] = useState<WarehouseSearchMode>('all');
   const [searchTab, setSearchTab] = useState<'map' | 'breakdown'>('breakdown');
   const [expandedWhIds, setExpandedWhIds] = useState<Set<string>>(new Set());
   const [expandedAisleIds, setExpandedAisleIds] = useState<Set<string>>(new Set());
@@ -1549,6 +1829,49 @@ export default function WarehouseMapScreen({
     return Array.from(sttMap.values());
   }, [positions]);
 
+  // ── Danh sách Mã phụ (Tags) duy nhất đang có trong kho (Pre-indexed cho gợi ý 0ms) ──────────────
+  const uniqueTags = useMemo(() => {
+    const tagMap = new Map<string, UniqueTagItem>();
+
+    for (let i = 0; i < positions.length; i++) {
+      const p = positions[i];
+      if (!p.lot_id) continue;
+      const tags = p.tags && Array.isArray(p.tags) ? p.tags : [];
+
+      for (let j = 0; j < tags.length; j++) {
+        const rawTag = String(tags[j] || '').trim();
+        if (!rawTag || rawTag.startsWith('MERGED_')) continue;
+        const key = rawTag.toUpperCase();
+        const existing = tagMap.get(key);
+        const qty = p.quantity || 0;
+        const uCat = getCleanUnitCategory(p.unit);
+
+        if (existing) {
+          existing.positionCount++;
+          existing.totalQuantity += qty;
+          existing.unitsMap.set(uCat, (existing.unitsMap.get(uCat) || 0) + qty);
+          if (!existing.sampleProductName && p.product_name) {
+            existing.sampleProductName = p.product_name;
+          }
+        } else {
+          const uMap = new Map<string, number>();
+          if (qty > 0) uMap.set(uCat, qty);
+          tagMap.set(key, {
+            tag: rawTag,
+            normTag: normalizeSearchString(rawTag),
+            unaccTag: normalizeSearchString(rawTag, true),
+            positionCount: 1,
+            totalQuantity: qty,
+            unitsMap: uMap,
+            sampleProductName: p.product_name || null,
+          });
+        }
+      }
+    }
+
+    return Array.from(tagMap.values()).sort((a, b) => b.positionCount - a.positionCount);
+  }, [positions]);
+
   // ── Danh sách các Vùng miền / Vùng nguyên liệu đang có trong kho ─────────
   const availableRegions = useMemo(() => {
     const regionCountMap = new Map<string, number>();
@@ -1765,38 +2088,161 @@ export default function WarehouseMapScreen({
 
       // 3. Lọc theo Từ khóa tìm kiếm
       if (hasQuery) {
-        // FAST-PATH 1 (0ms): Khi người dùng bấm chọn trực tiếp dòng sản phẩm gợi ý (hỗ trợ cả Pallet hỗn hợp nhiều dòng SP)
-        if (isExactProductQuery) {
-          const subItems = getPositionProductItems(p);
-          const hasExact = subItems.some(sub => sub.name === q);
-          if (hasExact) {
-            matched.push({ pos: p, score: 2000 });
+        if (searchMode === 'name') {
+          // CHẾ ĐỘ: THEO TÊN (HỖ TRỢ ĐẦY ĐỦ TÊN VIẾT TẮT / ALIASES)
+          if (isExactProductQuery) {
+            const subItems = getPositionProductItems(p);
+            if (subItems.some(sub => sub.name === q)) {
+              matched.push({ pos: p, score: 2000 });
+            }
+            continue;
           }
-          continue;
-        }
 
-        // FAST-PATH 2 (0.5ms): Khi người dùng bấm chọn hoặc gõ tìm STT (#G44...)
-        if (isSttPrefixQuery) {
-          if (p.stt) {
-            const sttNorm = String(p.stt).trim().toLowerCase();
-            if (!cleanSttQuery || sttNorm.includes(cleanSttQuery)) {
-              const score = sttNorm === cleanSttQuery ? 5000 : sttNorm.startsWith(cleanSttQuery) ? 3800 : 2600;
-              matched.push({ pos: p, score });
+          const subItems = getPositionProductItems(p);
+          let isNameMatch = false;
+          let bestScore = 0;
+
+          for (let sIdx = 0; sIdx < subItems.length; sIdx++) {
+            const sub = subItems[sIdx];
+            const nameObj = {
+              name: sub.name,
+              aliases: sub.aliases || p.aliases,
+            };
+            if (matchSearch(nameObj, q)) {
+              isNameMatch = true;
+              const sc = calculateSearchScore(nameObj, q);
+              if (sc > bestScore) bestScore = sc;
             }
           }
-          continue;
-        }
 
-        // Tìm kiếm tự do (gõ tắt, tên gần đúng...)
-        if (matchPalletSearch(p, q)) {
-          const score = calculateSearchScore(p, q, {
-            stt: p.stt,
-            name: p.product_name,
-            code: p.code,
-            lot_code: p.lot_code,
-            aliases: p.aliases
-          });
-          matched.push({ pos: p, score });
+          if (!isNameMatch && p.product_name) {
+            const palletNameObj = {
+              name: p.product_name,
+              aliases: p.aliases,
+            };
+            if (matchSearch(palletNameObj, q)) {
+              isNameMatch = true;
+              bestScore = calculateSearchScore(palletNameObj, q);
+            }
+          }
+
+          if (isNameMatch) {
+            matched.push({ pos: p, score: bestScore || 100 });
+          }
+        } else if (searchMode === 'code') {
+          // CHẾ ĐỘ: THEO MÃ (SKU, MÃ LOT, MÃ VỊ TRÍ, BATCH CODE...)
+          const qCleanNorm = normalizeSearchString(q, true);
+          const posCodeNorm = normalizeSearchString(p.code, true);
+          const lotCodeNorm = p.lot_code ? normalizeSearchString(p.lot_code, true) : '';
+          const prodCodeNorm = p.production_code ? normalizeSearchString(p.production_code, true) : '';
+          const batchCodeNorm = p.batch_code ? normalizeSearchString(p.batch_code, true) : '';
+          const skuNorm = p.sku ? normalizeSearchString(p.sku, true) : '';
+
+          let isCodeMatch = false;
+          let score = 0;
+
+          if (posCodeNorm.includes(qCleanNorm)) {
+            isCodeMatch = true;
+            score = posCodeNorm === qCleanNorm ? 4000 : 2500;
+          } else if (lotCodeNorm && lotCodeNorm.includes(qCleanNorm)) {
+            isCodeMatch = true;
+            score = lotCodeNorm === qCleanNorm ? 3800 : 2200;
+          } else if (skuNorm && skuNorm.includes(qCleanNorm)) {
+            isCodeMatch = true;
+            score = skuNorm === qCleanNorm ? 3500 : 2000;
+          } else if (prodCodeNorm && prodCodeNorm.includes(qCleanNorm)) {
+            isCodeMatch = true;
+            score = prodCodeNorm === qCleanNorm ? 3200 : 1800;
+          } else if (batchCodeNorm && batchCodeNorm.includes(qCleanNorm)) {
+            isCodeMatch = true;
+            score = batchCodeNorm === qCleanNorm ? 3000 : 1600;
+          } else {
+            // Kiểm tra SKU từng dòng con nếu là pallet hỗn hợp
+            const subItems = getPositionProductItems(p);
+            for (let sIdx = 0; sIdx < subItems.length; sIdx++) {
+              const subSku = subItems[sIdx].sku ? normalizeSearchString(subItems[sIdx].sku!, true) : '';
+              if (subSku && subSku.includes(qCleanNorm)) {
+                isCodeMatch = true;
+                score = subSku === qCleanNorm ? 3500 : 2000;
+                break;
+              }
+            }
+          }
+
+          if (isCodeMatch) {
+            matched.push({ pos: p, score });
+          }
+        } else if (searchMode === 'tag') {
+          // CHẾ ĐỘ: THEO MÃ PHỤ (TAG)
+          const qTagNorm = normalizeSearchString(q, true);
+          const tags = p.tags && Array.isArray(p.tags) ? p.tags : [];
+          let isTagMatch = false;
+          let score = 0;
+
+          for (let tIdx = 0; tIdx < tags.length; tIdx++) {
+            const rawTag = String(tags[tIdx] || '').trim();
+            if (!rawTag || rawTag.startsWith('MERGED_')) continue;
+            const tagNorm = normalizeSearchString(rawTag, true);
+            if (tagNorm === qTagNorm) {
+              isTagMatch = true;
+              score = 4500;
+              break;
+            } else if (tagNorm.includes(qTagNorm)) {
+              isTagMatch = true;
+              score = 3000;
+            }
+          }
+
+          if (isTagMatch) {
+            matched.push({ pos: p, score });
+          }
+        } else if (searchMode === 'stt') {
+          // CHẾ ĐỘ: THEO STT CỦA LOT
+          if (p.stt) {
+            const rawStt = String(p.stt).trim();
+            const sttNorm = normalizeSearchString(rawStt, true);
+            const cleanQ = normalizeSearchString(q.replace(/^(#|stt[:\s-#]*)/i, '').trim(), true);
+
+            if (!cleanQ || sttNorm === cleanQ) {
+              matched.push({ pos: p, score: 5000 });
+            } else if (sttNorm.startsWith(cleanQ)) {
+              matched.push({ pos: p, score: 3800 });
+            } else if (sttNorm.includes(cleanQ)) {
+              matched.push({ pos: p, score: 2600 });
+            }
+          }
+        } else {
+          // CHẾ ĐỘ: TỔNG HỢP (HỖ TRỢ ĐẦY ĐỦ TÊN VIẾT TẮT, MÃ, MÃ PHỤ, STT, VỊ TRÍ)
+          if (isExactProductQuery) {
+            const subItems = getPositionProductItems(p);
+            const hasExact = subItems.some(sub => sub.name === q);
+            if (hasExact) {
+              matched.push({ pos: p, score: 2000 });
+            }
+            continue;
+          }
+
+          if (isSttPrefixQuery) {
+            if (p.stt) {
+              const sttNorm = String(p.stt).trim().toLowerCase();
+              if (!cleanSttQuery || sttNorm.includes(cleanSttQuery)) {
+                const score = sttNorm === cleanSttQuery ? 5000 : sttNorm.startsWith(cleanSttQuery) ? 3800 : 2600;
+                matched.push({ pos: p, score });
+              }
+            }
+            continue;
+          }
+
+          if (matchPalletSearch(p, q)) {
+            const score = calculateSearchScore(p, q, {
+              stt: p.stt,
+              name: p.product_name,
+              code: p.code,
+              lot_code: p.lot_code,
+              aliases: p.aliases
+            });
+            matched.push({ pos: p, score });
+          }
         }
       } else {
         matched.push({ pos: p, score: 100 });
@@ -1807,7 +2253,7 @@ export default function WarehouseMapScreen({
       matched.sort((a, b) => b.score - a.score);
     }
     return matched.map(m => m.pos);
-  }, [positions, searchQuery, filterDateType, filterStartDate, filterEndDate, filterRegion, exactProductNamesSet]);
+  }, [positions, searchQuery, searchMode, filterDateType, filterStartDate, filterEndDate, filterRegion, exactProductNamesSet]);
 
   const matchingPosIds = useMemo(() => {
     return new Set(matchingPositions.map(p => p.id));
@@ -2551,7 +2997,10 @@ export default function WarehouseMapScreen({
       <MobileWarehouseSearchBar
         uniqueProducts={uniqueProducts}
         uniqueStts={uniqueStts}
+        uniqueTags={uniqueTags}
         searchQuery={searchQuery}
+        searchMode={searchMode}
+        onSearchModeChange={setSearchMode}
         onExecuteSearch={handleExecuteSearch}
         onClearSearch={handleClearSearch}
         filterDateType={filterDateType}
@@ -4627,8 +5076,65 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#334155',
     borderRadius: 12,
-    paddingHorizontal: 10,
+    paddingHorizontal: 8,
     height: 40
+  },
+  modeSelectorBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    backgroundColor: '#1e293b',
+    borderWidth: 1,
+    borderColor: '#475569',
+    borderRadius: 8,
+    paddingHorizontal: 7,
+    paddingVertical: 5,
+    marginRight: 4,
+  },
+  modeSelectorBtnText: {
+    color: '#38bdf8',
+    fontSize: 11,
+    fontWeight: '800',
+    maxWidth: 68,
+  },
+  modeModalOptionItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: 12,
+    borderRadius: 12,
+    backgroundColor: '#0f172a',
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  modeModalOptionItemActive: {
+    backgroundColor: 'rgba(6, 182, 212, 0.15)',
+    borderColor: '#06b6d4',
+  },
+  modeModalIconWrap: {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    backgroundColor: '#1e293b',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  modeModalIconWrapActive: {
+    backgroundColor: '#06b6d4',
+  },
+  modeModalOptionTitle: {
+    color: '#e2e8f0',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  modeModalOptionTitleActive: {
+    color: '#38bdf8',
+    fontWeight: '900',
+  },
+  modeModalOptionSub: {
+    color: '#94a3b8',
+    fontSize: 10.5,
+    marginTop: 1,
   },
   searchIcon: {
     marginRight: 6
