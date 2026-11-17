@@ -4,6 +4,7 @@ import {
   Alert, Modal, TextInput, ActivityIndicator, Vibration, Animated, Platform, AppState, NativeModules
 } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
+import * as ImageManipulator from 'expo-image-manipulator';
 import TextRecognition from '@react-native-ml-kit/text-recognition';
 import * as Haptics from 'expo-haptics';
 import { Ionicons } from '@expo/vector-icons';
@@ -32,6 +33,7 @@ if (NativeModules && NativeModules.VolumeManager) {
 export default function StampScannerScreen({ onNavigateToPallets }: { onNavigateToPallets: () => void }) {
   const [permission, requestPermission] = useCameraPermissions();
   const cameraRef = useRef<any>(null);
+  const cameraBoxSizeRef = useRef<{ width: number; height: number }>({ width: 340, height: 220 });
 
   const [activePallet, setActivePallet] = useState<Pallet | null>(null);
   const [boxes, setBoxes] = useState<BoxLabel[]>([]);
@@ -227,9 +229,43 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
         throw new Error('Không chụp được ảnh từ camera');
       }
 
+      // Crop chính xác vùng khung ngắm hiển thị (loại bỏ chữ/số từ các thùng bên trên & dưới)
+      let recognizeUri = photo.uri;
+      try {
+        const imgW = photo.width || 0;
+        const imgH = photo.height || 0;
+        const { width: boxW, height: boxH } = cameraBoxSizeRef.current;
+        if (imgW > 100 && imgH > 100 && boxW > 0 && boxH > 0) {
+          const scale = Math.max(boxW / imgW, boxH / imgH);
+          const visW = boxW / scale;
+          const visH = boxH / scale;
+          const visX = Math.max(0, (imgW - visW) / 2);
+          const visY = Math.max(0, (imgH - visH) / 2);
+
+          // Khung ngắm chiếm ~92% ngang, 50% dọc của hộp camera -> lấy rộng an toàn 98% ngang, 74% dọc ở giữa
+          const cropW = Math.min(imgW, Math.round(visW * 0.98));
+          const cropH = Math.min(imgH, Math.round(visH * 0.74));
+          const originX = Math.max(0, Math.min(imgW - cropW, Math.round(visX + (visW - cropW) / 2)));
+          const originY = Math.max(0, Math.min(imgH - cropH, Math.round(visY + (visH - cropH) / 2)));
+
+          if (cropW > 50 && cropH > 50) {
+            const cropped = await ImageManipulator.manipulateAsync(
+              photo.uri,
+              [{ crop: { originX, originY, width: cropW, height: cropH } }],
+              { compress: 0.92, format: ImageManipulator.SaveFormat.JPEG }
+            );
+            if (cropped?.uri) {
+              recognizeUri = cropped.uri;
+            }
+          }
+        }
+      } catch (cropErr) {
+        console.warn('Crop ảnh khung ngắm fallback về ảnh gốc:', cropErr);
+      }
+
       // OCR qua Google ML Kit
       if (TextRecognition && typeof TextRecognition.recognize === 'function') {
-        const mlResult = await TextRecognition.recognize(photo.uri);
+        const mlResult = await TextRecognition.recognize(recognizeUri);
         const raw = mlResult?.text || '';
 
         if (!raw.trim()) {
@@ -684,7 +720,15 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
       </View>
 
       {/* ── CAMERA BOX (GỌN GIỐNG QUÉT TEM) ──────────────── */}
-      <View style={styles.compactCameraBox}>
+      <View
+        style={styles.compactCameraBox}
+        onLayout={e => {
+          const { width, height } = e.nativeEvent.layout;
+          if (width > 0 && height > 0) {
+            cameraBoxSizeRef.current = { width, height };
+          }
+        }}
+      >
         {!activePallet ? (
           <View style={styles.noPalletOverlay}>
             <Ionicons name="cube-outline" size={36} color="#38bdf8" />
