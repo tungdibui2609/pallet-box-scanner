@@ -24,7 +24,8 @@ import {
   fetchRecentStampQueue, triggerDecodeStampFromApp,
   StampQueueItemMobile, StampQueueBackgroundItem,
   getPendingStampQueueList, removePendingStampQueueItem,
-  syncSingleStampBackgroundItem, getDirectDriveImage
+  syncSingleStampBackgroundItem, getDirectDriveImage,
+  getFullStampImage
 } from '../services/stampQueueService';
 import { calculateSearchScore, matchSearch, normalizeSearchString } from '../utils/searchUtils';
 
@@ -86,10 +87,12 @@ export interface ProductSuggestionItem {
 
 export default function PalletListScreen({
   onBackToScanner,
-  isActive
+  isActive,
+  scannerMode = 'stamp_scanner'
 }: {
   onBackToScanner: () => void;
   isActive?: boolean;
+  scannerMode?: 'stamp_scanner' | 'scanner';
 }) {
   // 4 Tabs: 'pending' (Chờ đẩy) vs 'stamp_pending' (Chờ giải mã) vs 'stamp_decoded' (Đã giải mã) vs 'cloud' (Đã duyệt)
   const [activeTab, setActiveTab] = useState<'pending' | 'stamp_pending' | 'stamp_decoded' | 'cloud'>('pending');
@@ -136,6 +139,16 @@ export default function PalletListScreen({
   const [selectedCloudPallet, setSelectedCloudPallet] = useState<CloudPallet | null>(null);
   const [selectedBoxes, setSelectedBoxes] = useState<BoxLabel[]>([]);
   const [isLoadingBoxes, setIsLoadingBoxes] = useState(false);
+
+  // Modal xem ảnh phóng to full-screen
+  const [previewModalImageUri, setPreviewModalImageUri] = useState<string | null>(null);
+  const [previewModalTitle, setPreviewModalTitle] = useState<string>('');
+
+  const openPreviewImage = (uri?: string | null, title?: string) => {
+    if (!uri) return;
+    setPreviewModalTitle(title || 'Ảnh con dấu');
+    setPreviewModalImageUri(uri);
+  };
 
   const palletsLengthRef = useRef(0);
   useEffect(() => {
@@ -196,14 +209,17 @@ export default function PalletListScreen({
     );
   }
 
-  async function handleDecodeItem(id: string) {
-    setDecodingQueueId(id);
+  async function handleDecodeItem(ids: string | string[]) {
+    const idList = Array.isArray(ids) ? ids : [ids];
+    if (idList.length === 0) return;
+    const repId = idList[0];
+    setDecodingQueueId(repId);
     try {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-      const res = await triggerDecodeStampFromApp([id]);
+      const res = await triggerDecodeStampFromApp(idList);
       if (res.success) {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        Alert.alert('Thành công', 'Đã giải mã xong con dấu bằng AI!');
+        Alert.alert('Thành công', `Đã giải mã xong ${res.decodedCount || idList.length} con dấu bằng AI!`);
         await loadStampQueue(true);
       } else {
         Alert.alert('Không thể giải mã', res.message || 'Lỗi khi giải mã con dấu');
@@ -1004,11 +1020,91 @@ export default function PalletListScreen({
   const stampPendingList = useMemo(() => {
     return stampQueueItems.filter(i => i.status === 'pending' || i.status === 'error');
   }, [stampQueueItems]);
+
   const stampDecodedList = useMemo(() => {
     return stampQueueItems.filter(i => i.status === 'decoded');
   }, [stampQueueItems]);
-  const stampPendingCount = offlineStampItems.length + stampPendingList.length;
-  const stampDecodedCount = stampDecodedList.length;
+
+  // Gom nhóm các con dấu chờ giải mã theo cùng STT Pallet
+  const groupedStampPendingList = useMemo(() => {
+    const map = new Map<string, {
+      key: string;
+      pallet_stt: string;
+      pallet_tag?: string | null;
+      pallet_notes?: string | null;
+      total_boxes: number;
+      total_weight: number;
+      created_by_name?: string | null;
+      created_at: string;
+      items: StampQueueItemMobile[];
+    }>();
+
+    for (const item of stampPendingList) {
+      const key = (item.pallet_stt || '').trim().toUpperCase() || item.id;
+      if (!map.has(key)) {
+        map.set(key, {
+          key,
+          pallet_stt: item.pallet_stt,
+          pallet_tag: item.pallet_tag,
+          pallet_notes: item.pallet_notes,
+          total_boxes: 0,
+          total_weight: 0,
+          created_by_name: item.created_by_name,
+          created_at: item.created_at,
+          items: []
+        });
+      }
+      const g = map.get(key)!;
+      g.total_boxes += Number(item.box_count) || 0;
+      g.total_weight += (Number(item.box_count) || 0) * (Number(item.box_weight) || 20);
+      g.items.push(item);
+      if (!g.pallet_tag && item.pallet_tag) g.pallet_tag = item.pallet_tag;
+      if (!g.pallet_notes && item.pallet_notes) g.pallet_notes = item.pallet_notes;
+    }
+    return Array.from(map.values());
+  }, [stampPendingList]);
+
+  // Gom nhóm các con dấu đã giải mã theo cùng STT Pallet
+  const groupedStampDecodedList = useMemo(() => {
+    const map = new Map<string, {
+      key: string;
+      pallet_stt: string;
+      pallet_tag?: string | null;
+      pallet_notes?: string | null;
+      total_boxes: number;
+      total_weight: number;
+      created_by_name?: string | null;
+      created_at: string;
+      items: StampQueueItemMobile[];
+    }>();
+
+    for (const item of stampDecodedList) {
+      const key = (item.pallet_stt || '').trim().toUpperCase() || item.id;
+      if (!map.has(key)) {
+        map.set(key, {
+          key,
+          pallet_stt: item.pallet_stt,
+          pallet_tag: item.pallet_tag,
+          pallet_notes: item.pallet_notes,
+          total_boxes: 0,
+          total_weight: 0,
+          created_by_name: item.created_by_name,
+          created_at: item.created_at,
+          items: []
+        });
+      }
+      const g = map.get(key)!;
+      g.total_boxes += Number(item.box_count) || 0;
+      g.total_weight += (Number(item.box_count) || 0) * (Number(item.box_weight) || 20);
+      g.items.push(item);
+      if (!g.pallet_tag && item.pallet_tag) g.pallet_tag = item.pallet_tag;
+      if (!g.pallet_notes && item.pallet_notes) g.pallet_notes = item.pallet_notes;
+    }
+    return Array.from(map.values());
+  }, [stampDecodedList]);
+
+  const stampPendingCount = offlineStampItems.length + groupedStampPendingList.length;
+  const stampDecodedCount = groupedStampDecodedList.length;
   const cloudCount = cloudPallets.length;
 
   return (
@@ -1017,7 +1113,9 @@ export default function PalletListScreen({
       <View style={styles.topBar}>
         <TouchableOpacity style={styles.backBtn} onPress={onBackToScanner}>
           <Ionicons name="arrow-back" size={22} color="#fff" />
-          <Text style={styles.backBtnText}>Quét Thùng</Text>
+          <Text style={styles.backBtnText}>
+            {scannerMode === 'scanner' ? 'Quét Thùng' : 'Quét Đóng Dấu'}
+          </Text>
         </TouchableOpacity>
         <Text style={styles.topBarTitle}>DANH SÁCH PALLET</Text>
         <TouchableOpacity onPress={handleRefreshAll}>
@@ -1171,15 +1269,42 @@ export default function PalletListScreen({
                 const isSyncing = syncingId === item.id;
                 const isError = item.sync_status === 'error';
 
+                const offlineMatch = offlineStampItems.find(o => (o.palletStt || '').trim().toUpperCase() === item.code.trim().toUpperCase());
+                const queueMatch = stampQueueItems.find(q => (q.pallet_stt || '').trim().toUpperCase() === item.code.trim().toUpperCase());
+
+                const imgSrc = offlineMatch?.cropPhotoUri || offlineMatch?.photoUri
+                  || getDirectDriveImage(
+                       item.stamp_image_url || queueMatch?.image_url,
+                       queueMatch?.cropped_image_url,
+                       item.drive_file_id || queueMatch?.drive_file_id
+                     );
+
+                const fullImgSrc = offlineMatch?.photoUri
+                  || getFullStampImage(
+                       item.stamp_image_url || queueMatch?.image_url,
+                       queueMatch?.cropped_image_url,
+                       item.drive_file_id || queueMatch?.drive_file_id
+                     ) || imgSrc;
+
+                const line1 = item.stamp_line1 || queueMatch?.stamp_line1;
+                const line2 = item.stamp_line2 || queueMatch?.stamp_line2;
+                const prodTitle = item.product_name || queueMatch?.decoded_json?.productTitle || queueMatch?.decoded_json?.special12Name || (line1 ? 'Sản phẩm con dấu' : 'Pallet thùng');
+                const specText = item.spec || queueMatch?.decoded_json?.spec;
+                const packDateText = item.packaging_date || queueMatch?.decoded_json?.packagingDateStr;
+                const prodDateText = item.production_date || queueMatch?.decoded_json?.rawMaterialDateStr;
+                const regionText = item.region || queueMatch?.decoded_json?.provinceName;
+                const weightPerBox = item.box_weight || queueMatch?.box_weight || (item.scanned_qty > 0 && item.total_weight ? Math.round(item.total_weight / item.scanned_qty) : 20);
+                const senderName = (item as any).created_by_name || queueMatch?.created_by_name || 'Kho';
+
                 return (
                   <TouchableOpacity
-                    style={styles.palletCard}
+                    style={[styles.palletCard, (line1 || line2 || imgSrc) ? { borderColor: '#f59e0b' } : null]}
                     onPress={() => handleOpenLocalDetail(item)}
                   >
                     <View style={styles.palletCardHeader}>
                       <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1, flexWrap: 'wrap' }}>
-                        <Ionicons name="cube" size={20} color="#fbbf24" style={{ marginRight: 8 }} />
-                        <Text style={styles.palletCode}>{item.code}</Text>
+                        <Ionicons name={line1 || imgSrc ? 'sparkles' : 'cube'} size={18} color="#fbbf24" style={{ marginRight: 6 }} />
+                        <Text style={styles.palletCode}>STT: {item.code}</Text>
                         {item.tag ? (
                           <View style={styles.tagBadge}>
                             <Text style={styles.tagBadgeText}>🏷️ {item.tag}</Text>
@@ -1200,17 +1325,92 @@ export default function PalletListScreen({
                     </View>
 
                     <View style={styles.palletCardBody}>
-                      <Text style={styles.palletMeta}>
-                        Số lượng: <Text style={{ color: '#22c55e', fontWeight: '900' }}>{item.scanned_qty}</Text> / {item.target_qty} thùng
-                      </Text>
-                      <Text style={styles.palletMeta}>
-                        Tổng khối lượng: <Text style={{ color: '#38bdf8', fontWeight: '900' }}>{item.total_weight}</Text> Kg
-                      </Text>
+                      <View style={{ flexDirection: 'row', gap: 10, marginBottom: 8 }}>
+                        {imgSrc ? (
+                          <TouchableOpacity
+                            activeOpacity={0.8}
+                            onPress={(e) => {
+                              e.stopPropagation?.();
+                              openPreviewImage(fullImgSrc || imgSrc, `STT: ${item.code}`);
+                            }}
+                            style={{
+                              width: 68,
+                              height: 68,
+                              borderRadius: 8,
+                              overflow: 'hidden',
+                              backgroundColor: '#1e293b',
+                              borderWidth: 1,
+                              borderColor: '#475569'
+                            }}
+                          >
+                            <Image
+                              source={{ uri: imgSrc }}
+                              style={{ width: '100%', height: '100%' }}
+                              resizeMode="cover"
+                            />
+                          </TouchableOpacity>
+                        ) : null}
+                        <View style={{ flex: 1, justifyContent: 'center' }}>
+                          <Text style={{ color: '#fff', fontSize: 13, fontWeight: '700', lineHeight: 18 }} numberOfLines={2}>
+                            {prodTitle}
+                          </Text>
+                          <Text style={{ color: '#38bdf8', fontSize: 11, fontWeight: '700', marginTop: 3 }}>
+                            {item.scanned_qty} thùng • {weightPerBox} Kg
+                          </Text>
+                        </View>
+                      </View>
+
+                      {/* 2 Dòng số đọc được (nếu là con dấu) */}
+                      {(line1 || line2) ? (
+                        <View style={{ backgroundColor: '#0f172a', padding: 8, borderRadius: 8, gap: 4, borderWidth: 1, borderColor: '#334155', marginBottom: 6 }}>
+                          <Text style={{ color: '#cbd5e1', fontSize: 11, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' }}>
+                            <Text style={{ color: '#94a3b8' }}>Dòng 1: </Text>
+                            <Text style={{ color: '#38bdf8', fontWeight: 'bold' }}>{line1 || '---'}</Text>
+                          </Text>
+                          <Text style={{ color: '#cbd5e1', fontSize: 11, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' }}>
+                            <Text style={{ color: '#94a3b8' }}>Dòng 2: </Text>
+                            <Text style={{ color: '#a78bfa', fontWeight: 'bold' }}>{line2 || '---'}</Text>
+                          </Text>
+                        </View>
+                      ) : null}
+
+                      {/* Thông tin quét & thông tin khác */}
+                      <View style={{ gap: 4, marginTop: 2, marginBottom: 6 }}>
+                        {/* Hàng trên: Thông tin quét */}
+                        {(regionText || packDateText || prodDateText) ? (
+                          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+                            {regionText ? (
+                              <Text style={{ color: '#94a3b8', fontSize: 11 }}>
+                                Vùng: <Text style={{ color: '#f1f5f9', fontWeight: 'bold' }}>{regionText}</Text>
+                              </Text>
+                            ) : null}
+                            {packDateText ? (
+                              <Text style={{ color: '#94a3b8', fontSize: 11 }}>
+                                Đóng gói: <Text style={{ color: '#f1f5f9', fontWeight: 'bold' }}>{packDateText}</Text>
+                              </Text>
+                            ) : null}
+                            {prodDateText ? (
+                              <Text style={{ color: '#94a3b8', fontSize: 11 }}>
+                                Nhập NL: <Text style={{ color: '#f1f5f9', fontWeight: 'bold' }}>{prodDateText}</Text>
+                              </Text>
+                            ) : null}
+                          </View>
+                        ) : null}
+
+                        {/* Hàng dưới: Người gửi */}
+                        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+                          <Text style={{ color: '#94a3b8', fontSize: 11 }}>
+                            Người gửi: <Text style={{ color: '#cbd5e1' }}>{senderName}</Text>
+                          </Text>
+                        </View>
+                      </View>
+
                       {item.notes ? (
-                        <Text style={styles.palletNotesText} numberOfLines={2}>
+                        <Text style={[styles.palletNotesText, { marginBottom: 4 }]} numberOfLines={2}>
                           📝 {item.notes}
                         </Text>
                       ) : null}
+
                       <Text style={styles.palletDate}>
                         Ngày tạo: {item.created_at.slice(0, 16).replace('T', ' ')}
                       </Text>
@@ -1332,15 +1532,29 @@ export default function PalletListScreen({
                       </View>
                     </View>
 
-                    <View style={[styles.palletCardBody, { flexDirection: 'row', gap: 12 }]}>
+                    <View style={[styles.palletCardBody, { flexDirection: 'row', gap: 10 }]}>
                       {imgSrc ? (
-                        <Image
-                          source={{ uri: imgSrc }}
-                          style={{ width: 72, height: 72, borderRadius: 8, backgroundColor: '#0c0a09' }}
-                          resizeMode="cover"
-                        />
+                        <TouchableOpacity
+                          activeOpacity={0.8}
+                          onPress={() => openPreviewImage(imgSrc, `STT: ${item.palletStt}`)}
+                          style={{
+                            width: 68,
+                            height: 68,
+                            borderRadius: 8,
+                            overflow: 'hidden',
+                            backgroundColor: '#0c0a09',
+                            borderWidth: 1,
+                            borderColor: '#78350f'
+                          }}
+                        >
+                          <Image
+                            source={{ uri: imgSrc }}
+                            style={{ width: '100%', height: '100%' }}
+                            resizeMode="cover"
+                          />
+                        </TouchableOpacity>
                       ) : (
-                        <View style={{ width: 72, height: 72, borderRadius: 8, backgroundColor: '#0c0a09', alignItems: 'center', justifyContent: 'center' }}>
+                        <View style={{ width: 68, height: 68, borderRadius: 8, backgroundColor: '#0c0a09', alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#78350f' }}>
                           <Ionicons name="image-outline" size={24} color="#78716c" />
                         </View>
                       )}
@@ -1384,85 +1598,219 @@ export default function PalletListScreen({
                 );
               })}
 
-              {/* 2. Danh sách Pallet đã gửi lên Server (Chờ AI giải mã) */}
-              {stampPendingList.map(item => {
-                const isDecoding = decodingQueueId === item.id;
-                const isErr = item.status === 'error';
-                const imgSrc = getDirectDriveImage(item.image_url, item.cropped_image_url, item.drive_file_id);
+              {/* 2. Danh sách Pallet đã gửi lên Server (Chờ AI giải mã - Gom nhóm theo STT Pallet) */}
+              {groupedStampPendingList.map(group => {
+                if (group.items.length === 1) {
+                  const item = group.items[0];
+                  const isDecoding = decodingQueueId === item.id;
+                  const isErr = item.status === 'error';
+                  const imgSrc = getDirectDriveImage(item.image_url, item.cropped_image_url, item.drive_file_id);
+                  const fullImgSrc = getFullStampImage(item.image_url, item.cropped_image_url, item.drive_file_id) || imgSrc;
 
-                return (
-                  <View key={item.id} style={[styles.palletCard, isErr && { borderColor: '#ef4444' }]}>
-                    <View style={styles.palletCardHeader}>
-                      <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1, flexWrap: 'wrap' }}>
-                        <Ionicons name="cube" size={20} color="#fb923c" style={{ marginRight: 8 }} />
-                        <Text style={styles.palletCode}>STT: {item.pallet_stt}</Text>
-                        {item.pallet_tag ? (
-                          <View style={styles.tagBadge}>
-                            <Text style={styles.tagBadgeText}>🏷️ {item.pallet_tag}</Text>
-                          </View>
-                        ) : null}
-                      </View>
-                      <View style={[
-                        styles.syncBadge,
-                        { backgroundColor: isErr ? '#7f1d1d' : '#7c2d12' }
-                      ]}>
-                        <Text style={[
-                          styles.syncBadgeText,
-                          { color: isErr ? '#fca5a5' : '#fdba74' }
+                  return (
+                    <View key={item.id} style={[styles.palletCard, isErr && { borderColor: '#ef4444' }]}>
+                      <View style={styles.palletCardHeader}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1, flexWrap: 'wrap' }}>
+                          <Ionicons name="cube" size={20} color="#fb923c" style={{ marginRight: 8 }} />
+                          <Text style={styles.palletCode}>STT: {item.pallet_stt}</Text>
+                          {item.pallet_tag ? (
+                            <View style={styles.tagBadge}>
+                              <Text style={styles.tagBadgeText}>🏷️ {item.pallet_tag}</Text>
+                            </View>
+                          ) : null}
+                        </View>
+                        <View style={[
+                          styles.syncBadge,
+                          { backgroundColor: isErr ? '#7f1d1d' : '#7c2d12' }
                         ]}>
-                          {isErr ? '❌ Lỗi đọc AI' : '⏳ Đã gửi (Chờ AI đọc)'}
-                        </Text>
+                          <Text style={[
+                            styles.syncBadgeText,
+                            { color: isErr ? '#fca5a5' : '#fdba74' }
+                          ]}>
+                            {isErr ? '❌ Lỗi đọc AI' : '⏳ Đã gửi (Chờ AI đọc)'}
+                          </Text>
+                        </View>
+                      </View>
+
+                      <View style={[styles.palletCardBody, { flexDirection: 'row', gap: 10 }]}>
+                        {imgSrc ? (
+                          <TouchableOpacity
+                            activeOpacity={0.8}
+                            onPress={() => openPreviewImage(fullImgSrc || imgSrc, `STT: ${item.pallet_stt}`)}
+                            style={{
+                              width: 68,
+                              height: 68,
+                              borderRadius: 8,
+                              overflow: 'hidden',
+                              backgroundColor: '#1e293b',
+                              borderWidth: 1,
+                              borderColor: '#d97706'
+                            }}
+                          >
+                            <Image
+                              source={{ uri: imgSrc }}
+                              style={{ width: '100%', height: '100%' }}
+                              resizeMode="cover"
+                            />
+                          </TouchableOpacity>
+                        ) : (
+                          <View style={{ width: 68, height: 68, borderRadius: 8, backgroundColor: '#1e293b', alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#334155' }}>
+                            <Ionicons name="image-outline" size={24} color="#64748b" />
+                          </View>
+                        )}
+                        <View style={{ flex: 1, justifyContent: 'space-between' }}>
+                          <Text style={styles.palletMeta}>
+                            Số lượng: <Text style={{ color: '#22c55e', fontWeight: '900' }}>{item.box_count}</Text> thùng • {item.box_weight} Kg
+                          </Text>
+                          {isErr && item.error_message ? (
+                            <Text style={{ color: '#f87171', fontSize: 11, marginTop: 2 }} numberOfLines={2}>
+                              ⚠️ {item.error_message}
+                            </Text>
+                          ) : (
+                            <Text style={{ color: '#94a3b8', fontSize: 11 }}>
+                              Đã tải lên Google Drive (CON_DAU)
+                            </Text>
+                          )}
+                          <Text style={styles.palletDate}>
+                            Gửi lúc: {item.created_at?.slice(0, 16).replace('T', ' ')}
+                          </Text>
+                        </View>
+                      </View>
+
+                      <View style={styles.palletCardFooter}>
+                        <View style={{ flex: 1 }}>
+                          <Text style={{ color: '#cbd5e1', fontSize: 11 }}>
+                            Người gửi: <Text style={{ color: '#fff', fontWeight: '600' }}>{item.created_by_name || 'Kho'}</Text>
+                          </Text>
+                        </View>
+                        <TouchableOpacity
+                          style={[styles.syncSingleBtn, { backgroundColor: '#ea580c' }]}
+                          disabled={isDecoding}
+                          onPress={() => handleDecodeItem(item.id)}
+                        >
+                          {isDecoding ? (
+                            <ActivityIndicator color="#fff" size="small" />
+                          ) : (
+                            <>
+                              <Ionicons name="sparkles" size={14} color="#fff" />
+                              <Text style={styles.syncSingleText}>Giải mã AI</Text>
+                            </>
+                          )}
+                        </TouchableOpacity>
                       </View>
                     </View>
+                  );
+                }
 
-                    <View style={[styles.palletCardBody, { flexDirection: 'row', gap: 12 }]}>
-                      {imgSrc ? (
-                        <Image
-                          source={{ uri: imgSrc }}
-                          style={{ width: 72, height: 72, borderRadius: 8, backgroundColor: '#1e293b' }}
-                          resizeMode="cover"
-                        />
-                      ) : (
-                        <View style={{ width: 72, height: 72, borderRadius: 8, backgroundColor: '#1e293b', alignItems: 'center', justifyContent: 'center' }}>
-                          <Ionicons name="image-outline" size={24} color="#64748b" />
+                // Pallet ghép nhiều ảnh con dấu chờ giải mã
+                const hasErr = group.items.some(i => i.status === 'error');
+                const isDecoding = group.items.some(i => decodingQueueId === i.id);
+                const allIds = group.items.map(i => i.id);
+
+                return (
+                  <View key={group.key} style={[styles.palletCard, hasErr && { borderColor: '#ef4444' }]}>
+                    <View style={styles.palletCardHeader}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1, flexWrap: 'wrap', gap: 6 }}>
+                        <Ionicons name="cube" size={20} color="#fb923c" />
+                        <Text style={styles.palletCode}>STT: {group.pallet_stt}</Text>
+                        {group.pallet_tag ? (
+                          <View style={styles.tagBadge}>
+                            <Text style={styles.tagBadgeText}>🏷️ {group.pallet_tag}</Text>
+                          </View>
+                        ) : null}
+                        <View style={[styles.tagBadge, { backgroundColor: '#7c2d12', borderColor: '#ea580c', borderWidth: 1 }]}>
+                          <Text style={[styles.tagBadgeText, { color: '#fdba74' }]}>
+                            📦 Ghép {group.items.length} đợt con dấu
+                          </Text>
                         </View>
-                      )}
-                      <View style={{ flex: 1, justifyContent: 'space-between' }}>
-                        <Text style={styles.palletMeta}>
-                          Số lượng: <Text style={{ color: '#22c55e', fontWeight: '900' }}>{item.box_count}</Text> thùng • {item.box_weight} Kg
-                        </Text>
-                        {isErr && item.error_message ? (
-                          <Text style={{ color: '#f87171', fontSize: 11, marginTop: 2 }} numberOfLines={2}>
-                            ⚠️ {item.error_message}
-                          </Text>
-                        ) : (
-                          <Text style={{ color: '#94a3b8', fontSize: 11 }}>
-                            Đã tải lên Google Drive (CON_DAU)
-                          </Text>
-                        )}
-                        <Text style={styles.palletDate}>
-                          Gửi lúc: {item.created_at?.slice(0, 16).replace('T', ' ')}
+                      </View>
+                      <Text style={{ color: '#22c55e', fontSize: 13, fontWeight: '900' }}>
+                        Tổng: {group.total_boxes} thùng
+                      </Text>
+                    </View>
+
+                    <View style={[styles.palletCardBody, { gap: 8 }]}>
+                      {group.items.map((sub, sIdx) => {
+                        const imgSrc = getDirectDriveImage(sub.image_url, sub.cropped_image_url, sub.drive_file_id);
+                        const fullImgSrc = getFullStampImage(sub.image_url, sub.cropped_image_url, sub.drive_file_id) || imgSrc;
+                        const isSubErr = sub.status === 'error';
+
+                        return (
+                          <View
+                            key={sub.id || sIdx}
+                            style={{
+                              backgroundColor: '#1e293b',
+                              borderRadius: 8,
+                              padding: 8,
+                              borderWidth: 1,
+                              borderColor: isSubErr ? '#ef4444' : '#334155',
+                              flexDirection: 'row',
+                              gap: 10,
+                              alignItems: 'center'
+                            }}
+                          >
+                            {imgSrc ? (
+                              <TouchableOpacity
+                                activeOpacity={0.8}
+                                onPress={() => openPreviewImage(fullImgSrc || imgSrc, `STT: ${group.pallet_stt} (Đợt ${sIdx + 1})`)}
+                                style={{
+                                  width: 52,
+                                  height: 52,
+                                  borderRadius: 6,
+                                  overflow: 'hidden',
+                                  backgroundColor: '#0f172a',
+                                  borderWidth: 1,
+                                  borderColor: '#ea580c'
+                                }}
+                              >
+                                <Image source={{ uri: imgSrc }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
+                              </TouchableOpacity>
+                            ) : null}
+                            <View style={{ flex: 1, justifyContent: 'center' }}>
+                              <Text style={{ color: '#fdba74', fontSize: 11, fontWeight: 'bold' }}>
+                                Đợt {sIdx + 1}: <Text style={{ color: '#22c55e', fontWeight: 'bold' }}>{sub.box_count}</Text> thùng • {sub.box_weight} Kg
+                              </Text>
+                              {isSubErr && sub.error_message ? (
+                                <Text style={{ color: '#f87171', fontSize: 10 }} numberOfLines={1}>
+                                  ⚠️ {sub.error_message}
+                                </Text>
+                              ) : (
+                                <Text style={{ color: '#94a3b8', fontSize: 10 }}>
+                                  Đã tải lên Google Drive (CON_DAU)
+                                </Text>
+                              )}
+                              <Text style={styles.palletDate}>
+                                Gửi: {sub.created_at?.slice(0, 16).replace('T', ' ')}
+                              </Text>
+                            </View>
+                          </View>
+                        );
+                      })}
+
+                      <View style={{ marginTop: 2 }}>
+                        <Text style={{ color: '#cbd5e1', fontSize: 11 }}>
+                          Người gửi: <Text style={{ color: '#fff', fontWeight: '600' }}>{group.created_by_name || 'Kho'}</Text>
                         </Text>
                       </View>
                     </View>
 
                     <View style={styles.palletCardFooter}>
                       <View style={{ flex: 1 }}>
-                        <Text style={{ color: '#64748b', fontSize: 11 }}>
-                          Người gửi: {item.created_by_name || 'Kho'}
+                        <Text style={{ color: '#f59e0b', fontSize: 11, fontWeight: '600' }}>
+                          ⏳ Chờ AI giải mã ({group.items.length} ảnh)
                         </Text>
                       </View>
                       <TouchableOpacity
                         style={[styles.syncSingleBtn, { backgroundColor: '#ea580c' }]}
                         disabled={isDecoding}
-                        onPress={() => handleDecodeItem(item.id)}
+                        onPress={() => handleDecodeItem(allIds)}
                       >
                         {isDecoding ? (
                           <ActivityIndicator color="#fff" size="small" />
                         ) : (
                           <>
                             <Ionicons name="sparkles" size={14} color="#fff" />
-                            <Text style={styles.syncSingleText}>Giải mã AI</Text>
+                            <Text style={styles.syncSingleText}>Giải mã AI ({group.items.length})</Text>
                           </>
                         )}
                       </TouchableOpacity>
@@ -1480,7 +1828,7 @@ export default function PalletListScreen({
         <View style={{ flex: 1 }}>
           {loadingStampQueue ? (
             <ActivityIndicator style={{ marginTop: 40 }} size="large" color="#a855f7" />
-          ) : stampDecodedList.length === 0 ? (
+          ) : groupedStampDecodedList.length === 0 ? (
             <View style={styles.emptyContainer}>
               <Ionicons name="sparkles-outline" size={54} color="#a855f7" />
               <Text style={styles.emptyTitle}>Chưa có Pallet nào được giải mã</Text>
@@ -1490,8 +1838,8 @@ export default function PalletListScreen({
             </View>
           ) : (
             <FlatList
-              data={stampDecodedList}
-              keyExtractor={item => item.id}
+              data={groupedStampDecodedList}
+              keyExtractor={group => group.key}
               contentContainerStyle={{ padding: 16 }}
               refreshControl={
                 <RefreshControl
@@ -1501,74 +1849,235 @@ export default function PalletListScreen({
                   colors={['#a855f7']}
                 />
               }
-              renderItem={({ item }) => {
-                const dec = item.decoded_json || {};
-                const prodTitle = dec.productTitle || dec.special12Name || 'Sản phẩm con dấu';
-                const imgSrc = getDirectDriveImage(item.image_url, item.cropped_image_url, item.drive_file_id);
+              renderItem={({ item: group }) => {
+                if (group.items.length === 1) {
+                  const item = group.items[0];
+                  const dec = item.decoded_json || {};
+                  const prodTitle = dec.productTitle || dec.special12Name || 'Sản phẩm con dấu';
+                  const imgSrc = getDirectDriveImage(item.image_url, item.cropped_image_url, item.drive_file_id);
+                  const fullImgSrc = getFullStampImage(item.image_url, item.cropped_image_url, item.drive_file_id) || imgSrc;
 
-                return (
-                  <View style={[styles.palletCard, { borderColor: '#7e22ce' }]}>
-                    <View style={styles.palletCardHeader}>
-                      <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1, flexWrap: 'wrap' }}>
-                        <Ionicons name="sparkles" size={18} color="#c084fc" style={{ marginRight: 6 }} />
-                        <Text style={[styles.palletCode, { color: '#e9d5ff' }]}>STT: {item.pallet_stt}</Text>
-                        {item.pallet_tag ? (
-                          <View style={styles.tagBadge}>
-                            <Text style={styles.tagBadgeText}>🏷️ {item.pallet_tag}</Text>
-                          </View>
-                        ) : null}
-                      </View>
-                      <View style={[styles.syncBadge, { backgroundColor: '#581c87' }]}>
-                        <Text style={[styles.syncBadgeText, { color: '#e9d5ff' }]}>
-                          ✨ Đã giải mã AI
-                        </Text>
-                      </View>
-                    </View>
-
-                    <View style={styles.palletCardBody}>
-                      <View style={{ flexDirection: 'row', gap: 10, marginBottom: 8 }}>
-                        {imgSrc ? (
-                          <Image
-                            source={{ uri: imgSrc }}
-                            style={{ width: 68, height: 68, borderRadius: 8, backgroundColor: '#1e293b' }}
-                            resizeMode="cover"
-                          />
-                        ) : null}
-                        <View style={{ flex: 1 }}>
-                          <Text style={{ color: '#fff', fontSize: 13, fontWeight: '700', lineHeight: 18 }} numberOfLines={2}>
-                            {prodTitle}
-                          </Text>
-                          <Text style={{ color: '#38bdf8', fontSize: 11, fontWeight: '700', marginTop: 3 }}>
-                            {item.box_count} thùng • {item.box_weight} Kg
-                          </Text>
+                  return (
+                    <View style={[styles.palletCard, { borderColor: '#7e22ce' }]}>
+                      <View style={styles.palletCardHeader}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1, flexWrap: 'wrap' }}>
+                          <Ionicons name="sparkles" size={18} color="#c084fc" style={{ marginRight: 6 }} />
+                          <Text style={[styles.palletCode, { color: '#e9d5ff' }]}>STT: {item.pallet_stt}</Text>
+                          {item.pallet_tag ? (
+                            <View style={styles.tagBadge}>
+                              <Text style={styles.tagBadgeText}>🏷️ {item.pallet_tag}</Text>
+                            </View>
+                          ) : null}
                         </View>
                       </View>
 
-                      {/* 2 Dòng số đọc được */}
-                      <View style={{ backgroundColor: '#0f172a', padding: 8, borderRadius: 8, gap: 4, borderWidth: 1, borderColor: '#334155' }}>
-                        <Text style={{ color: '#cbd5e1', fontSize: 11, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' }}>
-                          <Text style={{ color: '#94a3b8' }}>Dòng 1: </Text>
-                          <Text style={{ color: '#38bdf8', fontWeight: 'bold' }}>{item.stamp_line1 || '---'}</Text>
-                        </Text>
-                        <Text style={{ color: '#cbd5e1', fontSize: 11, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' }}>
-                          <Text style={{ color: '#94a3b8' }}>Dòng 2: </Text>
-                          <Text style={{ color: '#a78bfa', fontWeight: 'bold' }}>{item.stamp_line2 || '---'}</Text>
-                        </Text>
+                      <View style={styles.palletCardBody}>
+                        <View style={{ flexDirection: 'row', gap: 10, marginBottom: 8 }}>
+                          {imgSrc ? (
+                            <TouchableOpacity
+                              activeOpacity={0.8}
+                              onPress={() => openPreviewImage(fullImgSrc || imgSrc, `STT: ${item.pallet_stt}`)}
+                              style={{
+                                width: 68,
+                                height: 68,
+                                borderRadius: 8,
+                                overflow: 'hidden',
+                                backgroundColor: '#1e293b',
+                                borderWidth: 1,
+                                borderColor: '#9333ea'
+                              }}
+                            >
+                              <Image
+                                source={{ uri: imgSrc }}
+                                style={{ width: '100%', height: '100%' }}
+                                resizeMode="cover"
+                              />
+                            </TouchableOpacity>
+                          ) : null}
+                          <View style={{ flex: 1, justifyContent: 'center' }}>
+                            <Text style={{ color: '#fff', fontSize: 13, fontWeight: '700', lineHeight: 18 }} numberOfLines={2}>
+                              {prodTitle}
+                            </Text>
+                            <Text style={{ color: '#38bdf8', fontSize: 11, fontWeight: '700', marginTop: 3 }}>
+                              {item.box_count} thùng • {item.box_weight} Kg
+                            </Text>
+                          </View>
+                        </View>
+
+                        {/* 2 Dòng số đọc được */}
+                        <View style={{ backgroundColor: '#0f172a', padding: 8, borderRadius: 8, gap: 4, borderWidth: 1, borderColor: '#334155' }}>
+                          <Text style={{ color: '#cbd5e1', fontSize: 11, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' }}>
+                            <Text style={{ color: '#94a3b8' }}>Dòng 1: </Text>
+                            <Text style={{ color: '#38bdf8', fontWeight: 'bold' }}>{item.stamp_line1 || '---'}</Text>
+                          </Text>
+                          <Text style={{ color: '#cbd5e1', fontSize: 11, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' }}>
+                            <Text style={{ color: '#94a3b8' }}>Dòng 2: </Text>
+                            <Text style={{ color: '#a78bfa', fontWeight: 'bold' }}>{item.stamp_line2 || '---'}</Text>
+                          </Text>
+                        </View>
+
+                        {/* Thông tin giải mã chi tiết */}
+                        <View style={{ gap: 4, marginTop: 6 }}>
+                          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+                            {dec.provinceName ? (
+                              <Text style={{ color: '#94a3b8', fontSize: 11 }}>
+                                Vùng: <Text style={{ color: '#f1f5f9', fontWeight: 'bold' }}>{dec.provinceName}</Text>
+                              </Text>
+                            ) : null}
+                            {dec.packagingDateStr ? (
+                              <Text style={{ color: '#94a3b8', fontSize: 11 }}>
+                                Đóng gói: <Text style={{ color: '#f1f5f9', fontWeight: 'bold' }}>{dec.packagingDateStr}</Text>
+                              </Text>
+                            ) : null}
+                            {dec.rawMaterialDateStr ? (
+                              <Text style={{ color: '#94a3b8', fontSize: 11 }}>
+                                Nhập NL: <Text style={{ color: '#f1f5f9', fontWeight: 'bold' }}>{dec.rawMaterialDateStr}</Text>
+                              </Text>
+                            ) : null}
+                          </View>
+
+                          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+                            <Text style={{ color: '#94a3b8', fontSize: 11 }}>
+                              Người gửi: <Text style={{ color: '#cbd5e1' }}>{item.created_by_name || 'Kho'}</Text>
+                            </Text>
+                            {item.pallet_notes ? (
+                              <Text style={{ color: '#94a3b8', fontSize: 11 }} numberOfLines={1}>
+                                Ghi chú: <Text style={{ color: '#cbd5e1' }}>{item.pallet_notes}</Text>
+                              </Text>
+                            ) : null}
+                          </View>
+                        </View>
                       </View>
 
-                      {/* Thông tin giải mã chi tiết */}
-                      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 6 }}>
-                        {dec.spec ? (
-                          <Text style={{ color: '#94a3b8', fontSize: 11 }}>Quy cách: <Text style={{ color: '#cbd5e1' }}>{dec.spec}</Text></Text>
+                      <View style={[styles.palletCardFooter, { backgroundColor: 'rgba(88, 28, 135, 0.2)' }]}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+                          <Ionicons name="time" size={14} color="#a855f7" />
+                          <Text style={{ color: '#c084fc', fontSize: 11, fontWeight: '700' }}>
+                            Chờ server duyệt tạo Lot
+                          </Text>
+                        </View>
+                        <Text style={{ color: '#64748b', fontSize: 10 }}>
+                          {item.created_at?.slice(0, 16).replace('T', ' ')}
+                        </Text>
+                      </View>
+                    </View>
+                  );
+                }
+
+                // Pallet ghép nhiều đợt con dấu
+                return (
+                  <View key={group.key} style={[styles.palletCard, { borderColor: '#a855f7', borderWidth: 1.5 }]}>
+                    <View style={styles.palletCardHeader}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1, flexWrap: 'wrap', gap: 6 }}>
+                        <Ionicons name="sparkles" size={18} color="#c084fc" />
+                        <Text style={[styles.palletCode, { color: '#e9d5ff' }]}>STT: {group.pallet_stt}</Text>
+                        {group.pallet_tag ? (
+                          <View style={styles.tagBadge}>
+                            <Text style={styles.tagBadgeText}>🏷️ {group.pallet_tag}</Text>
+                          </View>
                         ) : null}
-                        {dec.packagingDateStr ? (
-                          <Text style={{ color: '#94a3b8', fontSize: 11 }}>Đóng gói: <Text style={{ color: '#cbd5e1' }}>{dec.packagingDateStr}</Text></Text>
-                        ) : null}
-                        {dec.rawMaterialDateStr ? (
-                          <Text style={{ color: '#94a3b8', fontSize: 11 }}>Nhập NL: <Text style={{ color: '#cbd5e1' }}>{dec.rawMaterialDateStr}</Text></Text>
-                        ) : null}
-                        {dec.provinceName ? (
-                          <Text style={{ color: '#94a3b8', fontSize: 11 }}>Vùng: <Text style={{ color: '#cbd5e1' }}>{dec.provinceName}</Text></Text>
+                        <View style={[styles.tagBadge, { backgroundColor: '#581c87', borderColor: '#a855f7', borderWidth: 1 }]}>
+                          <Text style={[styles.tagBadgeText, { color: '#f3e8ff' }]}>
+                            📦 Ghép {group.items.length} đợt con dấu
+                          </Text>
+                        </View>
+                      </View>
+                      <Text style={{ color: '#22c55e', fontSize: 13, fontWeight: '900' }}>
+                        Tổng: {group.total_boxes} thùng
+                      </Text>
+                    </View>
+
+                    <View style={[styles.palletCardBody, { gap: 10 }]}>
+                      {group.items.map((sub, sIdx) => {
+                        const dec = sub.decoded_json || {};
+                        const prodTitle = dec.productTitle || dec.special12Name || 'Sản phẩm con dấu';
+                        const imgSrc = getDirectDriveImage(sub.image_url, sub.cropped_image_url, sub.drive_file_id);
+                        const fullImgSrc = getFullStampImage(sub.image_url, sub.cropped_image_url, sub.drive_file_id) || imgSrc;
+
+                        return (
+                          <View
+                            key={sub.id || sIdx}
+                            style={{
+                              backgroundColor: 'rgba(15, 23, 42, 0.7)',
+                              borderRadius: 8,
+                              padding: 10,
+                              borderWidth: 1,
+                              borderColor: '#334155',
+                              gap: 6
+                            }}
+                          >
+                            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                              <Text style={{ color: '#c084fc', fontSize: 11, fontWeight: 'bold' }}>
+                                Đợt {sIdx + 1}
+                              </Text>
+                              <Text style={{ color: '#38bdf8', fontSize: 11, fontWeight: 'bold' }}>
+                                {sub.box_count} thùng • {sub.box_weight} Kg
+                              </Text>
+                            </View>
+
+                            <View style={{ flexDirection: 'row', gap: 10 }}>
+                              {imgSrc ? (
+                                <TouchableOpacity
+                                  activeOpacity={0.8}
+                                  onPress={() => openPreviewImage(fullImgSrc || imgSrc, `STT: ${group.pallet_stt} (Đợt ${sIdx + 1})`)}
+                                  style={{
+                                    width: 56,
+                                    height: 56,
+                                    borderRadius: 6,
+                                    overflow: 'hidden',
+                                    backgroundColor: '#1e293b',
+                                    borderWidth: 1,
+                                    borderColor: '#9333ea',
+                                    alignSelf: 'flex-start'
+                                  }}
+                                >
+                                  <Image source={{ uri: imgSrc }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
+                                </TouchableOpacity>
+                              ) : null}
+
+                              <View style={{ flex: 1, justifyContent: 'center' }}>
+                                <Text style={{ color: '#fff', fontSize: 12, fontWeight: '700', lineHeight: 16 }} numberOfLines={2}>
+                                  {prodTitle}
+                                </Text>
+                                {(sub.stamp_line1 || sub.stamp_line2) ? (
+                                  <Text style={{ color: '#94a3b8', fontSize: 10, marginTop: 2, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' }}>
+                                    L1: <Text style={{ color: '#38bdf8', fontWeight: 'bold' }}>{sub.stamp_line1 || '---'}</Text> • L2: <Text style={{ color: '#a78bfa', fontWeight: 'bold' }}>{sub.stamp_line2 || '---'}</Text>
+                                  </Text>
+                                ) : null}
+                              </View>
+                            </View>
+
+                            {/* Thông tin quét đợt này */}
+                            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 2 }}>
+                              {dec.provinceName ? (
+                                <Text style={{ color: '#94a3b8', fontSize: 10 }}>
+                                  Vùng: <Text style={{ color: '#f1f5f9', fontWeight: 'bold' }}>{dec.provinceName}</Text>
+                                </Text>
+                              ) : null}
+                              {dec.packagingDateStr ? (
+                                <Text style={{ color: '#94a3b8', fontSize: 10 }}>
+                                  Đóng gói: <Text style={{ color: '#f1f5f9', fontWeight: 'bold' }}>{dec.packagingDateStr}</Text>
+                                </Text>
+                              ) : null}
+                              {dec.rawMaterialDateStr ? (
+                                <Text style={{ color: '#94a3b8', fontSize: 10 }}>
+                                  Nhập NL: <Text style={{ color: '#f1f5f9', fontWeight: 'bold' }}>{dec.rawMaterialDateStr}</Text>
+                                </Text>
+                              ) : null}
+                            </View>
+                          </View>
+                        );
+                      })}
+
+                      {/* Hàng dưới cùng của thẻ gom: Người gửi */}
+                      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 2 }}>
+                        <Text style={{ color: '#94a3b8', fontSize: 11 }}>
+                          Người gửi: <Text style={{ color: '#cbd5e1' }}>{group.created_by_name || 'Kho'}</Text>
+                        </Text>
+                        {group.pallet_notes ? (
+                          <Text style={{ color: '#94a3b8', fontSize: 11 }} numberOfLines={1}>
+                            Ghi chú: <Text style={{ color: '#cbd5e1' }}>{group.pallet_notes}</Text>
+                          </Text>
                         ) : null}
                       </View>
                     </View>
@@ -1577,11 +2086,11 @@ export default function PalletListScreen({
                       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
                         <Ionicons name="time" size={14} color="#a855f7" />
                         <Text style={{ color: '#c084fc', fontSize: 11, fontWeight: '700' }}>
-                          Chờ Web Mẹ duyệt tạo Lot
+                          Chờ server duyệt tạo Lot
                         </Text>
                       </View>
                       <Text style={{ color: '#64748b', fontSize: 10 }}>
-                        {item.created_at?.slice(0, 16).replace('T', ' ')}
+                        {group.created_at?.slice(0, 16).replace('T', ' ')}
                       </Text>
                     </View>
                   </View>
@@ -2533,6 +3042,63 @@ export default function PalletListScreen({
             </View>
           </View>
         </View>
+      </Modal>
+
+      {/* ── MODAL XEM ẢNH CON DẤU PHÓNG TO TOÀN MÀN HÌNH ───────────────── */}
+      <Modal
+        visible={Boolean(previewModalImageUri)}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setPreviewModalImageUri(null)}
+      >
+        <TouchableOpacity
+          activeOpacity={1}
+          onPress={() => setPreviewModalImageUri(null)}
+          style={{
+            flex: 1,
+            backgroundColor: 'rgba(0,0,0,0.95)',
+            justifyContent: 'center',
+            alignItems: 'center',
+            padding: 16,
+          }}
+        >
+          <View style={{
+            position: 'absolute',
+            top: Platform.OS === 'ios' ? 52 : 36,
+            left: 20,
+            right: 20,
+            flexDirection: 'row',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            zIndex: 10
+          }}>
+            <Text style={{ color: '#fff', fontSize: 16, fontWeight: 'bold' }}>
+              🔍 {previewModalTitle || 'Ảnh con dấu'}
+            </Text>
+            <TouchableOpacity
+              onPress={() => setPreviewModalImageUri(null)}
+              style={{
+                padding: 8,
+                backgroundColor: 'rgba(255,255,255,0.25)',
+                borderRadius: 24,
+              }}
+            >
+              <Ionicons name="close" size={24} color="#fff" />
+            </TouchableOpacity>
+          </View>
+
+          {previewModalImageUri ? (
+            <Image
+              source={{ uri: previewModalImageUri }}
+              style={{ width: '100%', height: '78%', borderRadius: 12 }}
+              resizeMode="contain"
+            />
+          ) : null}
+
+          <Text style={{ color: '#94a3b8', fontSize: 13, marginTop: 16, fontWeight: '600' }}>
+            Chạm vào bất kỳ đâu để đóng
+          </Text>
+        </TouchableOpacity>
       </Modal>
     </View>
   );

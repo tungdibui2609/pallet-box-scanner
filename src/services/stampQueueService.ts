@@ -237,6 +237,14 @@ export async function syncSingleStampBackgroundItem(id: string): Promise<boolean
 }
 
 /**
+ * Chuẩn hóa URL ảnh Supabase Storage nếu chứa loopback localhost:64321
+ */
+export function normalizeStorageUrl(url?: string | null): string | null {
+  if (!url) return null;
+  return url.replace(/^https?:\/\/(?:127\.0\.0\.1|localhost):64321/, 'https://api.chanhthu.click');
+}
+
+/**
  * Trả về link trực tiếp Google Drive CDN (lh3.googleusercontent.com) hoặc Supabase public URL
  * để hiển thị ảnh thumbnail mượt mà không bị lỗi CORS/Cookie
  */
@@ -245,20 +253,44 @@ export function getDirectDriveImage(
   cropUrl?: string | null,
   fileId?: string | null
 ): string | null {
-  if (cropUrl && !cropUrl.includes('drive.google.com/file/d/')) {
-    return cropUrl;
+  const normalizedCrop = normalizeStorageUrl(cropUrl);
+  if (normalizedCrop && !normalizedCrop.includes('drive.google.com/file/d/')) {
+    return normalizedCrop;
   }
   if (fileId) {
     return `https://lh3.googleusercontent.com/d/${fileId}`;
   }
-  if (imgUrl) {
-    const m = imgUrl.match(/\/d\/([a-zA-Z0-9_-]+)/) || imgUrl.match(/id=([a-zA-Z0-9_-]+)/);
+  const normalizedImg = normalizeStorageUrl(imgUrl);
+  if (normalizedImg) {
+    const m = normalizedImg.match(/\/d\/([a-zA-Z0-9_-]+)/) || normalizedImg.match(/id=([a-zA-Z0-9_-]+)/);
     if (m && m[1]) {
       return `https://lh3.googleusercontent.com/d/${m[1]}`;
     }
-    return imgUrl;
+    return normalizedImg;
   }
   return null;
+}
+
+/**
+ * Trả về ảnh xem toàn màn hình rõ nét nhất (ưu tiên ảnh gốc độ phân giải cao Google Drive)
+ */
+export function getFullStampImage(
+  imgUrl?: string | null,
+  cropUrl?: string | null,
+  fileId?: string | null
+): string | null {
+  if (fileId) {
+    return `https://lh3.googleusercontent.com/d/${fileId}`;
+  }
+  const normalizedImg = normalizeStorageUrl(imgUrl);
+  if (normalizedImg) {
+    const m = normalizedImg.match(/\/d\/([a-zA-Z0-9_-]+)/) || normalizedImg.match(/id=([a-zA-Z0-9_-]+)/);
+    if (m && m[1]) {
+      return `https://lh3.googleusercontent.com/d/${m[1]}`;
+    }
+    return normalizedImg;
+  }
+  return normalizeStorageUrl(cropUrl) || null;
 }
 
 /**

@@ -21,6 +21,7 @@ function AppContent() {
   const insets = useSafeAreaInsets();
   const { user, isLoading } = useAuth();
   const [currentTab, setCurrentTab] = useState<AppTab>('stamp_scanner');
+  const [lastScannerTab, setLastScannerTab] = useState<'stamp_scanner' | 'scanner'>('stamp_scanner');
   const [isFullMenuOpen, setIsFullMenuOpen] = useState(false);
   const [visitedTabs, setVisitedTabs] = useState<Record<string, boolean>>({
     scanner: false,
@@ -32,6 +33,9 @@ function AppContent() {
   });
 
   useEffect(() => {
+    if (currentTab === 'scanner' || currentTab === 'stamp_scanner') {
+      setLastScannerTab(currentTab);
+    }
     if (!visitedTabs[currentTab]) {
       setVisitedTabs(prev => ({ ...prev, [currentTab]: true }));
     }
@@ -107,16 +111,26 @@ function AppContent() {
       {/* ── TAB CONTENT ────────────────────────────── */}
       <View style={styles.body}>
         {currentTab === 'scanner' && (
-          <ScannerScreen onNavigateToPallets={() => setCurrentTab('pallets')} />
+          <ScannerScreen
+            onNavigateToPallets={() => {
+              setLastScannerTab('scanner');
+              setCurrentTab('pallets');
+            }}
+          />
         )}
         {currentTab === 'stamp_scanner' && (
-          <StampScannerScreen onNavigateToPallets={() => setCurrentTab('pallets')} />
+          <StampScannerScreen
+            onNavigateToPallets={() => {
+              setLastScannerTab('stamp_scanner');
+              setCurrentTab('pallets');
+            }}
+          />
         )}
         {/* Keep-Alive cho Sơ Đồ Kho: Sau khi vào 1 lần, giữ trong RAM, hiển thị 0ms khi quay lại */}
         <View style={[styles.tabKeepAlive, currentTab !== 'warehouse_map' && styles.tabHidden]}>
           {visitedTabs.warehouse_map && (
             <WarehouseMapScreen
-              onBackToScanner={() => setCurrentTab('scanner')}
+              onBackToScanner={() => setCurrentTab(lastScannerTab)}
               isActive={currentTab === 'warehouse_map'}
             />
           )}
@@ -141,13 +155,14 @@ function AppContent() {
         <View style={[styles.tabKeepAlive, currentTab !== 'pallets' && styles.tabHidden]}>
           {visitedTabs.pallets && (
             <PalletListScreen
-              onBackToScanner={() => setCurrentTab('scanner')}
+              onBackToScanner={() => setCurrentTab(lastScannerTab)}
+              scannerMode={lastScannerTab}
               isActive={currentTab === 'pallets'}
             />
           )}
         </View>
         {currentTab === 'settings' && (
-          <SettingsScreen onBack={() => setCurrentTab('scanner')} />
+          <SettingsScreen onBack={() => setCurrentTab(lastScannerTab)} />
         )}
       </View>
 

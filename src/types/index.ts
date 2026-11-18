@@ -12,6 +12,19 @@ export interface Pallet {
   sync_error?: string | null;
   created_at: string;
   updated_at: string;
+  // Chi tiết sản phẩm & con dấu liên kết từ thùng
+  product_name?: string | null;
+  stamp_line1?: string | null;
+  stamp_line2?: string | null;
+  spec?: string | null;
+  packaging_date?: string | null;
+  production_date?: string | null;
+  region?: string | null;
+  box_weight?: number | null;
+  drive_file_id?: string | null;
+  drive_view_url?: string | null;
+  stamp_image_url?: string | null;
+  sku?: string | null;
 }
 
 export interface BoxLabel {

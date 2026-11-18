@@ -19,6 +19,12 @@ import {
   getSubmittedAdjustmentProposals,
 } from '../services/warehouseAdjustmentService';
 import { DriveImageSettingsModal } from '../components/operations/DriveImageSettingsModal';
+import {
+  getDefaultTargetBoxQty,
+  setDefaultTargetBoxQty,
+  getAutoCompletePalletOnFull,
+  setAutoCompletePalletOnFull,
+} from '../services/appSettings';
 
 export default function SettingsScreen({ onBack }: { onBack: () => void }) {
   const { user, logout } = useAuth();
@@ -27,6 +33,11 @@ export default function SettingsScreen({ onBack }: { onBack: () => void }) {
   const [systemCode, setSystemCode] = useState('KHO_DONG_LANH');
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<string | null>(null);
+
+  // Default target boxes per pallet setting
+  const [defaultTargetQty, setDefaultTargetQtyState] = useState<string>('30');
+  const [savingTargetQty, setSavingTargetQty] = useState(false);
+  const [autoCompleteOnFull, setAutoCompleteOnFullState] = useState(true);
 
   // Master All-in-One Sync
   const [syncingAllMaster, setSyncingAllMaster] = useState(false);
@@ -86,6 +97,11 @@ export default function SettingsScreen({ onBack }: { onBack: () => void }) {
     if (savedSys) setSystemCode(savedSys);
 
     try {
+      const savedTargetQty = await getDefaultTargetBoxQty();
+      setDefaultTargetQtyState(String(savedTargetQty));
+      const autoChot = await getAutoCompletePalletOnFull();
+      setAutoCompleteOnFullState(autoChot);
+
       const count = await getStampDictionariesCount();
       setStampRulesCount(count);
       const lastSync = await AsyncStorage.getItem('last_stamp_sync_time');
@@ -111,6 +127,29 @@ export default function SettingsScreen({ onBack }: { onBack: () => void }) {
     }, 0);
     return () => clearTimeout(timer);
   }, []);
+
+  async function handleSaveTargetBoxQty(customVal?: number) {
+    const qtyToSave = customVal !== undefined ? customVal : (parseInt(defaultTargetQty, 10) || 30);
+    if (qtyToSave <= 0) {
+      Alert.alert('Không hợp lệ', 'Mục tiêu số thùng phải lớn hơn 0');
+      return;
+    }
+    setSavingTargetQty(true);
+    try {
+      const saved = await setDefaultTargetBoxQty(qtyToSave);
+      setDefaultTargetQtyState(String(saved));
+      Alert.alert('Thành công', `Đã lưu mục tiêu số thùng mặc định là ${saved} thùng / Pallet.`);
+    } catch (err: any) {
+      Alert.alert('Lỗi', err.message || 'Không thể lưu cài đặt.');
+    } finally {
+      setSavingTargetQty(false);
+    }
+  }
+
+  async function handleToggleAutoComplete(val: boolean) {
+    setAutoCompleteOnFullState(val);
+    await setAutoCompletePalletOnFull(val);
+  }
 
   async function handleSave() {
     await AsyncStorage.setItem('config_supabase_url', url.trim());
@@ -291,6 +330,100 @@ export default function SettingsScreen({ onBack }: { onBack: () => void }) {
           </TouchableOpacity>
         </View>
       )}
+
+      {/* ── CẤU HÌNH MỤC TIÊU SỐ THÙNG (PALLET) ───────── */}
+      <View style={[styles.card, { borderColor: '#f59e0b', borderWidth: 1.5, backgroundColor: '#0b1329' }]}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+          <Ionicons name="cube-outline" size={20} color="#fbbf24" />
+          <Text style={[styles.sectionTitle, { color: '#fbbf24', marginBottom: 0 }]}>
+            MỤC TIÊU SỐ THÙNG MẶC ĐỊNH (PALLET)
+          </Text>
+        </View>
+
+        <Text style={{ color: '#94a3b8', fontSize: 12, lineHeight: 18, marginBottom: 12 }}>
+          Số lượng thùng tiêu chuẩn trên một Pallet khi bạn tạo mới Pallet ở chức năng <Text style={{ color: '#38bdf8', fontWeight: '700' }}>Quét Đóng Dấu</Text> và <Text style={{ color: '#10b981', fontWeight: '700' }}>Quét Tem</Text>.
+        </Text>
+
+        <Text style={styles.label}>Số thùng tiêu chuẩn (Mặc định khi tạo Pallet):</Text>
+        <TextInput
+          style={[styles.input, { fontSize: 20, fontWeight: '800', color: '#fbbf24', textAlign: 'center', letterSpacing: 1 }]}
+          value={defaultTargetQty}
+          onChangeText={setDefaultTargetQtyState}
+          keyboardType="number-pad"
+          placeholder="30"
+          placeholderTextColor="#64748b"
+        />
+
+        {/* Nút gợi ý nhanh số thùng phổ biến */}
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 10, marginBottom: 14 }}>
+          {[20, 24, 30, 36, 40, 50].map((num) => {
+            const isSelected = defaultTargetQty === String(num);
+            return (
+              <TouchableOpacity
+                key={num}
+                style={{
+                  paddingHorizontal: 12,
+                  paddingVertical: 7,
+                  borderRadius: 8,
+                  backgroundColor: isSelected ? 'rgba(245, 158, 11, 0.25)' : '#1e293b',
+                  borderWidth: 1,
+                  borderColor: isSelected ? '#fbbf24' : '#334155',
+                }}
+                onPress={() => {
+                  setDefaultTargetQtyState(String(num));
+                  handleSaveTargetBoxQty(num);
+                }}
+              >
+                <Text style={{ color: isSelected ? '#fbbf24' : '#cbd5e1', fontSize: 12, fontWeight: '700' }}>
+                  {num} thùng
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+
+        {/* Tuỳ chọn tự động chốt Pallet khi đủ số thùng */}
+        <View style={[styles.autoSyncRow, { marginTop: 4, marginBottom: 14, backgroundColor: '#0f172a', borderColor: '#334155' }]}>
+          <View style={{ flex: 1, paddingRight: 10 }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <Ionicons name="checkmark-done-circle" size={17} color="#10b981" />
+              <Text style={styles.autoSyncLabel}>Tự động chốt khi quét đủ số thùng</Text>
+            </View>
+            <Text style={styles.autoSyncSub}>
+              Khi đạt chỉ tiêu ({defaultTargetQty} thùng), hệ thống sẽ tự động hoàn thành & chốt Pallet ngay mà không cần thao tác thêm.
+            </Text>
+          </View>
+          <Switch
+            value={autoCompleteOnFull}
+            onValueChange={handleToggleAutoComplete}
+            trackColor={{ false: '#334155', true: '#059669' }}
+            thumbColor={autoCompleteOnFull ? '#10b981' : '#94a3b8'}
+          />
+        </View>
+
+        <TouchableOpacity 
+          style={{
+            backgroundColor: '#d97706',
+            flexDirection: 'row',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 8,
+            paddingVertical: 12,
+            borderRadius: 12,
+          }}
+          onPress={() => handleSaveTargetBoxQty()}
+          disabled={savingTargetQty}
+        >
+          {savingTargetQty ? (
+            <ActivityIndicator color="#fff" size="small" />
+          ) : (
+            <Ionicons name="save-outline" size={18} color="#fff" />
+          )}
+          <Text style={{ color: '#fff', fontWeight: '800', fontSize: 13 }}>
+            {savingTargetQty ? 'Đang lưu...' : 'Lưu Cài Đặt Số Thùng Mặc Định'}
+          </Text>
+        </TouchableOpacity>
+      </View>
 
       {/* ── CẬP NHẬT QUY TẮC DẤU ĐÓNG TỪ WEB ─────── */}
       <View style={styles.card}>

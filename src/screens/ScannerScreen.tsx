@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, ScrollView,
   Alert, Modal, TextInput, ActivityIndicator, Vibration, Animated,
-  NativeModules, AppState
+  NativeModules, AppState, Platform, KeyboardAvoidingView, Keyboard
 } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import TextRecognition from '@react-native-ml-kit/text-recognition';
@@ -17,6 +17,11 @@ import {
 } from '../services/database';
 import { parseBoxLabelText, isBoxLabel } from '../services/labelParser';
 import { getConfiguredSupabaseUrl } from '../services/supabase';
+import {
+  getDefaultTargetBoxQty,
+  getAutoCompletePalletOnFull,
+  setAutoCompletePalletOnFull,
+} from '../services/appSettings';
 
 // Safe dynamic load: Tránh crash runtime trên Expo Go (do Expo Go thiếu native module react-native-volume-manager)
 let VolumeManager: any = null;
@@ -84,7 +89,42 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
   const [newPalletCode, setNewPalletCode] = useState('');
   const [newPalletTag, setNewPalletTag] = useState('');
   const [newPalletNotes, setNewPalletNotes] = useState('');
+  const [defaultTargetQty, setDefaultTargetQty] = useState(30);
   const [newTargetQty, setNewTargetQty] = useState('30');
+  const [autoCompleteOnFull, setAutoCompleteOnFull] = useState(true);
+
+  useEffect(() => {
+    void (async () => {
+      const [def, autoChot] = await Promise.all([
+        getDefaultTargetBoxQty(),
+        getAutoCompletePalletOnFull()
+      ]);
+      setDefaultTargetQty(def);
+      setNewTargetQty(String(def));
+      setAutoCompleteOnFull(autoChot);
+    })();
+  }, []);
+
+  const openNewPalletModal = async (palletToEdit?: Pallet | null) => {
+    const targetPallet = palletToEdit !== undefined ? palletToEdit : activePallet;
+    const [def, autoChot] = await Promise.all([
+      getDefaultTargetBoxQty(),
+      getAutoCompletePalletOnFull()
+    ]);
+    setDefaultTargetQty(def);
+    setAutoCompleteOnFull(autoChot);
+    setNewPalletCode(targetPallet?.code || '');
+    setNewPalletTag(targetPallet?.tag || '');
+    setNewPalletNotes(targetPallet?.notes || '');
+    setNewTargetQty(String(targetPallet?.target_qty || def));
+    setIsNewPalletModal(true);
+  };
+
+  const handleToggleAutoComplete = async () => {
+    const next = !autoCompleteOnFull;
+    setAutoCompleteOnFull(next);
+    await setAutoCompletePalletOnFull(next);
+  };
 
   // Manual Input Modal
   const [isManualModal, setIsManualModal] = useState(false);
@@ -245,14 +285,18 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
 
       // Check if target reached!
       if (updatedBoxes.length >= activePallet.target_qty) {
-        Alert.alert(
-          '🎉 ĐÃ ĐỦ PALLET!',
-          `Pallet ${activePallet.code} đã đạt chỉ tiêu ${updatedBoxes.length}/${activePallet.target_qty} thùng.\nBạn có muốn chốt Pallet này không?`,
-          [
-            { text: 'Tiếp tục quét thêm', style: 'cancel' },
-            { text: 'Chốt Pallet', onPress: handleCompletePallet }
-          ]
-        );
+        if (autoCompleteOnFull) {
+          await triggerAutoCompleteIfFull(activePallet.id, activePallet.code, updatedBoxes.length, activePallet.target_qty);
+        } else {
+          Alert.alert(
+            '🎉 ĐÃ ĐỦ PALLET!',
+            `Pallet ${activePallet.code} đã đạt chỉ tiêu ${updatedBoxes.length}/${activePallet.target_qty} thùng.\nBạn có muốn chốt Pallet này không?`,
+            [
+              { text: 'Tiếp tục quét thêm', style: 'cancel' },
+              { text: 'Chốt Pallet', onPress: handleCompletePallet }
+            ]
+          );
+        }
       }
     } catch (err: any) {
       if (!isAuto) {
@@ -339,7 +383,7 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
     if (!activePallet) {
       Alert.alert('Chưa có Pallet', 'Vui lòng bấm [+ Nhập STT Pallet] trước khi quét', [
         { text: 'Huỷ', style: 'cancel' },
-        { text: 'Nhập STT Pallet', onPress: () => setIsNewPalletModal(true) }
+        { text: 'Nhập STT Pallet', onPress: () => openNewPalletModal() }
       ]);
       return;
     }
@@ -436,7 +480,7 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
       return;
     }
 
-    const target = parseInt(newTargetQty) || 30;
+    const target = parseInt(newTargetQty) || defaultTargetQty;
     const pallet = await createNewPallet(
       cleanCode,
       target,
@@ -448,6 +492,30 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
     setBoxes([]);
     setIsNewPalletModal(false);
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+  }
+
+  async function triggerAutoCompleteIfFull(palletId: string, palletCode: string, totalBoxesCount: number, targetQty: number) {
+    if (autoCompleteOnFull && totalBoxesCount >= targetQty) {
+      try {
+        await completePallet(palletId);
+        setActivePallet(null);
+        setBoxes([]);
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        showSuccessFlash(`🎉 Pallet ${palletCode} đã đủ ${totalBoxesCount}/${targetQty} thùng và được TỰ ĐỘNG CHỐT!`);
+        Alert.alert(
+          '🎉 TỰ ĐỘNG CHỐT PALLET THÀNH CÔNG',
+          `Pallet ${palletCode} đã đạt đủ chỉ tiêu ${totalBoxesCount}/${targetQty} thùng và đã được hệ thống TỰ ĐỘNG CHỐT thành công!\n\nBạn có thể chọn hoặc nhập STT Pallet mới để tiếp tục.`,
+          [
+            { text: 'Nhập STT Pallet Mới', onPress: () => openNewPalletModal() },
+            { text: 'Đóng', style: 'cancel' }
+          ]
+        );
+        return true;
+      } catch (err: any) {
+        console.warn('Lỗi tự động chốt pallet:', err);
+      }
+    }
+    return false;
   }
 
   async function handleCompletePallet() {
@@ -511,6 +579,12 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
       setCloneModalVisible(false);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       showSuccessFlash(`✨ Đã nhân bản ${res.addedCount} thùng (bỏ qua index cũ, cấp STT mới liên tiếp)!`);
+      
+      if (updated.length >= activePallet.target_qty) {
+        if (autoCompleteOnFull) {
+          await triggerAutoCompleteIfFull(activePallet.id, activePallet.code, updated.length, activePallet.target_qty);
+        }
+      }
     } catch (err: any) {
       Alert.alert('Lỗi nhân bản', err.message);
     } finally {
@@ -561,7 +635,7 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
   }
 
   const scannedCount = boxes.length;
-  const targetCount = activePallet?.target_qty || 30;
+  const targetCount = activePallet?.target_qty || defaultTargetQty;
   const progressPercent = activePallet ? Math.min(100, Math.round((scannedCount / targetCount) * 100)) : 0;
 
   return (
@@ -572,13 +646,7 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
           <Text style={styles.palletLabel}>STT PALLET HIỆN TẠI</Text>
           <TouchableOpacity
             style={styles.palletCodeRow}
-            onPress={() => {
-              setNewPalletCode(activePallet?.code || '');
-              setNewPalletTag(activePallet?.tag || '');
-              setNewPalletNotes(activePallet?.notes || '');
-              setNewTargetQty(String(activePallet?.target_qty || 30));
-              setIsNewPalletModal(true);
-            }}
+            onPress={() => openNewPalletModal(activePallet)}
           >
             {activePallet ? (
               <>
@@ -634,7 +702,7 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
           style={[styles.autoScanToggle, (isAutoScan && activePallet) ? styles.autoScanActive : styles.autoScanInactive]}
           onPress={() => {
             if (!activePallet) {
-              setIsNewPalletModal(true);
+              openNewPalletModal();
               return;
             }
             setIsAutoScan(prev => !prev);
@@ -672,7 +740,7 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
             <Ionicons name="cube-outline" size={36} color="#38bdf8" />
             <Text style={styles.noPalletOverlayTitle}>Chưa chọn Pallet</Text>
             <Text style={styles.noPalletOverlaySub}>Để tránh quét nhầm hàng, vui lòng chọn hoặc nhập số Pallet trước.</Text>
-            <TouchableOpacity style={styles.selectPalletOverlayBtn} onPress={() => setIsNewPalletModal(true)}>
+            <TouchableOpacity style={styles.selectPalletOverlayBtn} onPress={() => openNewPalletModal()}>
               <Ionicons name="add-circle-outline" size={18} color="#fff" />
               <Text style={styles.selectPalletOverlayBtnText}>Chọn / Nhập Pallet Ngay</Text>
             </TouchableOpacity>
@@ -766,7 +834,7 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
           style={[styles.manualBtn, !activePallet && { opacity: 0.6 }]}
           onPress={() => {
             if (!activePallet) {
-              setIsNewPalletModal(true);
+              openNewPalletModal();
               return;
             }
             setIsManualModal(true);
@@ -802,7 +870,7 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
           <View style={styles.emptyBox}>
             <Ionicons name="cube-outline" size={32} color="#64748b" />
             <Text style={styles.emptyText}>Chưa có Pallet nào đang chọn</Text>
-            <TouchableOpacity onPress={() => setIsNewPalletModal(true)} style={{ marginTop: 8 }}>
+            <TouchableOpacity onPress={() => openNewPalletModal()} style={{ marginTop: 8 }}>
               <Text style={{ color: '#10b981', fontWeight: '700' }}>+ Bấm để chọn hoặc nhập Pallet mới</Text>
             </TouchableOpacity>
           </View>
@@ -868,52 +936,101 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
 
       {/* 📝 MODAL: NEW / SELECT PALLET */}
       <Modal visible={isNewPalletModal} transparent animationType="slide">
-        <View style={styles.modalBg}>
-          <View style={styles.modalCard}>
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          style={styles.modalBg}
+        >
+          <View style={[styles.modalCard, { maxHeight: '88%', display: 'flex', flexDirection: 'column' }]}>
             <Text style={styles.modalTitle}>📦 CHỌN / NHẬP STT PALLET</Text>
-            <Text style={styles.modalSub}>Nhập số thực tế của Pallet đang xếp hàng (Ví dụ: F3500 hoặc F5556)</Text>
+            <Text style={styles.modalSub}>Nhập số thực tế của Pallet đang xếp hàng (Ví dụ: F3500 hoặc G22)</Text>
 
-            <Text style={styles.inputLabel}>Số thực tế Pallet (STT) *:</Text>
-            <TextInput
-              style={styles.modalInput}
-              value={newPalletCode}
-              onChangeText={setNewPalletCode}
-              placeholder="Ví dụ: F3500 hoặc G22"
-              placeholderTextColor="#64748b"
-              autoCapitalize="characters"
-              autoFocus
-            />
+            <ScrollView
+              showsVerticalScrollIndicator={false}
+              keyboardShouldPersistTaps="handled"
+              style={{ flexShrink: 1 }}
+              contentContainerStyle={{ paddingBottom: 4 }}
+            >
+              {/* HÀNG 1: STT PALLET & CHỈ TIÊU SỐ THÙNG (SONG SONG) */}
+              <View style={{ flexDirection: 'row', gap: 10 }}>
+                <View style={{ flex: 1.25 }}>
+                  <Text style={[styles.inputLabel, { marginTop: 0 }]}>Số thực tế Pallet (STT) *:</Text>
+                  <TextInput
+                    style={[styles.modalInput, { paddingVertical: 8, fontSize: 15, fontWeight: '700' }]}
+                    value={newPalletCode}
+                    onChangeText={setNewPalletCode}
+                    placeholder="VD: F3500, G22"
+                    placeholderTextColor="#64748b"
+                    autoCapitalize="characters"
+                    autoFocus
+                  />
+                </View>
 
-            <Text style={styles.inputLabel}>Chỉ tiêu số thùng (Mặc định: 30):</Text>
-            <TextInput
-              style={styles.modalInput}
-              value={newTargetQty}
-              onChangeText={setNewTargetQty}
-              keyboardType="number-pad"
-              placeholder="30"
-              placeholderTextColor="#64748b"
-            />
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.inputLabel, { marginTop: 0 }]}>Chỉ tiêu (Mặc định: {defaultTargetQty}):</Text>
+                  <TextInput
+                    style={[styles.modalInput, { paddingVertical: 8, fontSize: 15, fontWeight: '700', textAlign: 'center' }]}
+                    value={newTargetQty}
+                    onChangeText={setNewTargetQty}
+                    keyboardType="number-pad"
+                    placeholder={String(defaultTargetQty)}
+                    placeholderTextColor="#64748b"
+                  />
+                </View>
+              </View>
 
-            <Text style={styles.inputLabel}>Mã phụ (Tag):</Text>
-            <TextInput
-              style={styles.modalInput}
-              value={newPalletTag}
-              onChangeText={setNewPalletTag}
-              placeholder="Ví dụ: OEM-A, XK-HQ, HÀNG LOẠI 1..."
-              placeholderTextColor="#64748b"
-              autoCapitalize="characters"
-            />
+              {/* HÀNG 2: DẤU TÍCH GHI NHỚ TỰ ĐỘNG CHỐT */}
+              <TouchableOpacity
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 8,
+                  marginTop: 8,
+                  marginBottom: 6,
+                  paddingVertical: 7,
+                  paddingHorizontal: 10,
+                  borderRadius: 8,
+                  backgroundColor: autoCompleteOnFull ? 'rgba(16, 185, 129, 0.14)' : '#1e293b',
+                  borderWidth: 1,
+                  borderColor: autoCompleteOnFull ? '#10b981' : '#334155',
+                }}
+                onPress={handleToggleAutoComplete}
+                activeOpacity={0.7}
+              >
+                <Ionicons
+                  name={autoCompleteOnFull ? "checkbox" : "square-outline"}
+                  size={20}
+                  color={autoCompleteOnFull ? "#10b981" : "#94a3b8"}
+                />
+                <View style={{ flex: 1 }}>
+                  <Text style={{ color: autoCompleteOnFull ? '#34d399' : '#e2e8f0', fontSize: 12, fontWeight: '700' }}>
+                    Tự động chốt khi quét đủ {newTargetQty || defaultTargetQty} thùng
+                  </Text>
+                </View>
+              </TouchableOpacity>
 
-            <Text style={styles.inputLabel}>Ghi chú Pallet / LOT hàng:</Text>
-            <TextInput
-              style={[styles.modalInput, { minHeight: 44 }]}
-              value={newPalletNotes}
-              onChangeText={setNewPalletNotes}
-              placeholder="Nhập ghi chú cho LOT hàng (nếu có)..."
-              placeholderTextColor="#64748b"
-            />
+              {/* HÀNG 3: MÃ PHỤ (TAG) */}
+              <Text style={[styles.inputLabel, { marginTop: 4 }]}>Mã phụ (Tag):</Text>
+              <TextInput
+                style={[styles.modalInput, { paddingVertical: 8 }]}
+                value={newPalletTag}
+                onChangeText={setNewPalletTag}
+                placeholder="Ví dụ: OEM-A, XK-HQ, HÀNG LOẠI 1..."
+                placeholderTextColor="#64748b"
+                autoCapitalize="characters"
+              />
 
-            <View style={styles.modalBtnRow}>
+              {/* HÀNG 4: GHI CHÚ PALLET / LOT HÀNG */}
+              <Text style={[styles.inputLabel, { marginTop: 4 }]}>Ghi chú Pallet / LOT hàng:</Text>
+              <TextInput
+                style={[styles.modalInput, { minHeight: 38, paddingVertical: 8 }]}
+                value={newPalletNotes}
+                onChangeText={setNewPalletNotes}
+                placeholder="Nhập ghi chú cho LOT hàng (nếu có)..."
+                placeholderTextColor="#64748b"
+              />
+            </ScrollView>
+
+            <View style={[styles.modalBtnRow, { marginTop: 12, borderTopWidth: 1, borderTopColor: '#334155', paddingTop: 12 }]}>
               <TouchableOpacity
                 style={styles.modalCancelBtn}
                 onPress={() => setIsNewPalletModal(false)}
@@ -928,49 +1045,59 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
               </TouchableOpacity>
             </View>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* ✏️ MODAL: MANUAL EDIT / INPUT */}
       <Modal visible={isManualModal} transparent animationType="slide">
-        <View style={styles.modalBg}>
-          <View style={styles.modalCard}>
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          style={styles.modalBg}
+        >
+          <View style={[styles.modalCard, { maxHeight: '90%', display: 'flex', flexDirection: 'column' }]}>
             <Text style={styles.modalTitle}>✏️ NHẬP / SỬA THÙNG TAY</Text>
             <Text style={styles.modalSub}>Dành cho tem mờ hoặc điều chỉnh số thùng nhanh</Text>
 
-            <Text style={styles.inputLabel}>Số thứ tự thùng (INDEX) *:</Text>
-            <TextInput
-              style={[styles.modalInput, { fontSize: 24, fontWeight: '700', color: '#10b981' }]}
-              value={manualIndex}
-              onChangeText={setManualIndex}
-              placeholder="Ví dụ: 398"
-              placeholderTextColor="#64748b"
-              keyboardType="number-pad"
-              autoFocus
-            />
+            <ScrollView
+              showsVerticalScrollIndicator={false}
+              keyboardShouldPersistTaps="handled"
+              style={{ flexShrink: 1 }}
+              contentContainerStyle={{ paddingBottom: 6 }}
+            >
+              <Text style={styles.inputLabel}>Số thứ tự thùng (INDEX) *:</Text>
+              <TextInput
+                style={[styles.modalInput, { fontSize: 24, fontWeight: '700', color: '#10b981' }]}
+                value={manualIndex}
+                onChangeText={setManualIndex}
+                placeholder="Ví dụ: 398"
+                placeholderTextColor="#64748b"
+                keyboardType="number-pad"
+                autoFocus
+              />
 
-            <View style={{ flexDirection: 'row', gap: 10 }}>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.inputLabel}>Mã Lot:</Text>
-                <TextInput
-                  style={styles.modalInput}
-                  value={manualLot}
-                  onChangeText={setManualLot}
-                  autoCapitalize="characters"
-                />
+              <View style={{ flexDirection: 'row', gap: 10 }}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.inputLabel}>Mã Lot:</Text>
+                  <TextInput
+                    style={styles.modalInput}
+                    value={manualLot}
+                    onChangeText={setManualLot}
+                    autoCapitalize="characters"
+                  />
+                </View>
+                <View style={{ width: 90 }}>
+                  <Text style={styles.inputLabel}>Kg:</Text>
+                  <TextInput
+                    style={styles.modalInput}
+                    value={manualWeight}
+                    onChangeText={setManualWeight}
+                    keyboardType="numeric"
+                  />
+                </View>
               </View>
-              <View style={{ width: 90 }}>
-                <Text style={styles.inputLabel}>Kg:</Text>
-                <TextInput
-                  style={styles.modalInput}
-                  value={manualWeight}
-                  onChangeText={setManualWeight}
-                  keyboardType="numeric"
-                />
-              </View>
-            </View>
+            </ScrollView>
 
-            <View style={styles.modalBtnRow}>
+            <View style={[styles.modalBtnRow, { marginTop: 12, borderTopWidth: 1, borderTopColor: '#334155', paddingTop: 12 }]}>
               <TouchableOpacity
                 style={styles.modalCancelBtn}
                 onPress={() => setIsManualModal(false)}
@@ -985,13 +1112,16 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
               </TouchableOpacity>
             </View>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* 📋 MODAL: CLONE / NHÂN BẢN THÙNG */}
       <Modal visible={cloneModalVisible} transparent animationType="slide">
-        <View style={styles.modalBg}>
-          <View style={styles.modalCard}>
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          style={styles.modalBg}
+        >
+          <View style={[styles.modalCard, { maxHeight: '90%', display: 'flex', flexDirection: 'column' }]}>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 4 }}>
               <Ionicons name="copy" size={20} color="#38bdf8" />
               <Text style={styles.modalTitle}>NHÂN BẢN THÙNG HÀNG</Text>
@@ -1000,55 +1130,62 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
               Sao chép thùng mẫu sang các thùng còn lại. Số INDEX in trên tem gốc sẽ tự động bỏ qua và cấp số mới liên tiếp.
             </Text>
 
-            {cloneSampleBox && (
-              <View style={styles.sampleBoxInfoCard}>
-                <Text style={styles.sampleBoxInfoTitle}>
-                  📦 Thùng mẫu: #{cloneSampleBox.box_index} · {cloneSampleBox.sku}
-                </Text>
-                <Text style={styles.sampleBoxInfoSub}>
-                  {cloneSampleBox.product_name}
-                </Text>
-                <Text style={styles.sampleBoxInfoMeta}>
-                  Lot: {cloneSampleBox.lot_code} | NSX: {cloneSampleBox.production_date} | {cloneSampleBox.weight}Kg
-                </Text>
-              </View>
-            )}
+            <ScrollView
+              showsVerticalScrollIndicator={false}
+              keyboardShouldPersistTaps="handled"
+              style={{ flexShrink: 1 }}
+              contentContainerStyle={{ paddingBottom: 6 }}
+            >
+              {cloneSampleBox && (
+                <View style={styles.sampleBoxInfoCard}>
+                  <Text style={styles.sampleBoxInfoTitle}>
+                    📦 Thùng mẫu: #{cloneSampleBox.box_index} · {cloneSampleBox.sku}
+                  </Text>
+                  <Text style={styles.sampleBoxInfoSub}>
+                    {cloneSampleBox.product_name}
+                  </Text>
+                  <Text style={styles.sampleBoxInfoMeta}>
+                    Lot: {cloneSampleBox.lot_code} | NSX: {cloneSampleBox.production_date} | {cloneSampleBox.weight}Kg
+                  </Text>
+                </View>
+              )}
 
-            <Text style={styles.inputLabel}>Số lượng thùng cần nhân bản thêm:</Text>
-            <TextInput
-              style={[styles.modalInput, { fontSize: 20, fontWeight: '700', color: '#38bdf8' }]}
-              value={cloneCount}
-              onChangeText={setCloneCount}
-              keyboardType="number-pad"
-              placeholder="1"
-              placeholderTextColor="#64748b"
-            />
+              <Text style={styles.inputLabel}>Số lượng thùng cần nhân bản thêm:</Text>
+              <TextInput
+                style={[styles.modalInput, { fontSize: 20, fontWeight: '700', color: '#38bdf8' }]}
+                value={cloneCount}
+                onChangeText={setCloneCount}
+                keyboardType="number-pad"
+                placeholder="1"
+                placeholderTextColor="#64748b"
+              />
 
-            {activePallet && (
-              <View style={styles.quickChipsRow}>
-                {activePallet.target_qty - boxes.length > 0 && (
-                  <TouchableOpacity
-                    style={[styles.quickChip, styles.quickChipActive]}
-                    onPress={() => setCloneCount(String(Math.max(1, activePallet.target_qty - boxes.length)))}
-                  >
-                    <Text style={styles.quickChipActiveText}>
-                      Điền đủ ({activePallet.target_qty - boxes.length} thùng)
-                    </Text>
+              {activePallet && (
+                <View style={styles.quickChipsRow}>
+                  {activePallet.target_qty - boxes.length > 0 && (
+                    <TouchableOpacity
+                      style={[styles.quickChip, styles.quickChipActive]}
+                      onPress={() => setCloneCount(String(Math.max(1, activePallet.target_qty - boxes.length)))}
+                    >
+                      <Text style={styles.quickChipActiveText}>
+                        Điền đủ ({activePallet.target_qty - boxes.length} thùng)
+                      </Text>
+                    </TouchableOpacity>
+                  )}
+                  <TouchableOpacity style={styles.quickChip} onPress={() => setCloneCount('5')}>
+                    <Text style={styles.quickChipText}>+5</Text>
                   </TouchableOpacity>
-                )}
-                <TouchableOpacity style={styles.quickChip} onPress={() => setCloneCount('5')}>
-                  <Text style={styles.quickChipText}>+5</Text>
-                </TouchableOpacity>
-                <TouchableOpacity style={styles.quickChip} onPress={() => setCloneCount('10')}>
-                  <Text style={styles.quickChipText}>+10</Text>
-                </TouchableOpacity>
-                <TouchableOpacity style={styles.quickChip} onPress={() => setCloneCount('20')}>
-                  <Text style={styles.quickChipText}>+20</Text>
-                </TouchableOpacity>
-              </View>
-            )}
+                  <TouchableOpacity style={styles.quickChip} onPress={() => setCloneCount('10')}>
+                    <Text style={styles.quickChipText}>+10</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.quickChip} onPress={() => setCloneCount('20')}>
+                    <Text style={styles.quickChipText}>+20</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+            </ScrollView>
 
-            <View style={styles.modalBtnRow}>
+            <View style={[styles.modalBtnRow, { marginTop: 12, borderTopWidth: 1, borderTopColor: '#334155', paddingTop: 12 }]}>
               <TouchableOpacity
                 style={styles.modalCancelBtn}
                 onPress={() => setCloneModalVisible(false)}
@@ -1069,7 +1206,7 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
               </TouchableOpacity>
             </View>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
     </View>
   );
@@ -1464,19 +1601,19 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
 
-  modalBg: { flex: 1, backgroundColor: 'rgba(0,0,0,0.75)', justifyContent: 'center', padding: 20 },
-  modalCard: { backgroundColor: '#131b2e', borderRadius: 16, padding: 20, borderWidth: 1, borderColor: '#334155' },
-  modalTitle: { color: '#fff', fontSize: 17, fontWeight: '800', marginBottom: 4 },
-  modalSub: { color: '#94a3b8', fontSize: 12, marginBottom: 16 },
-  inputLabel: { color: '#cbd5e1', fontSize: 12, fontWeight: '600', marginBottom: 6 },
+  modalBg: { flex: 1, backgroundColor: 'rgba(0,0,0,0.75)', justifyContent: 'center', padding: 16 },
+  modalCard: { backgroundColor: '#131b2e', borderRadius: 16, padding: 16, borderWidth: 1, borderColor: '#334155' },
+  modalTitle: { color: '#fff', fontSize: 16, fontWeight: '800', marginBottom: 2 },
+  modalSub: { color: '#94a3b8', fontSize: 11, marginBottom: 10 },
+  inputLabel: { color: '#cbd5e1', fontSize: 11, fontWeight: '600', marginBottom: 3 },
   modalInput: {
     backgroundColor: '#1e293b',
     color: '#fff',
-    paddingHorizontal: 14,
-    paddingVertical: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
     borderRadius: 8,
-    fontSize: 15,
-    marginBottom: 14,
+    fontSize: 14,
+    marginBottom: 8,
     borderWidth: 1,
     borderColor: '#334155'
   },

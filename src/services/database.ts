@@ -273,11 +273,28 @@ export async function getAllPallets(): Promise<Pallet[]> {
   const db = await getDb();
   return await db.getAllAsync<Pallet>(
     `SELECT p.*,
+       b.product_name,
+       b.stamp_line1,
+       b.stamp_line2,
+       b.spec,
+       b.packaging_date,
+       b.production_date,
+       b.region,
+       b.weight as box_weight,
+       b.drive_file_id,
+       b.drive_view_url,
+       b.stamp_image_url,
+       b.sku,
        CASE 
-         WHEN EXISTS (SELECT 1 FROM boxes b WHERE b.pallet_id = p.id AND b.sync_status = 'pending') THEN 'pending'
+         WHEN EXISTS (SELECT 1 FROM boxes bx WHERE bx.pallet_id = p.id AND bx.sync_status = 'pending') THEN 'pending'
          ELSE p.sync_status
        END as sync_status
      FROM pallets p 
+     LEFT JOIN (
+       SELECT pallet_id, product_name, stamp_line1, stamp_line2, spec, packaging_date, production_date, region, weight, drive_file_id, drive_view_url, stamp_image_url, sku
+       FROM boxes
+       GROUP BY pallet_id
+     ) b ON b.pallet_id = p.id
      ORDER BY p.created_at DESC`
   );
 }
