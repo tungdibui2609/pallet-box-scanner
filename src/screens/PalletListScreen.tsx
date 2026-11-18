@@ -25,7 +25,8 @@ import {
   StampQueueItemMobile, StampQueueBackgroundItem,
   getPendingStampQueueList, removePendingStampQueueItem,
   syncSingleStampBackgroundItem, getDirectDriveImage,
-  getFullStampImage, processBackgroundStampQueue
+  getFullStampImage, processBackgroundStampQueue,
+  enqueueStampPhotoForBackgroundSync
 } from '../services/stampQueueService';
 import { calculateSearchScore, matchSearch, normalizeSearchString } from '../utils/searchUtils';
 
@@ -231,6 +232,54 @@ export default function PalletListScreen({
             await removePendingStampQueueItem(item.id);
             const updated = await getPendingStampQueueList();
             setOfflineStampItems(updated);
+          },
+        },
+      ]
+    );
+  }
+
+  async function handleSyncGroupOfflineStamp(group: { palletStt: string; totalBoxes: number; items: StampQueueBackgroundItem[] }) {
+    setSyncingOfflineStampId(group.items[0]?.id || 'group');
+    try {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      let okCount = 0;
+      for (const it of group.items) {
+        const ok = await syncSingleStampBackgroundItem(it.id);
+        if (ok) okCount++;
+      }
+      if (okCount > 0) {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        Alert.alert(
+          'Thành công',
+          `🎉 Đã tải thành công ${okCount} / ${group.items.length} đợt ảnh của Pallet STT ${group.palletStt} (${group.totalBoxes} thùng) lên Server!`
+        );
+        await loadStampQueue(true);
+      } else {
+        Alert.alert('Chưa gửi được', 'Vui lòng kiểm tra lại kết nối mạng hoặc thử lại sau.');
+      }
+    } catch (err: any) {
+      Alert.alert('Lỗi gửi', err?.message || 'Có lỗi xảy ra khi gửi ảnh');
+    } finally {
+      setSyncingOfflineStampId(null);
+    }
+  }
+
+  async function handleDeleteGroupOfflineStamp(group: { palletStt: string; totalBoxes: number; items: StampQueueBackgroundItem[] }) {
+    Alert.alert(
+      `Xóa Pallet ${group.palletStt}?`,
+      `Pallet này gồm ${group.items.length} đợt con dấu (${group.totalBoxes} thùng) đang lưu tạm trên máy. Bạn có chắc muốn xóa toàn bộ không?`,
+      [
+        { text: 'Hủy', style: 'cancel' },
+        {
+          text: 'Xóa toàn bộ',
+          style: 'destructive',
+          onPress: async () => {
+            for (const it of group.items) {
+              await removePendingStampQueueItem(it.id);
+            }
+            const updated = await getPendingStampQueueList();
+            setOfflineStampItems(updated);
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
           },
         },
       ]
@@ -492,6 +541,99 @@ export default function PalletListScreen({
       Alert.alert('Lỗi', err.message);
     } finally {
       setIsSyncingAll(false);
+    }
+  }
+
+  // ── CHUYỂN PALLET TỪ CHỜ ĐẨY SANG CHỜ GIẢI MÃ ──
+  async function handleMoveToDecode(pallet: Pallet) {
+    try {
+      const boxList = await getBoxesByPallet(pallet.id);
+      if (boxList.length === 0) {
+        Alert.alert('Không có dữ liệu', 'Pallet này không có thùng nào để chuyển.');
+        return;
+      }
+
+      // Tìm ảnh con dấu từ các thùng trong Pallet
+      let photoUri = '';
+      let cropPhotoUri: string | null = null;
+
+      for (const b of boxList) {
+        if (b.stamp_image_url) {
+          photoUri = b.stamp_image_url;
+        }
+        if (b.drive_view_url && !photoUri) {
+          photoUri = b.drive_view_url;
+        }
+        if (b.raw_text) {
+          try {
+            const parsed = JSON.parse(b.raw_text);
+            if (parsed.photo_uri || parsed.photoUri) {
+              photoUri = parsed.photo_uri || parsed.photoUri;
+              cropPhotoUri = parsed.crop_uri || parsed.cropPhotoUri || null;
+              break;
+            }
+          } catch {}
+        }
+        if (photoUri) break;
+      }
+
+      if (!photoUri) {
+        Alert.alert(
+          'Không tìm thấy ảnh con dấu',
+          `Pallet "${pallet.code}" không có ảnh con dấu lưu kèm.\n\nTính năng này chỉ áp dụng cho Pallet đóng dấu đã chụp ảnh để Server phân tích lại.`
+        );
+        return;
+      }
+
+      Alert.alert(
+        'Chuyển sang Chờ giải mã',
+        `Bạn có chắc muốn chuyển Pallet "${pallet.code}" (${boxList.length} thùng) sang hàng đợi Chờ giải mã không?\n\nPallet sẽ được rút khỏi mục Chờ đẩy và chuyển vào tab Chờ giải mã để Server phân tích lại con dấu.`,
+        [
+          { text: 'Hủy', style: 'cancel' },
+          {
+            text: 'Chuyển ngay',
+            style: 'default',
+            onPress: async () => {
+              try {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+
+                // Đưa vào hàng đợi giải mã nền (lưu an toàn vào SQLite/AsyncStorage)
+                await enqueueStampPhotoForBackgroundSync({
+                  photoUri,
+                  cropPhotoUri,
+                  palletStt: pallet.code,
+                  palletTag: pallet.tag || null,
+                  palletNotes: pallet.notes || null,
+                  boxCount: boxList.length,
+                  boxWeight: boxList[0]?.weight || 20,
+                });
+
+                // Xóa pallet khỏi SQLite bảng pallets & boxes
+                await deletePallet(pallet.id);
+
+                Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                await loadLocalPallets();
+                await loadStampQueue(false);
+
+                // Đóng modal chi tiết nếu đang mở
+                setSelectedPallet(null);
+
+                // Tự động chuyển sang Tab Chờ giải mã
+                setActiveTab('stamp_pending');
+
+                Alert.alert(
+                  'Thành công',
+                  `🎉 Đã chuyển Pallet "${pallet.code}" (${boxList.length} thùng) sang hàng đợi Chờ giải mã!`
+                );
+              } catch (err: any) {
+                Alert.alert('Lỗi chuyển giải mã', err?.message || 'Có lỗi xảy ra');
+              }
+            }
+          }
+        ]
+      );
+    } catch (e: any) {
+      Alert.alert('Lỗi', e?.message || 'Không thể lấy thông tin thùng');
     }
   }
 
@@ -1055,6 +1197,43 @@ export default function PalletListScreen({
     return stampQueueItems.filter(i => i.status === 'decoded');
   }, [stampQueueItems]);
 
+  // Gom nhóm các con dấu offline chờ mạng theo cùng STT Pallet
+  const groupedOfflineStampList = useMemo(() => {
+    const map = new Map<string, {
+      key: string;
+      palletStt: string;
+      palletTag?: string | null;
+      palletNotes?: string | null;
+      totalBoxes: number;
+      totalWeight: number;
+      createdAt: string;
+      items: StampQueueBackgroundItem[];
+    }>();
+
+    for (const item of offlineStampItems) {
+      const key = (item.palletStt || '').trim().toUpperCase() || item.id;
+      if (!map.has(key)) {
+        map.set(key, {
+          key,
+          palletStt: item.palletStt,
+          palletTag: item.palletTag,
+          palletNotes: item.palletNotes,
+          totalBoxes: 0,
+          totalWeight: 0,
+          createdAt: item.createdAt,
+          items: []
+        });
+      }
+      const g = map.get(key)!;
+      g.totalBoxes += Number(item.boxCount) || 0;
+      g.totalWeight += (Number(item.boxCount) || 0) * (Number(item.boxWeight) || 20);
+      g.items.push(item);
+      if (!g.palletTag && item.palletTag) g.palletTag = item.palletTag;
+      if (!g.palletNotes && item.palletNotes) g.palletNotes = item.palletNotes;
+    }
+    return Array.from(map.values());
+  }, [offlineStampItems]);
+
   // Gom nhóm các con dấu chờ giải mã theo cùng STT Pallet
   const groupedStampPendingList = useMemo(() => {
     const map = new Map<string, {
@@ -1133,7 +1312,7 @@ export default function PalletListScreen({
     return Array.from(map.values());
   }, [stampDecodedList]);
 
-  const stampPendingCount = offlineStampItems.length + groupedStampPendingList.length;
+  const stampPendingCount = groupedOfflineStampList.length + groupedStampPendingList.length;
   const stampDecodedCount = groupedStampDecodedList.length;
   const cloudCount = cloudPallets.length;
 
@@ -1455,20 +1634,30 @@ export default function PalletListScreen({
                         <Text style={styles.deleteBtnText}>Xóa</Text>
                       </TouchableOpacity>
 
-                      <TouchableOpacity
-                        style={styles.syncSingleBtn}
-                        disabled={isSyncing}
-                        onPress={() => handleSyncSingle(item)}
-                      >
-                        {isSyncing ? (
-                          <ActivityIndicator color="#fff" size="small" />
-                        ) : (
-                          <>
-                            <Ionicons name="cloud-upload-outline" size={16} color="#fff" />
-                            <Text style={styles.syncSingleText}>Tải lên Web</Text>
-                          </>
-                        )}
-                      </TouchableOpacity>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                        <TouchableOpacity
+                          style={styles.moveToDecodeBtn}
+                          onPress={() => handleMoveToDecode(item)}
+                        >
+                          <Ionicons name="scan-outline" size={15} color="#fdba74" />
+                          <Text style={styles.moveToDecodeText}>Chuyển giải mã</Text>
+                        </TouchableOpacity>
+
+                        <TouchableOpacity
+                          style={styles.syncSingleBtn}
+                          disabled={isSyncing}
+                          onPress={() => handleSyncSingle(item)}
+                        >
+                          {isSyncing ? (
+                            <ActivityIndicator color="#fff" size="small" />
+                          ) : (
+                            <>
+                              <Ionicons name="cloud-upload-outline" size={16} color="#fff" />
+                              <Text style={styles.syncSingleText}>Tải lên Server</Text>
+                            </>
+                          )}
+                        </TouchableOpacity>
+                      </View>
                     </View>
                   </TouchableOpacity>
                 );
@@ -1538,22 +1727,116 @@ export default function PalletListScreen({
                 />
               }
             >
-              {/* 1. Danh sách Pallet chụp Offline (Chưa gửi được lên server) */}
-              {offlineStampItems.map(item => {
-                const isSyncing = syncingOfflineStampId === item.id;
-                const imgSrc = item.cropPhotoUri || item.photoUri;
+              {/* 1. Danh sách Pallet chụp Offline (Chưa gửi được lên server - Đã gom nhóm theo STT) */}
+              {groupedOfflineStampList.map(group => {
+                const isGroupSyncing = group.items.some(it => syncingOfflineStampId === it.id);
 
+                if (group.items.length === 1) {
+                  const item = group.items[0];
+                  const imgSrc = item.cropPhotoUri || item.photoUri;
+
+                  return (
+                    <View key={item.id} style={[styles.palletCard, { borderColor: '#d97706', backgroundColor: '#1c1917' }]}>
+                      <View style={styles.palletCardHeader}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1, flexWrap: 'wrap' }}>
+                          <Ionicons name="phone-portrait-outline" size={18} color="#fbbf24" style={{ marginRight: 6 }} />
+                          <Text style={[styles.palletCode, { color: '#fef3c7' }]}>STT: {item.palletStt}</Text>
+                          {item.palletTag ? (
+                            <View style={styles.tagBadge}>
+                              <Text style={styles.tagBadgeText}>🏷️ {item.palletTag}</Text>
+                            </View>
+                          ) : null}
+                        </View>
+                        <View style={[styles.syncBadge, { backgroundColor: '#78350f', borderColor: '#d97706', borderWidth: 1 }]}>
+                          <Text style={[styles.syncBadgeText, { color: '#fde68a' }]}>
+                            ⚠️ Chưa gửi (Lưu trên máy)
+                          </Text>
+                        </View>
+                      </View>
+
+                      <View style={[styles.palletCardBody, { flexDirection: 'row', gap: 10 }]}>
+                        {imgSrc ? (
+                          <TouchableOpacity
+                            activeOpacity={0.8}
+                            onPress={() => openPreviewImage(imgSrc, `STT: ${item.palletStt}`)}
+                            style={{
+                              width: 68,
+                              height: 68,
+                              borderRadius: 8,
+                              overflow: 'hidden',
+                              backgroundColor: '#0c0a09',
+                              borderWidth: 1,
+                              borderColor: '#78350f'
+                            }}
+                          >
+                            <Image
+                              source={{ uri: imgSrc }}
+                              style={{ width: '100%', height: '100%' }}
+                              resizeMode="cover"
+                            />
+                          </TouchableOpacity>
+                        ) : (
+                          <View style={{ width: 68, height: 68, borderRadius: 8, backgroundColor: '#0c0a09', alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#78350f' }}>
+                            <Ionicons name="image-outline" size={24} color="#78716c" />
+                          </View>
+                        )}
+                        <View style={{ flex: 1, justifyContent: 'space-between' }}>
+                          <Text style={styles.palletMeta}>
+                            Số lượng: <Text style={{ color: '#22c55e', fontWeight: '900' }}>{item.boxCount || 30}</Text> thùng • {item.boxWeight || 20} Kg
+                          </Text>
+                          <Text style={{ color: '#f59e0b', fontSize: 11, fontWeight: '600' }}>
+                            Chờ có mạng để gửi lên Server
+                          </Text>
+                          <Text style={styles.palletDate}>
+                            Chụp lúc: {item.createdAt?.slice(0, 16).replace('T', ' ')}
+                          </Text>
+                        </View>
+                      </View>
+
+                      <View style={[styles.palletCardFooter, { backgroundColor: 'rgba(120, 53, 15, 0.3)' }]}>
+                        <TouchableOpacity
+                          style={{ padding: 6 }}
+                          onPress={() => handleDeleteOfflineStamp(item)}
+                        >
+                          <Ionicons name="trash-outline" size={18} color="#f87171" />
+                        </TouchableOpacity>
+
+                        <TouchableOpacity
+                          style={[styles.syncSingleBtn, { backgroundColor: '#d97706' }]}
+                          disabled={isGroupSyncing}
+                          onPress={() => handleSyncSingleOfflineStamp(item)}
+                        >
+                          {isGroupSyncing ? (
+                            <ActivityIndicator color="#fff" size="small" />
+                          ) : (
+                            <>
+                              <Ionicons name="cloud-upload-outline" size={14} color="#fff" />
+                              <Text style={styles.syncSingleText}>Gửi ngay</Text>
+                            </>
+                          )}
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+                  );
+                }
+
+                // Pallet ghép nhiều đợt con dấu chụp offline
                 return (
-                  <View key={item.id} style={[styles.palletCard, { borderColor: '#d97706', backgroundColor: '#1c1917' }]}>
+                  <View key={group.key} style={[styles.palletCard, { borderColor: '#d97706', backgroundColor: '#1c1917' }]}>
                     <View style={styles.palletCardHeader}>
-                      <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1, flexWrap: 'wrap' }}>
-                        <Ionicons name="phone-portrait-outline" size={18} color="#fbbf24" style={{ marginRight: 6 }} />
-                        <Text style={[styles.palletCode, { color: '#fef3c7' }]}>STT: {item.palletStt}</Text>
-                        {item.palletTag ? (
+                      <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1, flexWrap: 'wrap', gap: 6 }}>
+                        <Ionicons name="phone-portrait-outline" size={18} color="#fbbf24" />
+                        <Text style={[styles.palletCode, { color: '#fef3c7' }]}>STT: {group.palletStt}</Text>
+                        {group.palletTag ? (
                           <View style={styles.tagBadge}>
-                            <Text style={styles.tagBadgeText}>🏷️ {item.palletTag}</Text>
+                            <Text style={styles.tagBadgeText}>🏷️ {group.palletTag}</Text>
                           </View>
                         ) : null}
+                        <View style={[styles.tagBadge, { backgroundColor: '#78350f', borderColor: '#d97706', borderWidth: 1 }]}>
+                          <Text style={[styles.tagBadgeText, { color: '#fde68a' }]}>
+                            📦 Ghép {group.items.length} đợt con dấu
+                          </Text>
+                        </View>
                       </View>
                       <View style={[styles.syncBadge, { backgroundColor: '#78350f', borderColor: '#d97706', borderWidth: 1 }]}>
                         <Text style={[styles.syncBadgeText, { color: '#fde68a' }]}>
@@ -1562,64 +1845,88 @@ export default function PalletListScreen({
                       </View>
                     </View>
 
-                    <View style={[styles.palletCardBody, { flexDirection: 'row', gap: 10 }]}>
-                      {imgSrc ? (
-                        <TouchableOpacity
-                          activeOpacity={0.8}
-                          onPress={() => openPreviewImage(imgSrc, `STT: ${item.palletStt}`)}
-                          style={{
-                            width: 68,
-                            height: 68,
-                            borderRadius: 8,
-                            overflow: 'hidden',
-                            backgroundColor: '#0c0a09',
-                            borderWidth: 1,
-                            borderColor: '#78350f'
-                          }}
-                        >
-                          <Image
-                            source={{ uri: imgSrc }}
-                            style={{ width: '100%', height: '100%' }}
-                            resizeMode="cover"
-                          />
-                        </TouchableOpacity>
-                      ) : (
-                        <View style={{ width: 68, height: 68, borderRadius: 8, backgroundColor: '#0c0a09', alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: '#78350f' }}>
-                          <Ionicons name="image-outline" size={24} color="#78716c" />
-                        </View>
-                      )}
-                      <View style={{ flex: 1, justifyContent: 'space-between' }}>
-                        <Text style={styles.palletMeta}>
-                          Số lượng: <Text style={{ color: '#22c55e', fontWeight: '900' }}>{item.boxCount || 30}</Text> thùng • {item.boxWeight || 20} Kg
-                        </Text>
-                        <Text style={{ color: '#f59e0b', fontSize: 11, fontWeight: '600' }}>
-                          Chờ có mạng để gửi lên Server
-                        </Text>
-                        <Text style={styles.palletDate}>
-                          Chụp lúc: {item.createdAt?.slice(0, 16).replace('T', ' ')}
-                        </Text>
-                      </View>
+                    <View style={{ paddingHorizontal: 12, paddingTop: 8, paddingBottom: 4 }}>
+                      <Text style={styles.palletMeta}>
+                        Tổng số lượng: <Text style={{ color: '#22c55e', fontWeight: '900' }}>{group.totalBoxes}</Text> thùng
+                      </Text>
+                      <Text style={{ color: '#f59e0b', fontSize: 11, fontWeight: '600', marginTop: 2 }}>
+                        Chờ có mạng để gửi lên Server ({group.items.length} đợt ảnh con dấu)
+                      </Text>
+                    </View>
+
+                    <View style={[styles.palletCardBody, { gap: 8 }]}>
+                      {group.items.map((sub, sIdx) => {
+                        const imgSrc = sub.cropPhotoUri || sub.photoUri;
+
+                        return (
+                          <View
+                            key={sub.id || sIdx}
+                            style={{
+                              backgroundColor: '#0c0a09',
+                              borderRadius: 8,
+                              padding: 8,
+                              borderWidth: 1,
+                              borderColor: '#78350f',
+                              flexDirection: 'row',
+                              gap: 10,
+                              alignItems: 'center'
+                            }}
+                          >
+                            {imgSrc ? (
+                              <TouchableOpacity
+                                activeOpacity={0.8}
+                                onPress={() => openPreviewImage(imgSrc, `STT: ${group.palletStt} (Đợt ${sIdx + 1})`)}
+                                style={{
+                                  width: 52,
+                                  height: 52,
+                                  borderRadius: 6,
+                                  overflow: 'hidden',
+                                  backgroundColor: '#1c1917',
+                                  borderWidth: 1,
+                                  borderColor: '#d97706'
+                                }}
+                              >
+                                <Image source={{ uri: imgSrc }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
+                              </TouchableOpacity>
+                            ) : null}
+                            <View style={{ flex: 1, justifyContent: 'center' }}>
+                              <Text style={{ color: '#fde68a', fontSize: 11, fontWeight: 'bold' }}>
+                                Đợt {sIdx + 1}: <Text style={{ color: '#22c55e', fontWeight: 'bold' }}>{sub.boxCount || 30}</Text> thùng • {sub.boxWeight || 20} Kg
+                              </Text>
+                              <Text style={styles.palletDate}>
+                                Chụp: {sub.createdAt?.slice(0, 16).replace('T', ' ')}
+                              </Text>
+                            </View>
+                            <TouchableOpacity
+                              style={{ padding: 6 }}
+                              onPress={() => handleDeleteOfflineStamp(sub)}
+                            >
+                              <Ionicons name="trash-outline" size={16} color="#f87171" />
+                            </TouchableOpacity>
+                          </View>
+                        );
+                      })}
                     </View>
 
                     <View style={[styles.palletCardFooter, { backgroundColor: 'rgba(120, 53, 15, 0.3)' }]}>
                       <TouchableOpacity
                         style={{ padding: 6 }}
-                        onPress={() => handleDeleteOfflineStamp(item)}
+                        onPress={() => handleDeleteGroupOfflineStamp(group)}
                       >
                         <Ionicons name="trash-outline" size={18} color="#f87171" />
                       </TouchableOpacity>
 
                       <TouchableOpacity
                         style={[styles.syncSingleBtn, { backgroundColor: '#d97706' }]}
-                        disabled={isSyncing}
-                        onPress={() => handleSyncSingleOfflineStamp(item)}
+                        disabled={isGroupSyncing}
+                        onPress={() => handleSyncGroupOfflineStamp(group)}
                       >
-                        {isSyncing ? (
+                        {isGroupSyncing ? (
                           <ActivityIndicator color="#fff" size="small" />
                         ) : (
                           <>
                             <Ionicons name="cloud-upload-outline" size={14} color="#fff" />
-                            <Text style={styles.syncSingleText}>Gửi ngay</Text>
+                            <Text style={styles.syncSingleText}>Gửi ngay ({group.totalBoxes} thùng)</Text>
                           </>
                         )}
                       </TouchableOpacity>
@@ -2725,12 +3032,23 @@ export default function PalletListScreen({
               </ScrollView>
             )}
 
-            <TouchableOpacity
-              style={styles.closeDetailBtn}
-              onPress={() => { setSelectedPallet(null); setSelectedCloudPallet(null); }}
-            >
-              <Text style={styles.closeDetailText}>Đóng</Text>
-            </TouchableOpacity>
+            <View style={{ flexDirection: 'row', gap: 8, marginTop: 12 }}>
+              {selectedPallet && selectedPallet.sync_status !== 'synced' && (
+                <TouchableOpacity
+                  style={[styles.moveToDecodeBtn, { flex: 1, justifyContent: 'center', paddingVertical: 11 }]}
+                  onPress={() => handleMoveToDecode(selectedPallet)}
+                >
+                  <Ionicons name="scan-outline" size={16} color="#fdba74" />
+                  <Text style={[styles.moveToDecodeText, { fontSize: 13 }]}>Chuyển sang Chờ giải mã</Text>
+                </TouchableOpacity>
+              )}
+              <TouchableOpacity
+                style={[styles.closeDetailBtn, selectedPallet && selectedPallet.sync_status !== 'synced' ? { width: 90, marginTop: 0 } : {}]}
+                onPress={() => { setSelectedPallet(null); setSelectedCloudPallet(null); }}
+              >
+                <Text style={styles.closeDetailText}>Đóng</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
       </Modal>
@@ -3463,6 +3781,22 @@ const styles = StyleSheet.create({
     color: '#ef4444',
     fontSize: 12,
     fontWeight: '700',
+  },
+  moveToDecodeBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#7c2d12',
+    borderWidth: 1,
+    borderColor: '#ea580c',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    gap: 4,
+  },
+  moveToDecodeText: {
+    color: '#fdba74',
+    fontSize: 12,
+    fontWeight: '800',
   },
   syncSingleBtn: {
     flexDirection: 'row',
