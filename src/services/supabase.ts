@@ -322,19 +322,19 @@ export async function syncPalletToSupabase(pallet: Pallet, boxes: BoxLabel[]): P
       return {
         success: true,
         isLinked: false,
-        message: `ℹ️ Đã gửi ${boxes.length} thùng lên Web mẹ an toàn. STT "${sttCode}" đã có LOT "${targetLotCode}" (${existingBoxCount} thùng) trong kho — Web mẹ đã chuyển vào mục "Chờ duyệt" để Quản lý kiểm tra và phê duyệt phương án xử lý (Thay thế, Tách LOT, hoặc Hủy)!`
+        message: `ℹ️ Đã gửi ${boxes.length} thùng lên Server an toàn. STT "${sttCode}" đã có LOT "${targetLotCode}" (${existingBoxCount} thùng) trong kho — Server đã chuyển vào mục "Chờ duyệt" để Quản lý kiểm tra và phê duyệt phương án xử lý (Thay thế, Tách LOT, hoặc Hủy)!`
       };
     } else if (foundLot) {
       return {
         success: true,
         isLinked: false,
-        message: `✅ Đã gửi ${boxes.length} thùng lên Web mẹ thành công. STT "${sttCode}" khớp với LOT "${foundLot.code}" — Vui lòng vào trang Quản lý Pallet (http://localhost:3000/warehouses/pallets) để Duyệt & Ghép vào LOT!`
+        message: `✅ Đã gửi ${boxes.length} thùng lên Server thành công. STT "${sttCode}" khớp với LOT "${foundLot.code}" — Vui lòng vào trang Quản lý Pallet để Duyệt & Ghép vào LOT!`
       };
     } else {
       return {
         success: true,
         isLinked: false,
-        message: `✅ Đã lưu ${boxes.length} thùng lên mục "Chờ duyệt LOT". Trên Web mẹ chưa có LOT mang STT "${sttCode}". Vui lòng vào trang Quản lý Pallet để Duyệt & Tạo LOT!`
+        message: `✅ Đã lưu ${boxes.length} thùng lên mục "Chờ duyệt LOT". Trên Server chưa có LOT mang STT "${sttCode}". Vui lòng vào trang Quản lý Pallet để Duyệt & Tạo LOT!`
       };
     }
   } catch (err: any) {

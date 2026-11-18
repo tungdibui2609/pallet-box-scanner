@@ -462,7 +462,7 @@ export default function SettingsScreen({ onBack }: { onBack: () => void }) {
             <Ionicons name="cloud-download-outline" size={18} color="#fff" />
           )}
           <Text style={{ color: '#fff', fontWeight: '700', fontSize: 13 }}>
-            {syncingStamp ? 'Đang tải từ máy chủ web...' : 'Tải / Cập nhật quy tắc từ Web mẹ'}
+            {syncingStamp ? 'Đang tải từ Server...' : 'Tải / Cập nhật quy tắc từ Server'}
           </Text>
         </TouchableOpacity>
       </View>

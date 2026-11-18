@@ -242,7 +242,7 @@ export default function LoginScreen({ onOpenSettings }: { onOpenSettings?: () =>
           <View style={{ flex: 1 }}>
             <Text style={styles.infoTitle}>Bảo Mật Phân Quyền Công Ty</Text>
             <Text style={styles.infoText}>
-              Khi đăng nhập, mọi Pallet và tem thùng bạn quét sẽ tự động gắn kết với công ty của bạn, đảm bảo tính bảo mật và quản lý tập trung trên web mẹ.
+              Khi đăng nhập, mọi Pallet và tem thùng bạn quét sẽ tự động gắn kết với công ty của bạn, đảm bảo tính bảo mật và quản lý tập trung trên Server.
             </Text>
           </View>
         </View>

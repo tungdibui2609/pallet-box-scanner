@@ -1061,7 +1061,7 @@ const MobileWarehouseSearchBar = React.memo(function MobileWarehouseSearchBar({
         <View style={styles.suggestionsCard}>
           <View style={styles.suggestionsHeader}>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
-              <Ionicons name="sparkles" size={12} color="#fbbf24" />
+              <Ionicons name="search" size={12} color="#fbbf24" />
               <Text style={styles.suggestionsHeaderTitle}>
                 {searchMode === 'name'
                   ? 'GỢI Ý TÊN & TÊN VIẾT TẮT'

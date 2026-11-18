@@ -93,6 +93,22 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
   const [newTargetQty, setNewTargetQty] = useState('30');
   const [autoCompleteOnFull, setAutoCompleteOnFull] = useState(true);
 
+  const [isKeyboardVisible, setKeyboardVisible] = useState(false);
+  useEffect(() => {
+    const showSub = Keyboard.addListener(
+      Platform.OS === 'android' ? 'keyboardDidShow' : 'keyboardWillShow',
+      () => setKeyboardVisible(true)
+    );
+    const hideSub = Keyboard.addListener(
+      Platform.OS === 'android' ? 'keyboardDidHide' : 'keyboardWillHide',
+      () => setKeyboardVisible(false)
+    );
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
+
   useEffect(() => {
     void (async () => {
       const [def, autoChot] = await Promise.all([
@@ -578,7 +594,7 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
       } : null);
       setCloneModalVisible(false);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      showSuccessFlash(`✨ Đã nhân bản ${res.addedCount} thùng (bỏ qua index cũ, cấp STT mới liên tiếp)!`);
+      showSuccessFlash(`✅ Đã nhân bản ${res.addedCount} thùng (bỏ qua index cũ, cấp STT mới liên tiếp)!`);
       
       if (updated.length >= activePallet.target_qty) {
         if (autoCompleteOnFull) {
@@ -935,12 +951,26 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
       </ScrollView>
 
       {/* 📝 MODAL: NEW / SELECT PALLET */}
-      <Modal visible={isNewPalletModal} transparent animationType="slide">
+      <Modal
+        visible={isNewPalletModal}
+        transparent
+        animationType="slide"
+        onRequestClose={() => {
+          Keyboard.dismiss();
+          setIsNewPalletModal(false);
+        }}
+      >
         <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-          style={styles.modalBg}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          style={[
+            styles.modalBg,
+            isKeyboardVisible && {
+              justifyContent: 'flex-start',
+              paddingTop: Platform.OS === 'android' ? 24 : 44,
+            },
+          ]}
         >
-          <View style={[styles.modalCard, { maxHeight: '88%', display: 'flex', flexDirection: 'column' }]}>
+          <View style={[styles.modalCard, { maxHeight: isKeyboardVisible ? '96%' : '88%', display: 'flex', flexDirection: 'column' }]}>
             <Text style={styles.modalTitle}>📦 CHỌN / NHẬP STT PALLET</Text>
             <Text style={styles.modalSub}>Nhập số thực tế của Pallet đang xếp hàng (Ví dụ: F3500 hoặc G22)</Text>
 
@@ -948,7 +978,7 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
               showsVerticalScrollIndicator={false}
               keyboardShouldPersistTaps="handled"
               style={{ flexShrink: 1 }}
-              contentContainerStyle={{ paddingBottom: 4 }}
+              contentContainerStyle={{ paddingBottom: 16 }}
             >
               {/* HÀNG 1: STT PALLET & CHỈ TIÊU SỐ THÙNG (SONG SONG) */}
               <View style={{ flexDirection: 'row', gap: 10 }}>
@@ -962,6 +992,7 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
                     placeholderTextColor="#64748b"
                     autoCapitalize="characters"
                     autoFocus
+                    returnKeyType="next"
                   />
                 </View>
 
@@ -974,6 +1005,7 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
                     keyboardType="number-pad"
                     placeholder={String(defaultTargetQty)}
                     placeholderTextColor="#64748b"
+                    returnKeyType="next"
                   />
                 </View>
               </View>
@@ -1017,6 +1049,7 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
                 placeholder="Ví dụ: OEM-A, XK-HQ, HÀNG LOẠI 1..."
                 placeholderTextColor="#64748b"
                 autoCapitalize="characters"
+                returnKeyType="next"
               />
 
               {/* HÀNG 4: GHI CHÚ PALLET / LOT HÀNG */}
@@ -1027,23 +1060,32 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
                 onChangeText={setNewPalletNotes}
                 placeholder="Nhập ghi chú cho LOT hàng (nếu có)..."
                 placeholderTextColor="#64748b"
+                returnKeyType="done"
+                onSubmitEditing={() => Keyboard.dismiss()}
               />
-            </ScrollView>
 
-            <View style={[styles.modalBtnRow, { marginTop: 12, borderTopWidth: 1, borderTopColor: '#334155', paddingTop: 12 }]}>
-              <TouchableOpacity
-                style={styles.modalCancelBtn}
-                onPress={() => setIsNewPalletModal(false)}
-              >
-                <Text style={styles.modalCancelText}>Đóng</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.modalSaveBtn}
-                onPress={handleCreatePallet}
-              >
-                <Text style={styles.modalSaveText}>Bắt Đầu Quét Pallet</Text>
-              </TouchableOpacity>
-            </View>
+              {/* HÀNG 5: NÚT BẤM NẰM TRONG SCROLLVIEW ĐẢM BẢO KHÔNG BỊ BÀN PHÍM CHE */}
+              <View style={[styles.modalBtnRow, { marginTop: 14, borderTopWidth: 1, borderTopColor: '#334155', paddingTop: 12 }]}>
+                <TouchableOpacity
+                  style={styles.modalCancelBtn}
+                  onPress={() => {
+                    Keyboard.dismiss();
+                    setIsNewPalletModal(false);
+                  }}
+                >
+                  <Text style={styles.modalCancelText}>Đóng</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.modalSaveBtn}
+                  onPress={() => {
+                    Keyboard.dismiss();
+                    handleCreatePallet();
+                  }}
+                >
+                  <Text style={styles.modalSaveText}>Bắt Đầu Quét Pallet</Text>
+                </TouchableOpacity>
+              </View>
+            </ScrollView>
           </View>
         </KeyboardAvoidingView>
       </Modal>

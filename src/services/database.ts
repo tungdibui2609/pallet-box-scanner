@@ -293,8 +293,11 @@ export async function getAllPallets(): Promise<Pallet[]> {
      LEFT JOIN (
        SELECT pallet_id, product_name, stamp_line1, stamp_line2, spec, packaging_date, production_date, region, weight, drive_file_id, drive_view_url, stamp_image_url, sku
        FROM boxes
+       WHERE COALESCE(stamp_line1, '') != 'CHỜ GIẢI MÃ AI'
        GROUP BY pallet_id
      ) b ON b.pallet_id = p.id
+     WHERE p.scanned_qty > 0
+       AND EXISTS (SELECT 1 FROM boxes bx2 WHERE bx2.pallet_id = p.id AND COALESCE(bx2.stamp_line1, '') != 'CHỜ GIẢI MÃ AI')
      ORDER BY p.created_at DESC`
   );
 }
@@ -649,13 +652,18 @@ export async function addStampBoxesBulkToPallet(
     activeFormat = await getActiveStampFormat();
   } catch {}
 
+  const isAiQueueBox = stampData.stamp_line1 === 'CHỜ GIẢI MÃ AI';
   const decoded = decodeStamp(stampData.stamp_line1, stampData.stamp_line2, dictMap, activeFormat);
-  const productName = decoded.product_name_full || 'Thùng đóng dấu mực';
-  const cleanSku = decoded.special_12_code
-    ? decoded.special_12_code
-    : (decoded.fruit_type_code 
-        ? `${decoded.fruit_type_code}${decoded.freeze_style_code || '00'}${decoded.variety_code || '00'}${decoded.product_grade_code || '00'}`
-        : (stampData.stamp_line1 || 'STAMP'));
+  const productName = isAiQueueBox
+    ? '📦 Đã chụp dấu (Chờ chốt gửi giải mã)'
+    : (decoded.product_name_full || 'Thùng đóng dấu mực');
+  const cleanSku = isAiQueueBox
+    ? 'CHỜ GIẢI MÃ AI'
+    : (decoded.special_12_code
+        ? decoded.special_12_code
+        : (decoded.fruit_type_code 
+            ? `${decoded.fruit_type_code}${decoded.freeze_style_code || '00'}${decoded.variety_code || '00'}${decoded.product_grade_code || '00'}`
+            : (stampData.stamp_line1 || 'STAMP')));
   const specText = decoded.is_special_12
     ? (decoded.package_spec_name ? `${decoded.package_spec_name}${decoded.freeze_method_name ? ` (${decoded.freeze_method_name})` : ''}` : 'Ngoại lệ trọn gói')
     : (decoded.package_spec_name ? `${decoded.package_spec_name} (${decoded.freeze_method_name || 'Hầm đông'})` : '');

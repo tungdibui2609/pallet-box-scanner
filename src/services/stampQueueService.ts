@@ -1,7 +1,19 @@
 import { getSupabaseClient, withTimeout } from './supabase';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as ImageManipulator from 'expo-image-manipulator';
-import * as FileSystem from 'expo-file-system';
+import { File } from 'expo-file-system';
+import { decodeStamp, DEFAULT_STAMP_DICTIONARY } from './stampParser';
+import { getStampDictionariesMap, getActiveStampFormat } from './database';
+
+function deleteTempFileSafe(uri?: string | null): void {
+  if (!uri || !uri.startsWith('file://')) return;
+  try {
+    const f = new File(uri);
+    if (f.exists) {
+      f.delete();
+    }
+  } catch {}
+}
 
 export interface SubmitStampQueueParams {
   photoUri: string;
@@ -120,16 +132,8 @@ export async function processBackgroundStampQueue(
           syncedCount++;
 
           // Tự động xóa file ảnh tạm trên bộ nhớ điện thoại để tránh nặng máy
-          try {
-            if (item.photoUri && item.photoUri.startsWith('file://')) {
-              await FileSystem.deleteAsync(item.photoUri, { idempotent: true });
-            }
-            if (item.cropPhotoUri && item.cropPhotoUri.startsWith('file://')) {
-              await FileSystem.deleteAsync(item.cropPhotoUri, { idempotent: true });
-            }
-          } catch (delErr) {
-            console.warn('[StampQueue] Dọn dẹp ảnh tạm sau đồng bộ ngầm:', delErr);
-          }
+          deleteTempFileSafe(item.photoUri);
+          deleteTempFileSafe(item.cropPhotoUri);
 
           if (onProgress) {
             onProgress(queue.length - syncedCount, res.item);
@@ -220,16 +224,8 @@ export async function syncSingleStampBackgroundItem(id: string): Promise<boolean
     await removePendingStampQueueItem(id);
 
     // Tự động xóa file ảnh tạm trên bộ nhớ máy sau khi tải lên thành công
-    try {
-      if (target.photoUri && target.photoUri.startsWith('file://')) {
-        await FileSystem.deleteAsync(target.photoUri, { idempotent: true });
-      }
-      if (target.cropPhotoUri && target.cropPhotoUri.startsWith('file://')) {
-        await FileSystem.deleteAsync(target.cropPhotoUri, { idempotent: true });
-      }
-    } catch (delErr) {
-      console.warn('[StampQueue] Lỗi xóa file tạm sau khi gửi:', delErr);
-    }
+    deleteTempFileSafe(target.photoUri);
+    deleteTempFileSafe(target.cropPhotoUri);
 
     return true;
   }
@@ -501,53 +497,46 @@ export async function submitStampPhotoToQueue(params: SubmitStampQueueParams): P
     }
   }
 
-  // FALLBACK: Lưu vào Supabase Storage bucket operation-images
-  if (!finalImageUrl) {
-    const rawBytes = decodeBase64ToArrayBuffer(base64Data);
-    const filePath = `stamp-queue/${cleanStt}_${Date.now()}.jpg`;
-
-    const { error: uploadErr } = await client.storage
-      .from('operation-images')
-      .upload(filePath, rawBytes, { contentType: 'image/jpeg', upsert: true });
-
-    if (uploadErr) {
-      throw new Error(`Lỗi tải ảnh lên máy chủ: ${uploadErr.message}`);
-    }
-
-    const { data: pubData } = client.storage
-      .from('operation-images')
-      .getPublicUrl(filePath);
-
-    finalImageUrl = pubData?.publicUrl || '';
-  }
-
-  if (!finalImageUrl) {
-    throw new Error('Không tạo được đường dẫn ảnh con dấu');
-  }
-
-  // Tải ảnh crop vùng con dấu lên máy chủ (nếu có) để AI đọc siêu nhanh (~0.5s)
+  // 2.5. Chuẩn bị ảnh crop vùng con dấu dạng Base64 gọn nhẹ (~15-25KB) để AI đọc siêu tốc & hiển thị thumbnail tức thì
   let finalCropUrl: string | null = null;
   if (params.cropPhotoUri) {
     try {
       const manipulatedCrop = await ImageManipulator.manipulateAsync(
         params.cropPhotoUri,
-        [{ resize: { width: 1000 } }],
-        { compress: 0.85, format: ImageManipulator.SaveFormat.JPEG, base64: true }
+        [{ resize: { width: 900 } }],
+        { compress: 0.8, format: ImageManipulator.SaveFormat.JPEG, base64: true }
       );
       if (manipulatedCrop.base64) {
-        const rawCropBytes = decodeBase64ToArrayBuffer(manipulatedCrop.base64);
-        const cropFilePath = `stamp-queue/crops/${cleanStt}_${Date.now()}.jpg`;
-        const { error: cropUpErr } = await client.storage
-          .from('operation-images')
-          .upload(cropFilePath, rawCropBytes, { contentType: 'image/jpeg', upsert: true });
-        if (!cropUpErr) {
-          const { data: cPub } = client.storage.from('operation-images').getPublicUrl(cropFilePath);
-          finalCropUrl = cPub?.publicUrl || null;
-        }
+        finalCropUrl = `data:image/jpeg;base64,${manipulatedCrop.base64}`;
       }
     } catch (cropErr) {
-      console.warn('[StampQueueMobile] Lỗi lưu ảnh crop:', cropErr);
+      console.warn('[StampQueueMobile] Lỗi tạo ảnh crop base64:', cropErr);
     }
+  }
+
+  // FALLBACK: Lưu vào Supabase Storage bucket operation-images hoặc dùng Base64 nếu chưa có Google Drive
+  if (!finalImageUrl) {
+    try {
+      const rawBytes = decodeBase64ToArrayBuffer(base64Data);
+      const filePath = `stamp-queue/${cleanStt}_${Date.now()}.jpg`;
+
+      const { error: uploadErr } = await client.storage
+        .from('operation-images')
+        .upload(filePath, rawBytes, { contentType: 'image/jpeg', upsert: true });
+
+      if (!uploadErr) {
+        const { data: pubData } = client.storage
+          .from('operation-images')
+          .getPublicUrl(filePath);
+        finalImageUrl = normalizeStorageUrl(pubData?.publicUrl) || '';
+      }
+    } catch (storageErr) {
+      console.warn('[StampQueueMobile] Storage upload fallback sang Base64:', storageErr);
+    }
+  }
+
+  if (!finalImageUrl) {
+    finalImageUrl = finalCropUrl || `data:image/jpeg;base64,${base64Data}`;
   }
 
   // 3. Insert vào bảng stamp_scan_queue
@@ -573,19 +562,28 @@ export async function submitStampPhotoToQueue(params: SubmitStampQueueParams): P
 
   const { data: inserted, error: insertErr } = await withTimeout(
     client.from('stamp_scan_queue').insert(insertPayload).select().single(),
-    8000,
-    'Hết thời gian lưu hàng đợi (8s)'
+    10000,
+    'Hết thời gian lưu hàng đợi (10s)'
   );
 
   if (insertErr) {
     throw new Error(`Lỗi lưu hàng đợi CSDL: ${insertErr.message}`);
   }
 
+  // 4. Tự động kích hoạt Gemini AI giải mã ngay lập tức trong nền!
+  if (inserted?.id) {
+    setTimeout(() => {
+      triggerDecodeStampFromApp([inserted.id]).catch(e =>
+        console.warn('[StampQueue] Tự động giải mã AI nền:', e)
+      );
+    }, 100);
+  }
+
   return {
     success: true,
     message: driveFileId
       ? `Đã lưu ảnh lên Google Drive (CON_DAU) và gửi Pallet ${cleanStt} thành công!`
-      : `Đã gửi ảnh Pallet ${cleanStt} lên Web Mẹ thành công!`,
+      : `Đã gửi ảnh Pallet ${cleanStt} lên hàng đợi giải mã AI thành công!`,
     isGoogleDrive: !!driveFileId,
     item: inserted,
   };
@@ -615,8 +613,127 @@ export async function fetchRecentStampQueue(): Promise<StampQueueItemMobile[]> {
   }
 }
 
+function parseMobileGeminiKeys(raw: string): string[] {
+  if (!raw) return [];
+  return raw
+    .split(/[\n,;]+/)
+    .map(k => k.trim())
+    .filter(k => k.length > 10);
+}
+
+function cleanMobileStampLine(raw: string): string {
+  return String(raw || '')
+    .trim()
+    .replace(/[oO]/g, '0')
+    .replace(/[lI|]/g, '1')
+    .replace(/[^0-9\-]/g, '');
+}
+
+async function resolveImageToBase64Mobile(urlOrData: string): Promise<{ base64: string; mimeType: string }> {
+  if (urlOrData.startsWith('data:')) {
+    const m = urlOrData.match(/^data:(image\/\w+);base64,(.+)$/);
+    if (m) {
+      return { mimeType: m[1], base64: m[2] };
+    }
+  }
+  const normalized = getDirectDriveImage(urlOrData, null, null) || normalizeStorageUrl(urlOrData) || urlOrData;
+  const manip = await ImageManipulator.manipulateAsync(
+    normalized,
+    [{ resize: { width: 1000 } }],
+    { compress: 0.85, format: ImageManipulator.SaveFormat.JPEG, base64: true }
+  );
+  if (!manip.base64) {
+    throw new Error('Không thể đọc dữ liệu ảnh để giải mã');
+  }
+  return { mimeType: 'image/jpeg', base64: manip.base64 };
+}
+
+async function callGeminiStampOcrMobile(params: {
+  imageBase64: string;
+  mimeType: string;
+  apiKeys: string[];
+  model: string;
+}): Promise<{ line1: string; line2: string }> {
+  const { imageBase64, mimeType, apiKeys, model } = params;
+  const candidateModels = Array.from(
+    new Set([
+      model,
+      'gemini-3.5-flash-lite',
+      'gemini-3.1-flash-lite',
+      'gemini-flash-latest',
+      'gemini-3.5-flash',
+      'gemini-2.5-flash-lite',
+    ])
+  ).filter(Boolean);
+
+  const prompt = [
+    'Bạn là hệ thống OCR công nghiệp chuyên đọc dấu mực đóng trên thùng carton.',
+    'Trong ảnh có 2 dòng chữ số đóng dấu mực gần nhau:',
+    '- Dòng 1 (mã sản phẩm): thường gồm 12 chữ số, dấu gạch ngang "-", và 1 chữ số cuối (ví dụ: 102020301001-0 hoặc 102010402001-0).',
+    '- Dòng 2 (dãy số truy xuất nguồn gốc): gồm 16 chữ số liền nhau (ví dụ: 2031103112600066 hoặc 2281021102600066).',
+    'Hãy bỏ qua hoàn toàn các chữ/số watermark thời gian camera hoặc ký tự không thuộc dấu mực.',
+    'Trả về JSON thuần theo đúng schema: {"line1": "...", "line2": "..."} (chỉ chứa chữ số 0-9 và dấu "-" ở line1, không giải thích thêm).',
+  ].join('\n');
+
+  let lastErr: any = null;
+
+  for (let kIdx = 0; kIdx < apiKeys.length; kIdx++) {
+    const key = apiKeys[kIdx];
+    for (let mIdx = 0; mIdx < candidateModels.length; mIdx++) {
+      const activeModel = candidateModels[mIdx];
+      const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(activeModel)}:generateContent?key=${encodeURIComponent(key)}`;
+      try {
+        const res = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [
+              {
+                parts: [
+                  { text: prompt },
+                  { inlineData: { mimeType, data: imageBase64 } },
+                ],
+              },
+            ],
+            generationConfig: {
+              temperature: 0,
+              responseMimeType: 'application/json',
+            },
+          }),
+        });
+
+        if (!res.ok) {
+          const errText = await res.text().catch(() => '');
+          lastErr = new Error(`Gemini (${res.status}): ${errText.slice(0, 120)}`);
+          if (res.status === 404 || res.status === 503) continue;
+          if (res.status === 429 || res.status === 403) break;
+          continue;
+        }
+
+        const json: any = await res.json();
+        const textOut: string = json?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+        let parsed: any = {};
+        try {
+          parsed = JSON.parse(textOut);
+        } catch {
+          const match = textOut.match(/\{[\s\S]*\}/);
+          if (match) parsed = JSON.parse(match[0]);
+        }
+
+        const line1 = cleanMobileStampLine(parsed?.line1 || '');
+        const line2 = cleanMobileStampLine(parsed?.line2 || '').replace(/-/g, '');
+        return { line1, line2 };
+      } catch (e: any) {
+        lastErr = e;
+      }
+    }
+  }
+
+  throw lastErr || new Error('Không thể gọi Gemini AI để đọc con dấu');
+}
+
 /**
- * Kích hoạt giải mã Gemini AI cho các pallet trong hàng đợi từ thiết bị
+ * Kích hoạt giải mã Gemini AI trực tiếp từ thiết bị qua cấu hình trên Supabase (api.chanhthu.click)
  */
 export async function triggerDecodeStampFromApp(ids?: string[]): Promise<{
   success: boolean;
@@ -624,28 +741,138 @@ export async function triggerDecodeStampFromApp(ids?: string[]): Promise<{
   decodedCount?: number;
 }> {
   try {
-    const storedUrl = await AsyncStorage.getItem('config_web_api_url');
-    let baseUrl = storedUrl || 'https://qlk.chanhthu.click';
-    if (baseUrl.endsWith('/')) baseUrl = baseUrl.slice(0, -1);
-
+    const client = await getSupabaseClient();
     const storedSys = await AsyncStorage.getItem('config_system_code');
     const systemCode = storedSys || 'KHO_DONG_LANH';
 
-    const client = await getSupabaseClient();
-    const { data: sessionData } = await client.auth.getSession();
-    const token = sessionData?.session?.access_token || '';
+    // 1. Lấy cấu hình Gemini API Key từ bảng company_ai_settings trên Supabase
+    const { data: aiCfg } = await client
+      .from('company_ai_settings')
+      .select('gemini_api_key, gemini_model, is_enabled')
+      .eq('is_enabled', true)
+      .limit(1)
+      .maybeSingle();
 
-    const res = await fetch(`${baseUrl}/api/stamp-queue/decode`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
-      body: JSON.stringify({ ids, systemCode }),
-    });
+    const apiKeys = parseMobileGeminiKeys(aiCfg?.gemini_api_key || '');
+    if (apiKeys.length === 0) {
+      return {
+        success: false,
+        message: 'Chưa cấu hình Gemini API Key trên hệ thống.',
+      };
+    }
+    const model = String(aiCfg?.gemini_model || 'gemini-3.5-flash-lite').trim();
 
-    const data = await res.json();
-    return data;
+    // 2. Lấy danh sách các bản ghi cần giải mã từ bảng stamp_scan_queue
+    let query = client
+      .from('stamp_scan_queue')
+      .select('*')
+      .order('created_at', { ascending: true });
+
+    if (ids && ids.length > 0) {
+      query = query.in('id', ids);
+    } else {
+      query = query.eq('system_code', systemCode).in('status', ['pending', 'error']).limit(20);
+    }
+
+    const { data: queueItems, error: fetchErr } = await query;
+    if (fetchErr) throw fetchErr;
+    if (!queueItems || queueItems.length === 0) {
+      return { success: true, decodedCount: 0, message: 'Không có ảnh nào đang chờ giải mã.' };
+    }
+
+    // 3. Tải bộ từ điển con dấu để giải mã ra tên sản phẩm, ngày đóng gói, vùng miền
+    let dictMap: Record<string, Record<string, string>> = { ...DEFAULT_STAMP_DICTIONARY };
+    let activeFormat: any = null;
+    try {
+      const [localDict, localFmt] = await Promise.all([
+        getStampDictionariesMap(),
+        getActiveStampFormat(),
+      ]);
+      if (localDict && Object.keys(localDict).length > 0) dictMap = localDict;
+      activeFormat = localFmt;
+
+      const { data: cloudDict } = await client
+        .from('stamp_dictionaries')
+        .select('category, code, name')
+        .eq('is_active', true);
+      if (Array.isArray(cloudDict)) {
+        cloudDict.forEach((row: any) => {
+          const cat = String(row.category || '').trim();
+          const code = String(row.code || '').trim();
+          const name = String(row.name || '').trim();
+          if (!cat || !code) return;
+          if (!dictMap[cat]) dictMap[cat] = {};
+          dictMap[cat][code] = name;
+          if (cat === 'special_12') {
+            const c12 = code.replace(/[^0-9]/g, '').slice(0, 12);
+            if (c12.length === 12) dictMap[cat][c12] = name;
+          }
+        });
+      }
+    } catch {}
+
+    let decodedCount = 0;
+
+    for (const item of queueItems) {
+      try {
+        const targetImg = item.cropped_image_url || item.image_url;
+        const imgData = await resolveImageToBase64Mobile(targetImg);
+        const ocrRes = await callGeminiStampOcrMobile({
+          imageBase64: imgData.base64,
+          mimeType: imgData.mimeType,
+          apiKeys,
+          model,
+        });
+
+        const dec = decodeStamp(ocrRes.line1, ocrRes.line2, dictMap, activeFormat);
+        const decodedPayload = {
+          isStamp: true,
+          stampLine1: ocrRes.line1,
+          stampLine2: ocrRes.line2,
+          isSpecial12: dec.is_special_12,
+          special12Code: dec.special_12_code,
+          special12Name: dec.special_12_name,
+          productTitle: dec.product_name_full || dec.special_12_name || 'Sản phẩm con dấu',
+          spec: dec.package_spec_name || (dec.is_special_12 ? 'Ngoại lệ trọn gói' : ''),
+          factoryName: dec.factory_name || '',
+          packagingDateStr: dec.packaging_date || '',
+          rawMaterialDateStr: dec.raw_material_date || dec.inbound_date || '',
+          supplierCode: dec.supplier_code || '',
+          supplierName: dec.supplier_name || '',
+          provinceName: dec.province_name || '',
+        };
+
+        await client
+          .from('stamp_scan_queue')
+          .update({
+            stamp_line1: ocrRes.line1,
+            stamp_line2: ocrRes.line2,
+            decoded_json: decodedPayload,
+            status: 'decoded',
+            error_message: null,
+          })
+          .eq('id', item.id);
+
+        decodedCount++;
+      } catch (itemErr: any) {
+        await client
+          .from('stamp_scan_queue')
+          .update({
+            status: 'error',
+            error_message: itemErr?.message || 'Lỗi đọc ảnh con dấu',
+          })
+          .eq('id', item.id);
+      }
+    }
+
+    return {
+      success: decodedCount > 0,
+      decodedCount,
+      message:
+        decodedCount > 0
+          ? `Đã giải mã thành công ${decodedCount}/${queueItems.length} con dấu!`
+          : 'Không thể giải mã ảnh con dấu, vui lòng kiểm tra lại ảnh chụp.',
+    };
   } catch (err: any) {
     return { success: false, message: err?.message || 'Không thể kết nối máy chủ AI' };
   }

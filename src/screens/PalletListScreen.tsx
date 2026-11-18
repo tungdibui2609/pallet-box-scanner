@@ -25,7 +25,7 @@ import {
   StampQueueItemMobile, StampQueueBackgroundItem,
   getPendingStampQueueList, removePendingStampQueueItem,
   syncSingleStampBackgroundItem, getDirectDriveImage,
-  getFullStampImage
+  getFullStampImage, processBackgroundStampQueue
 } from '../services/stampQueueService';
 import { calculateSearchScore, matchSearch, normalizeSearchString } from '../utils/searchUtils';
 
@@ -156,14 +156,42 @@ export default function PalletListScreen({
   }, [pallets.length]);
 
   async function loadStampQueue(isSilent = false) {
+    // 1. Nạp tức thì danh sách offline từ bộ nhớ máy (0ms - không chờ mạng)
+    try {
+      const fastOffline = await getPendingStampQueueList();
+      setOfflineStampItems(fastOffline);
+    } catch {}
+
     if (!isSilent) setLoadingStampQueue(true);
     try {
-      const [list, offlineList] = await Promise.all([
+      // 2. Fetch danh sách online kèm timeout 2.5s (tránh bị treo 10-15s khi offline/mất mạng)
+      const fetchWithTimeout = Promise.race([
         fetchRecentStampQueue(),
+        new Promise<StampQueueItemMobile[]>((resolve) => setTimeout(() => resolve([]), 2500))
+      ]);
+
+      const [list, offlineList] = await Promise.all([
+        fetchWithTimeout,
         getPendingStampQueueList(),
       ]);
-      setStampQueueItems(list);
+
+      if (list && list.length > 0) {
+        setStampQueueItems(list);
+      }
       setOfflineStampItems(offlineList);
+
+      // Nếu còn item offline chưa đẩy lên được, tự động thử đẩy ngầm & giải mã AI
+      if (offlineList.length > 0) {
+        processBackgroundStampQueue(() => {
+          void Promise.all([
+            fetchRecentStampQueue(),
+            getPendingStampQueueList(),
+          ]).then(([newList, newOffline]) => {
+            if (newList && newList.length > 0) setStampQueueItems(newList);
+            setOfflineStampItems(newOffline);
+          }).catch(() => {});
+        }).catch(() => {});
+      }
     } catch (e: any) {
       console.warn('loadStampQueue error:', e);
     } finally {
@@ -178,7 +206,7 @@ export default function PalletListScreen({
       const ok = await syncSingleStampBackgroundItem(item.id);
       if (ok) {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        Alert.alert('Thành công', `Đã tải ảnh Pallet ${item.palletStt} lên Google Drive & đưa vào hàng đợi AI!`);
+        Alert.alert('Thành công', `Đã tải ảnh Pallet ${item.palletStt} lên Server và đưa vào hàng đợi giải mã!`);
         await loadStampQueue(true);
       } else {
         Alert.alert('Chưa gửi được', 'Vui lòng kiểm tra lại kết nối mạng hoặc thử lại sau.');
@@ -458,7 +486,7 @@ export default function PalletListScreen({
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       await loadLocalPallets();
       setIsSyncingAll(false);
-      Alert.alert('Đồng bộ xong', `Đã đồng bộ thành công ${successCount} / ${pending.length} Pallet lên Web mẹ!`);
+      Alert.alert('Đồng bộ xong', `Đã đồng bộ thành công ${successCount} / ${pending.length} Pallet lên Server!`);
       loadCloudPallets().catch(err => console.warn('Lỗi tải ngầm cloud pallets:', err));
     } catch (err: any) {
       Alert.alert('Lỗi', err.message);
@@ -474,7 +502,7 @@ export default function PalletListScreen({
     Alert.alert(
       isSynced ? 'Xóa Pallet đã đồng bộ khỏi máy' : 'Xóa Pallet chưa đồng bộ',
       isSynced
-        ? `Pallet ${pallet.code} (${pallet.scanned_qty} thùng) đã từng được đẩy lên Web mẹ.\n\nBạn có muốn xóa Pallet này khỏi bộ nhớ máy con để dọn dẹp hoặc quét lại không? (Thao tác này chỉ xóa trên điện thoại, không ảnh hưởng tới dữ liệu trên Web mẹ).`
+        ? `Pallet ${pallet.code} (${pallet.scanned_qty} thùng) đã từng được đẩy lên Server.\n\nBạn có muốn xóa Pallet này khỏi bộ nhớ máy con để dọn dẹp hoặc quét lại không? (Thao tác này chỉ xóa trên điện thoại, không ảnh hưởng tới dữ liệu trên Server).`
         : `Bạn có chắc muốn xóa Pallet ${pallet.code} cùng ${pallet.scanned_qty} thùng bên trong khỏi máy?`,
       [
         { text: 'Hủy', style: 'cancel' },
@@ -514,7 +542,7 @@ export default function PalletListScreen({
         setSelectedBoxes(res.data);
       } else {
         setSelectedBoxes([]);
-        Alert.alert('Thông báo', res.message || 'Không thể tải danh sách thùng từ Web mẹ.');
+        Alert.alert('Thông báo', res.message || 'Không thể tải danh sách thùng từ Server.');
       }
     } finally {
       setIsLoadingBoxes(false);
@@ -524,7 +552,7 @@ export default function PalletListScreen({
   async function handleDeleteBox(box: BoxLabel) {
     if (!selectedPallet) return;
     if (selectedPallet.sync_status === 'synced' || selectedCloudPallet) {
-      Alert.alert('Không thể xóa', 'Dữ liệu đã đồng bộ lên Web mẹ không được phép chỉnh sửa hoặc xóa từ điện thoại.');
+      Alert.alert('Không thể xóa', 'Dữ liệu đã đồng bộ lên Server không được phép chỉnh sửa hoặc xóa từ điện thoại.');
       return;
     }
 
@@ -558,7 +586,7 @@ export default function PalletListScreen({
   async function handleCloneBox(box: BoxLabel) {
     if (!selectedPallet) return;
     if (selectedPallet.sync_status === 'synced' || selectedCloudPallet) {
-      Alert.alert('Không thể nhân bản', 'Dữ liệu đã đồng bộ lên Web mẹ không được phép nhân bản.');
+      Alert.alert('Không thể nhân bản', 'Dữ liệu đã đồng bộ lên Server không được phép nhân bản.');
       return;
     }
 
@@ -601,8 +629,10 @@ export default function PalletListScreen({
     }
   }
 
-  // Filter lists
-  const pendingPallets = pallets.filter(p => p.sync_status !== 'synced');
+  // Filter lists (Chỉ hiển thị các Pallet có thùng thường thực tế, loại bỏ Pallet 0 thùng hoặc đang chờ giải mã AI)
+  const pendingPallets = pallets.filter(
+    p => p.sync_status !== 'synced' && p.scanned_qty > 0 && p.stamp_line1 !== 'CHỜ GIẢI MÃ AI'
+  );
   const pendingCount = pendingPallets.length;
 
   // Advanced Filter state for Cloud Pallets
@@ -1180,7 +1210,7 @@ export default function PalletListScreen({
             }}
           >
             <Ionicons
-              name="sparkles"
+              name="checkmark-done-circle-outline"
               size={15}
               color={activeTab === 'stamp_decoded' ? '#c084fc' : '#94a3b8'}
             />
@@ -1242,14 +1272,14 @@ export default function PalletListScreen({
               <Ionicons name="checkmark-circle-outline" size={54} color="#10b981" />
               <Text style={styles.emptyTitle}>Không có Pallet nào chờ đẩy lên</Text>
               <Text style={styles.emptySub}>
-                Tất cả các Pallet bạn quét đã được đẩy lên Web mẹ thành công hoặc chưa có lượt quét mới.
+                Tất cả các Pallet bạn quét đã được đẩy lên Server thành công hoặc chưa có lượt quét mới.
               </Text>
               <TouchableOpacity
                 style={styles.viewCloudBtn}
                 onPress={() => setActiveTab('cloud')}
               >
                 <Ionicons name="cloud-outline" size={16} color="#38bdf8" />
-                <Text style={styles.viewCloudBtnText}>Xem danh sách Đã lên Web mẹ</Text>
+                <Text style={styles.viewCloudBtnText}>Xem danh sách Đã lên Server</Text>
               </TouchableOpacity>
             </View>
           ) : (
@@ -1303,7 +1333,7 @@ export default function PalletListScreen({
                   >
                     <View style={styles.palletCardHeader}>
                       <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1, flexWrap: 'wrap' }}>
-                        <Ionicons name={line1 || imgSrc ? 'sparkles' : 'cube'} size={18} color="#fbbf24" style={{ marginRight: 6 }} />
+                        <Ionicons name="cube" size={18} color="#fbbf24" style={{ marginRight: 6 }} />
                         <Text style={styles.palletCode}>STT: {item.code}</Text>
                         {item.tag ? (
                           <View style={styles.tagBadge}>
@@ -1457,7 +1487,7 @@ export default function PalletListScreen({
                 <Text style={styles.syncAllTitle}>Có {stampPendingCount} Pallet trong hàng đợi</Text>
                 <Text style={styles.syncAllSub}>
                   {offlineStampItems.length > 0 ? `${offlineStampItems.length} chưa gửi (Offline) • ` : ''}
-                  {stampPendingList.length} đã gửi chờ AI giải mã
+                  {stampPendingList.length} đã gửi chờ Server giải mã
                 </Text>
               </View>
               {stampPendingList.length > 0 && (
@@ -1470,7 +1500,7 @@ export default function PalletListScreen({
                     <ActivityIndicator color="#fff" size="small" />
                   ) : (
                     <>
-                      <Ionicons name="sparkles" size={16} color="#fff" />
+                      <Ionicons name="scan-outline" size={16} color="#fff" />
                       <Text style={styles.syncAllBtnText}>GIẢI MÃ TẤT CẢ</Text>
                     </>
                   )}
@@ -1486,13 +1516,13 @@ export default function PalletListScreen({
               <Ionicons name="checkmark-circle-outline" size={54} color="#10b981" />
               <Text style={styles.emptyTitle}>Không có Pallet nào chờ giải mã</Text>
               <Text style={styles.emptySub}>
-                Tất cả ảnh con dấu gửi lên đã được AI giải mã xong hoặc chưa có lượt chụp con dấu mới.
+                Tất cả ảnh con dấu gửi lên đã được giải mã xong hoặc chưa có lượt chụp con dấu mới.
               </Text>
               <TouchableOpacity
                 style={[styles.viewCloudBtn, { borderColor: '#a855f7' }]}
                 onPress={() => setActiveTab('stamp_decoded')}
               >
-                <Ionicons name="sparkles" size={16} color="#c084fc" />
+                <Ionicons name="checkmark-done-circle-outline" size={16} color="#c084fc" />
                 <Text style={[styles.viewCloudBtnText, { color: '#c084fc' }]}>Xem danh sách Đã giải mã ({stampDecodedCount})</Text>
               </TouchableOpacity>
             </View>
@@ -1563,7 +1593,7 @@ export default function PalletListScreen({
                           Số lượng: <Text style={{ color: '#22c55e', fontWeight: '900' }}>{item.boxCount || 30}</Text> thùng • {item.boxWeight || 20} Kg
                         </Text>
                         <Text style={{ color: '#f59e0b', fontSize: 11, fontWeight: '600' }}>
-                          Chờ có mạng để gửi lên Google Drive & AI
+                          Chờ có mạng để gửi lên Server
                         </Text>
                         <Text style={styles.palletDate}>
                           Chụp lúc: {item.createdAt?.slice(0, 16).replace('T', ' ')}
@@ -1627,7 +1657,7 @@ export default function PalletListScreen({
                             styles.syncBadgeText,
                             { color: isErr ? '#fca5a5' : '#fdba74' }
                           ]}>
-                            {isErr ? '❌ Lỗi đọc AI' : '⏳ Đã gửi (Chờ AI đọc)'}
+                            {isErr ? '❌ Lỗi giải mã' : '⏳ Đã gửi (Chờ Server xử lý)'}
                           </Text>
                         </View>
                       </View>
@@ -1668,7 +1698,7 @@ export default function PalletListScreen({
                             </Text>
                           ) : (
                             <Text style={{ color: '#94a3b8', fontSize: 11 }}>
-                              Đã tải lên Google Drive (CON_DAU)
+                              Đã lưu ảnh an toàn trên Server
                             </Text>
                           )}
                           <Text style={styles.palletDate}>
@@ -1692,8 +1722,8 @@ export default function PalletListScreen({
                             <ActivityIndicator color="#fff" size="small" />
                           ) : (
                             <>
-                              <Ionicons name="sparkles" size={14} color="#fff" />
-                              <Text style={styles.syncSingleText}>Giải mã AI</Text>
+                              <Ionicons name="scan-outline" size={14} color="#fff" />
+                              <Text style={styles.syncSingleText}>Giải mã</Text>
                             </>
                           )}
                         </TouchableOpacity>
@@ -1776,7 +1806,7 @@ export default function PalletListScreen({
                                 </Text>
                               ) : (
                                 <Text style={{ color: '#94a3b8', fontSize: 10 }}>
-                                  Đã tải lên Google Drive (CON_DAU)
+                                  Đã lưu ảnh an toàn trên Server
                                 </Text>
                               )}
                               <Text style={styles.palletDate}>
@@ -1797,7 +1827,7 @@ export default function PalletListScreen({
                     <View style={styles.palletCardFooter}>
                       <View style={{ flex: 1 }}>
                         <Text style={{ color: '#f59e0b', fontSize: 11, fontWeight: '600' }}>
-                          ⏳ Chờ AI giải mã ({group.items.length} ảnh)
+                          ⏳ Chờ giải mã ({group.items.length} ảnh)
                         </Text>
                       </View>
                       <TouchableOpacity
@@ -1809,8 +1839,8 @@ export default function PalletListScreen({
                           <ActivityIndicator color="#fff" size="small" />
                         ) : (
                           <>
-                            <Ionicons name="sparkles" size={14} color="#fff" />
-                            <Text style={styles.syncSingleText}>Giải mã AI ({group.items.length})</Text>
+                            <Ionicons name="scan-outline" size={14} color="#fff" />
+                            <Text style={styles.syncSingleText}>Giải mã ({group.items.length})</Text>
                           </>
                         )}
                       </TouchableOpacity>
@@ -1830,10 +1860,10 @@ export default function PalletListScreen({
             <ActivityIndicator style={{ marginTop: 40 }} size="large" color="#a855f7" />
           ) : groupedStampDecodedList.length === 0 ? (
             <View style={styles.emptyContainer}>
-              <Ionicons name="sparkles-outline" size={54} color="#a855f7" />
+              <Ionicons name="checkmark-done-circle-outline" size={54} color="#a855f7" />
               <Text style={styles.emptyTitle}>Chưa có Pallet nào được giải mã</Text>
               <Text style={styles.emptySub}>
-                Khi AI giải mã xong ảnh con dấu, kết quả nhận diện sẽ xuất hiện ngay tại đây.
+                Khi giải mã xong ảnh con dấu, kết quả nhận diện sẽ xuất hiện ngay tại đây.
               </Text>
             </View>
           ) : (
@@ -1861,7 +1891,7 @@ export default function PalletListScreen({
                     <View style={[styles.palletCard, { borderColor: '#7e22ce' }]}>
                       <View style={styles.palletCardHeader}>
                         <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1, flexWrap: 'wrap' }}>
-                          <Ionicons name="sparkles" size={18} color="#c084fc" style={{ marginRight: 6 }} />
+                          <Ionicons name="cube" size={18} color="#c084fc" style={{ marginRight: 6 }} />
                           <Text style={[styles.palletCode, { color: '#e9d5ff' }]}>STT: {item.pallet_stt}</Text>
                           {item.pallet_tag ? (
                             <View style={styles.tagBadge}>
@@ -1969,7 +1999,7 @@ export default function PalletListScreen({
                   <View key={group.key} style={[styles.palletCard, { borderColor: '#a855f7', borderWidth: 1.5 }]}>
                     <View style={styles.palletCardHeader}>
                       <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1, flexWrap: 'wrap', gap: 6 }}>
-                        <Ionicons name="sparkles" size={18} color="#c084fc" />
+                        <Ionicons name="cube" size={18} color="#c084fc" />
                         <Text style={[styles.palletCode, { color: '#e9d5ff' }]}>STT: {group.pallet_stt}</Text>
                         {group.pallet_tag ? (
                           <View style={styles.tagBadge}>
@@ -2197,7 +2227,7 @@ export default function PalletListScreen({
             <View style={styles.suggestionsContainer}>
               <View style={styles.suggestionsHeader}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                  <Ionicons name="sparkles" size={13} color="#10b981" />
+                  <Ionicons name="search" size={13} color="#10b981" />
                   <Text style={styles.suggestionsHeaderText}>
                     Gợi ý tìm kiếm ({searchProductSuggestions.length})
                   </Text>
@@ -2341,7 +2371,7 @@ export default function PalletListScreen({
             <View style={styles.emptyContainer}>
               <Ionicons name="cloud-offline-outline" size={54} color="#64748b" />
               <Text style={styles.emptyTitle}>
-                {cloudSearchQuery || hasActiveFilters ? 'Không tìm thấy kết quả phù hợp' : 'Chưa có Pallet nào trên Web mẹ'}
+                {cloudSearchQuery || hasActiveFilters ? 'Không tìm thấy kết quả phù hợp' : 'Chưa có Pallet nào trên Server'}
               </Text>
               <Text style={styles.emptySub}>
                 {cloudSearchQuery || hasActiveFilters
@@ -2564,7 +2594,7 @@ export default function PalletListScreen({
               <View style={styles.readOnlyBanner}>
                 <Ionicons name="lock-closed" size={14} color="#34d399" />
                 <Text style={styles.readOnlyBannerText}>
-                  Dữ liệu đã lên Web mẹ an toàn (Không thể xóa/sửa từ app)
+                  Dữ liệu đã lên Server an toàn (Không thể xóa/sửa từ app)
                 </Text>
               </View>
             ) : null}
@@ -2741,7 +2771,7 @@ export default function PalletListScreen({
                   <View style={styles.modalSuggestionsContainer}>
                     <View style={styles.suggestionsHeader}>
                       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                        <Ionicons name="sparkles" size={13} color="#10b981" />
+                        <Ionicons name="search" size={13} color="#10b981" />
                         <Text style={styles.suggestionsHeaderText}>Gợi ý tìm kiếm ({modalProductSuggestions.length})</Text>
                       </View>
                       <TouchableOpacity

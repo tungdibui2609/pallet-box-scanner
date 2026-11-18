@@ -73,6 +73,22 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
     return () => sub.remove();
   }, []);
 
+  const [isKeyboardVisible, setKeyboardVisible] = useState(false);
+  useEffect(() => {
+    const showSub = Keyboard.addListener(
+      Platform.OS === 'android' ? 'keyboardDidShow' : 'keyboardWillShow',
+      () => setKeyboardVisible(true)
+    );
+    const hideSub = Keyboard.addListener(
+      Platform.OS === 'android' ? 'keyboardDidHide' : 'keyboardWillHide',
+      () => setKeyboardVisible(false)
+    );
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
+
   const isCameraRunning = cameraEnabled && isAppActive && !!activePallet;
   const lastVolumeRef = useRef<number>(0.5);
   const captureHandlerRef = useRef<() => void>(() => {});
@@ -231,10 +247,10 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
                   Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
                   Vibration.vibrate([0, 200, 100, 200]);
                 } catch {}
-                triggerSuccessBanner(`🎉 Web Mẹ đã duyệt Pallet STT ${updated.pallet_stt} (${updated.box_count} thùng)!`);
+                triggerSuccessBanner(`🎉 Server đã duyệt Pallet STT ${updated.pallet_stt} (${updated.box_count} thùng)!`);
                 Alert.alert(
-                  '🎉 Web Mẹ Đã Duyệt Pallet!',
-                  `Pallet STT ${updated.pallet_stt} (${updated.box_count} thùng) đã được văn phòng duyệt tạo thành công và lưu ảnh vào Google Drive!`,
+                  '🎉 Server Đã Duyệt Pallet!',
+                  `Pallet STT ${updated.pallet_stt} (${updated.box_count} thùng) đã được văn phòng duyệt tạo thành công và lưu ảnh trên Server!`,
                   [{ text: 'Đã hiểu', style: 'default' }]
                 );
               }
@@ -452,7 +468,7 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
         const res = await addStampBoxesBulkToPallet(activePallet.id, stampDataToSave, w, count);
         createdBoxIds = res.newBoxes.map(b => b.id);
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        triggerSuccessBanner(`✨ Đã nhân bản ${res.addedCount} thùng con dấu vào Pallet ${activePallet.code}!`);
+        triggerSuccessBanner(`✅ Đã nhân bản ${res.addedCount} thùng con dấu vào Pallet ${activePallet.code}!`);
       } else {
         const res = await addStampBoxToPallet(activePallet.id, stampDataToSave, w);
         createdBoxIds = [res.box.id];
@@ -536,7 +552,7 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
         setIsManualModal(false);
         setManualCount('1');
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        triggerSuccessBanner(`✨ Đã tạo & nhân bản ${res.addedCount} thùng vào Pallet ${activePallet.code}!`);
+        triggerSuccessBanner(`✅ Đã tạo & nhân bản ${res.addedCount} thùng vào Pallet ${activePallet.code}!`);
       } else {
         const res = await addStampBoxToPallet(activePallet.id, stampData, w);
         setIsManualModal(false);
@@ -579,7 +595,7 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
       const res = await cloneBoxToPallet(activePallet.id, cloneSampleBox, qty);
       setCloneModalVisible(false);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      triggerSuccessBanner(`✨ Đã nhân bản ${res.addedCount} thùng vào Pallet ${activePallet.code}!`);
+      triggerSuccessBanner(`✅ Đã nhân bản ${res.addedCount} thùng vào Pallet ${activePallet.code}!`);
 
       const palletCode = activePallet.code;
       const palletId = activePallet.id;
@@ -693,7 +709,7 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
 
       setSendPhotoUri(photo.uri);
       setSendPhotoCropUri(cropUri);
-      setSendBoxCount(String(activePallet.target_qty || 30));
+      setSendBoxCount('1');
       setSendBoxWeight('20');
       setIsSendToWebModal(true);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -701,6 +717,82 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
       Alert.alert('Lỗi chụp ảnh', err?.message || 'Không thể chụp ảnh để gửi');
     } finally {
       setIsCapturingForWeb(false);
+    }
+  }
+
+  async function flushPalletAiQueueBatches(
+    palletId: string,
+    palletCode: string,
+    palletTag?: string | null,
+    palletNotes?: string | null
+  ): Promise<{ aiBoxCount: number; normalBoxCount: number }> {
+    try {
+      const db = await getDb();
+      const allBoxes = await db.getAllAsync<BoxLabel>(
+        `SELECT * FROM boxes WHERE pallet_id = ? ORDER BY CAST(box_index AS INTEGER) ASC`,
+        [palletId]
+      );
+      const aiBoxes = allBoxes.filter(b => b.stamp_line1 === 'CHỜ GIẢI MÃ AI');
+      const normalBoxes = allBoxes.filter(b => b.stamp_line1 !== 'CHỜ GIẢI MÃ AI');
+
+      if (aiBoxes.length > 0) {
+        const grouped = new Map<string, BoxLabel[]>();
+        aiBoxes.forEach(b => {
+          const bId = b.stamp_line2 || 'default';
+          if (!grouped.has(bId)) grouped.set(bId, []);
+          grouped.get(bId)!.push(b);
+        });
+
+        for (const [, batchList] of grouped.entries()) {
+          let photoUri = batchList[0]?.stamp_image_url || '';
+          let cropUri: string | null = null;
+          try {
+            if (batchList[0]?.raw_text) {
+              const parsed = JSON.parse(batchList[0].raw_text);
+              if (parsed.photo_uri) photoUri = parsed.photo_uri;
+              if (parsed.crop_uri) cropUri = parsed.crop_uri;
+            }
+          } catch {}
+
+          if (photoUri) {
+            await enqueueStampPhotoForBackgroundSync({
+              photoUri,
+              cropPhotoUri: cropUri,
+              palletStt: palletCode,
+              palletTag: palletTag || null,
+              palletNotes: palletNotes || null,
+              boxCount: batchList.length,
+              boxWeight: batchList[0]?.weight || 20,
+            });
+          }
+        }
+
+        // Xóa các thùng tạm AI khỏi SQLite sau khi đã chuyển sang hàng đợi giải mã AI
+        await db.runAsync(
+          `DELETE FROM boxes WHERE pallet_id = ? AND stamp_line1 = 'CHỜ GIẢI MÃ AI'`,
+          [palletId]
+        );
+
+        if (normalBoxes.length === 0) {
+          // Toàn bộ Pallet là ảnh chờ giải mã AI -> xóa bản ghi pallet tạm khỏi SQLite Chờ đẩy
+          await db.runAsync(`DELETE FROM pallets WHERE id = ?`, [palletId]);
+        } else {
+          const now = new Date().toISOString();
+          await db.runAsync(
+            `UPDATE pallets SET 
+               scanned_qty = (SELECT COUNT(*) FROM boxes WHERE pallet_id = ?),
+               total_weight = (SELECT COALESCE(SUM(weight), 0) FROM boxes WHERE pallet_id = ?),
+               updated_at = ?
+             WHERE id = ?`,
+            [palletId, palletId, now, palletId]
+          );
+        }
+      }
+
+      return { aiBoxCount: aiBoxes.length, normalBoxCount: normalBoxes.length };
+    } catch (e) {
+      console.warn('[StampScanner] Lỗi chuyển đợt ảnh AI sang hàng đợi:', e);
+      return { aiBoxCount: 0, normalBoxCount: 1 };
     }
   }
 
@@ -719,32 +811,57 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
       return;
     }
 
-    // 1. Phản hồi TỨC THỜI (0ms): Đóng modal ngay lập tức, rung + chuông báo thành công
+    const targetPallet = activePallet;
     const targetPalletCode = activePallet.code;
     const targetPhotoUri = sendPhotoUri;
     const targetCropUri = sendPhotoCropUri;
-    const targetTag = activePallet.tag || null;
-    const targetNotes = activePallet.notes || null;
 
     setIsSendToWebModal(false);
     setSendPhotoUri(null);
     setSendPhotoCropUri(null);
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    Vibration.vibrate(80);
-    triggerSuccessBanner(`🚀 Đã nhận Pallet ${targetPalletCode}! Ảnh con dấu đang được đồng bộ ngầm gửi giải mã.`);
 
-    // 2. Chạy ngầm trong nền (hoàn toàn không làm chậm thao tác hay khóa màn hình)
-    enqueueStampPhotoForBackgroundSync({
-      photoUri: targetPhotoUri,
-      cropPhotoUri: targetCropUri,
-      palletStt: targetPalletCode,
-      palletTag: targetTag,
-      palletNotes: targetNotes,
-      boxCount: count,
-      boxWeight: weight,
-    }).catch(err => {
-      console.warn('[StampScanner] Lỗi đưa vào hàng đợi ngầm:', err);
-    });
+    try {
+      const batchId = 'aibatch_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6);
+      const batchMetaJson = JSON.stringify({
+        is_ai_queue: true,
+        batch_id: batchId,
+        photo_uri: targetPhotoUri,
+        crop_uri: targetCropUri,
+      });
+
+      const stampData: ParsedStampData = {
+        stamp_line1: 'CHỜ GIẢI MÃ AI',
+        stamp_line2: batchId,
+        raw_text: batchMetaJson,
+        detected_lines: [],
+        drive_view_url: targetCropUri || targetPhotoUri,
+      };
+
+      const res = await addStampBoxesBulkToPallet(targetPallet.id, stampData, weight, count);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      Vibration.vibrate(70);
+
+      const newTotalBoxes = boxes.length + res.addedCount;
+      const targetQty = targetPallet.target_qty || defaultTargetQty || 30;
+
+      if (newTotalBoxes < targetQty) {
+        triggerSuccessBanner(
+          `✅ Đã lưu ${res.addedCount} thùng vào Pallet ${targetPalletCode} (${newTotalBoxes}/${targetQty} thùng). Đủ ${targetQty} thùng sẽ gửi giải mã!`
+        );
+      }
+
+      const isAutoClosed = await triggerAutoCompleteIfFull(
+        targetPallet.id,
+        targetPalletCode,
+        newTotalBoxes,
+        targetQty
+      );
+      if (!isAutoClosed) {
+        await loadActivePallet();
+      }
+    } catch (err: any) {
+      Alert.alert('Lỗi lưu thùng vào Pallet', err?.message || 'Không thể lưu thùng');
+    }
   }
 
   async function handleOpenQueueHistory() {
@@ -885,16 +1002,27 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
   async function triggerAutoCompleteIfFull(palletId: string, palletCode: string, totalBoxesCount: number, targetQty: number) {
     if (autoCompleteOnFull && totalBoxesCount >= targetQty) {
       try {
-        await completePallet(palletId);
+        const palletTag = activePallet?.tag || null;
+        const palletNotes = activePallet?.notes || null;
+        const flushRes = await flushPalletAiQueueBatches(palletId, palletCode, palletTag, palletNotes);
+        if (flushRes.normalBoxCount > 0) {
+          await completePallet(palletId);
+        }
         setActivePallet(null);
         setBoxes([]);
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        triggerSuccessBanner(`🎉 Pallet ${palletCode} đã đủ ${totalBoxesCount}/${targetQty} thùng và được TỰ ĐỘNG CHỐT!`);
+        triggerSuccessBanner(
+          flushRes.aiBoxCount > 0
+            ? `🎉 Pallet ${palletCode} đã đủ ${totalBoxesCount}/${targetQty} thùng! Đã tự động chốt & gửi lên Server giải mã!`
+            : `🎉 Pallet ${palletCode} đã đủ ${totalBoxesCount}/${targetQty} thùng và được TỰ ĐỘNG CHỐT!`
+        );
         Alert.alert(
           '🎉 TỰ ĐỘNG CHỐT PALLET THÀNH CÔNG',
-          `Pallet ${palletCode} đã đạt đủ chỉ tiêu ${totalBoxesCount}/${targetQty} thùng và đã được hệ thống TỰ ĐỘNG CHỐT thành công!\n\nBạn có thể chọn hoặc nhập STT Pallet mới để tiếp tục.`,
+          flushRes.aiBoxCount > 0
+            ? `Pallet ${palletCode} đã đạt đủ chỉ tiêu ${totalBoxesCount}/${targetQty} thùng. Hệ thống đã TỰ ĐỘNG CHỐT và gửi các đợt ảnh con dấu lên Server giải mã!\n\nBạn có thể chọn hoặc nhập STT Pallet mới để tiếp tục.`
+            : `Pallet ${palletCode} đã đạt đủ chỉ tiêu ${totalBoxesCount}/${targetQty} thùng và đã được hệ thống TỰ ĐỘNG CHỐT thành công!\n\nBạn có thể chọn hoặc nhập STT Pallet mới để tiếp tục.`,
           [
-            { text: 'Nhập STT Pallet Mới', onPress: () => openNewPalletModal() },
+            { text: 'Nhập STT Pallet Mới', onPress: () => openNewPalletModal(null) },
             { text: 'Đóng', style: 'cancel' }
           ]
         );
@@ -916,11 +1044,23 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
         {
           text: 'Chốt Pallet',
           onPress: async () => {
-            await completePallet(activePallet.id);
+            const palletId = activePallet.id;
+            const palletCode = activePallet.code;
+            const palletTag = activePallet.tag || null;
+            const palletNotes = activePallet.notes || null;
+            const flushRes = await flushPalletAiQueueBatches(palletId, palletCode, palletTag, palletNotes);
+            if (flushRes.normalBoxCount > 0) {
+              await completePallet(palletId);
+            }
             setActivePallet(null);
             setBoxes([]);
             Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-            Alert.alert('Đã chốt', `Pallet ${activePallet.code} đã hoàn thành!`);
+            Alert.alert(
+              'Đã chốt Pallet',
+              flushRes.aiBoxCount > 0
+                ? `Pallet ${palletCode} đã hoàn thành và gửi ${flushRes.aiBoxCount} thùng ảnh con dấu lên Server giải mã!`
+                : `Pallet ${palletCode} đã hoàn thành!`
+            );
           }
         }
       ]
@@ -1196,7 +1336,7 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
             <ActivityIndicator color="#ffffff" size="small" />
           ) : (
             <>
-              <Ionicons name="sparkles" size={16} color="#fbbf24" />
+              <Ionicons name="cloud-upload-outline" size={16} color="#fbbf24" />
               <Text style={styles.aiSendActionText}>Gửi giải mã</Text>
             </>
           )}
@@ -1392,14 +1532,37 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
               })()}
 
               {/* Khối lượng thùng */}
-              <View style={styles.weightInputRow}>
-                <Text style={styles.weightLabel}>Khối lượng thùng (Kg):</Text>
-                <TextInput
-                  style={styles.weightInput}
-                  value={pendingWeight}
-                  onChangeText={setPendingWeight}
-                  keyboardType="decimal-pad"
-                />
+              <View style={[styles.countInputRow, { marginBottom: 10 }]}>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <Text style={styles.weightLabel}>Khối lượng thùng (Kg):</Text>
+                  <TextInput
+                    style={styles.weightInput}
+                    value={pendingWeight}
+                    onChangeText={setPendingWeight}
+                    keyboardType="decimal-pad"
+                  />
+                </View>
+                <View style={[styles.quickChipsRow, { marginTop: 8 }]}>
+                  {['10', '15', '18', '20', '25'].map((w) => (
+                    <TouchableOpacity
+                      key={w}
+                      style={[
+                        styles.quickChip,
+                        pendingWeight === w && { backgroundColor: 'rgba(14, 165, 233, 0.2)', borderColor: '#38bdf8' }
+                      ]}
+                      onPress={() => setPendingWeight(w)}
+                    >
+                      <Text
+                        style={[
+                          styles.quickChipText,
+                          pendingWeight === w && { color: '#7dd3fc', fontWeight: '800' }
+                        ]}
+                      >
+                        {w} Kg
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
               </View>
 
               {/* Số lượng thùng (Nhân bản nhanh) */}
@@ -1479,7 +1642,9 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
                     <>
                       <Ionicons name={parseInt(pendingCount, 10) > 1 ? "copy" : "save"} size={16} color="#fff" />
                       <Text style={styles.btnConfirmSaveText}>
-                        {parseInt(pendingCount, 10) > 1 ? `Nhân Bản (${pendingCount} Thùng)` : 'Lưu Vào Pallet'}
+                        {parseInt(pendingCount, 10) > 1
+                          ? `Lưu (${pendingCount} Thùng) Vào ${activePallet?.code || ''}`
+                          : `Lưu Vào Pallet ${activePallet?.code || ''}`}
                       </Text>
                     </>
                   )}
@@ -1495,16 +1660,28 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
         visible={isManualModal}
         transparent
         animationType="fade"
-        onRequestClose={() => setIsManualModal(false)}
+        onRequestClose={() => {
+          Keyboard.dismiss();
+          setIsManualModal(false);
+        }}
       >
         <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-          style={styles.modalBackdrop}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          style={[
+            styles.modalBackdrop,
+            isKeyboardVisible && {
+              justifyContent: 'flex-start',
+              paddingTop: Platform.OS === 'android' ? 24 : 44,
+            },
+          ]}
         >
-          <View style={[styles.modalCard, { maxHeight: '88%', display: 'flex', flexDirection: 'column' }]}>
+          <View style={[styles.modalCard, { maxHeight: isKeyboardVisible ? '96%' : '88%', display: 'flex', flexDirection: 'column' }]}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Nhập Dãy Số Con Dấu Thủ Công</Text>
-              <TouchableOpacity onPress={() => setIsManualModal(false)}>
+              <TouchableOpacity onPress={() => {
+                Keyboard.dismiss();
+                setIsManualModal(false);
+              }}>
                 <Ionicons name="close" size={20} color="#94a3b8" />
               </TouchableOpacity>
             </View>
@@ -1513,7 +1690,7 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
               showsVerticalScrollIndicator={false}
               keyboardShouldPersistTaps="handled"
               style={{ flexShrink: 1 }}
-              contentContainerStyle={{ paddingBottom: 6 }}
+              contentContainerStyle={{ paddingBottom: 16 }}
             >
               <Text style={styles.inputLabel}>Dòng 1 (Ví dụ: 10102010204001):</Text>
               <TextInput
@@ -1523,6 +1700,7 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
                 placeholder="Nhập dòng 1"
                 placeholderTextColor="#64748b"
                 keyboardType="number-pad"
+                returnKeyType="next"
               />
 
               <Text style={styles.inputLabel}>Dòng 2 (Ví dụ: 1110926001471609):</Text>
@@ -1533,6 +1711,7 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
                 placeholder="Nhập dòng 2"
                 placeholderTextColor="#64748b"
                 keyboardType="number-pad"
+                returnKeyType="next"
               />
 
               {/* Live preview giải mã trong modal thủ công */}
@@ -1571,6 +1750,7 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
                 placeholder="20"
                 placeholderTextColor="#64748b"
                 keyboardType="decimal-pad"
+                returnKeyType="next"
               />
 
               <Text style={styles.inputLabel}>Số lượng thùng tạo (Nhân bản):</Text>
@@ -1581,6 +1761,8 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
                 placeholder="1"
                 placeholderTextColor="#64748b"
                 keyboardType="number-pad"
+                returnKeyType="done"
+                onSubmitEditing={() => Keyboard.dismiss()}
               />
 
               {activePallet && (
@@ -1603,23 +1785,29 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
                   </TouchableOpacity>
                 </View>
               )}
+
+              <View style={[styles.modalActions, { marginTop: 14, borderTopWidth: 1, borderTopColor: '#334155', paddingTop: 12 }]}>
+                <TouchableOpacity
+                  style={styles.modalCancelBtn}
+                  onPress={() => {
+                    Keyboard.dismiss();
+                    setIsManualModal(false);
+                  }}
+                >
+                  <Text style={styles.modalCancelText}>Hủy</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.modalSaveBtn}
+                  onPress={() => {
+                    Keyboard.dismiss();
+                    handleSaveManual();
+                  }}
+                >
+                  <Text style={styles.modalSaveText}>Lưu Thùng</Text>
+                </TouchableOpacity>
+              </View>
             </ScrollView>
-
-            <View style={[styles.modalActions, { marginTop: 12, borderTopWidth: 1, borderTopColor: '#334155', paddingTop: 12 }]}>
-              <TouchableOpacity
-                style={styles.modalCancelBtn}
-                onPress={() => setIsManualModal(false)}
-              >
-                <Text style={styles.modalCancelText}>Hủy</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={styles.modalSaveBtn}
-                onPress={handleSaveManual}
-              >
-                <Text style={styles.modalSaveText}>Lưu Thùng</Text>
-              </TouchableOpacity>
-            </View>
           </View>
         </KeyboardAvoidingView>
       </Modal>
@@ -1629,16 +1817,28 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
         visible={isNewPalletModal}
         transparent
         animationType="fade"
-        onRequestClose={() => setIsNewPalletModal(false)}
+        onRequestClose={() => {
+          Keyboard.dismiss();
+          setIsNewPalletModal(false);
+        }}
       >
         <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-          style={styles.modalBackdrop}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          style={[
+            styles.modalBackdrop,
+            isKeyboardVisible && {
+              justifyContent: 'flex-start',
+              paddingTop: Platform.OS === 'android' ? 24 : 44,
+            },
+          ]}
         >
-          <View style={[styles.modalCard, { maxHeight: '88%', display: 'flex', flexDirection: 'column' }]}>
+          <View style={[styles.modalCard, { maxHeight: isKeyboardVisible ? '96%' : '88%', display: 'flex', flexDirection: 'column' }]}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Chọn / Tạo Pallet Quét Dấu</Text>
-              <TouchableOpacity onPress={() => setIsNewPalletModal(false)}>
+              <TouchableOpacity onPress={() => {
+                Keyboard.dismiss();
+                setIsNewPalletModal(false);
+              }}>
                 <Ionicons name="close" size={20} color="#94a3b8" />
               </TouchableOpacity>
             </View>
@@ -1647,7 +1847,7 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
               showsVerticalScrollIndicator={false}
               keyboardShouldPersistTaps="handled"
               style={{ flexShrink: 1 }}
-              contentContainerStyle={{ paddingBottom: 4 }}
+              contentContainerStyle={{ paddingBottom: 16 }}
             >
               {/* HÀNG 1: STT PALLET & MỤC TIÊU SỐ THÙNG (SONG SONG) */}
               <View style={{ flexDirection: 'row', gap: 10 }}>
@@ -1660,6 +1860,7 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
                     placeholder="VD: C544, G22..."
                     placeholderTextColor="#64748b"
                     autoCapitalize="characters"
+                    returnKeyType="next"
                   />
                 </View>
 
@@ -1672,6 +1873,7 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
                     placeholder={String(defaultTargetQty)}
                     placeholderTextColor="#64748b"
                     keyboardType="number-pad"
+                    returnKeyType="next"
                   />
                 </View>
               </View>
@@ -1715,6 +1917,7 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
                 placeholder="Ví dụ: OEM-A, XK-HQ, HÀNG LOẠI 1..."
                 placeholderTextColor="#64748b"
                 autoCapitalize="characters"
+                returnKeyType="next"
               />
 
               {/* HÀNG 4: GHI CHÚ PALLET / LOT HÀNG */}
@@ -1725,24 +1928,33 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
                 onChangeText={setNewPalletNotes}
                 placeholder="Nhập ghi chú cho LOT hàng (nếu có)..."
                 placeholderTextColor="#64748b"
+                returnKeyType="done"
+                onSubmitEditing={() => Keyboard.dismiss()}
               />
+
+              {/* HÀNG 5: CÁC NÚT HÀNH ĐỘNG NẰM TRONG SCROLLVIEW ĐẢM BẢO KHÔNG BỊ BÀN PHÍM CHE */}
+              <View style={[styles.modalActions, { marginTop: 14, borderTopWidth: 1, borderTopColor: '#334155', paddingTop: 12 }]}>
+                <TouchableOpacity
+                  style={styles.modalCancelBtn}
+                  onPress={() => {
+                    Keyboard.dismiss();
+                    setIsNewPalletModal(false);
+                  }}
+                >
+                  <Text style={styles.modalCancelText}>Đóng</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.modalSaveBtn}
+                  onPress={() => {
+                    Keyboard.dismiss();
+                    handleCreateNewPallet();
+                  }}
+                >
+                  <Text style={styles.modalSaveText}>Xác Nhận Pallet</Text>
+                </TouchableOpacity>
+              </View>
             </ScrollView>
-
-            <View style={[styles.modalActions, { marginTop: 12, borderTopWidth: 1, borderTopColor: '#334155', paddingTop: 12 }]}>
-              <TouchableOpacity
-                style={styles.modalCancelBtn}
-                onPress={() => setIsNewPalletModal(false)}
-              >
-                <Text style={styles.modalCancelText}>Đóng</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={styles.modalSaveBtn}
-                onPress={handleCreateNewPallet}
-              >
-                <Text style={styles.modalSaveText}>Xác Nhận Pallet</Text>
-              </TouchableOpacity>
-            </View>
           </View>
         </KeyboardAvoidingView>
       </Modal>
@@ -1837,7 +2049,7 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
           </View>
         </View>
       </Modal>
-      {/* ── MODAL GỬI ẢNH LÊN WEB MẸ (GOOGLE DRIVE + GEMINI AI) ──── */}
+      {/* ── MODAL CHỤP CON DẤU LƯU VÀO PALLET & CHỜ GỬI GIẢI MÃ AI (GIỐNG QUÉT DẤU THƯỜNG) ──── */}
       <Modal
         visible={isSendToWebModal}
         transparent
@@ -1847,11 +2059,13 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
         }}
       >
         <View style={styles.modalBackdrop}>
-          <View style={[styles.modalCard, { maxHeight: '88%' }]}>
-            <View style={styles.modalHeader}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                <Ionicons name="sparkles" size={20} color="#fbbf24" />
-                <Text style={styles.modalTitle}>Gửi Ảnh Giải Mã</Text>
+          <View style={[styles.confirmStampCard, { maxHeight: '90%' }]}>
+            <View style={styles.confirmHeader}>
+              <View style={styles.confirmTitleRow}>
+                <Ionicons name="checkmark-circle" size={22} color="#10b981" />
+                <Text style={styles.confirmTitle}>
+                  ĐÃ CHỤP CON DẤU (STT: {activePallet?.code || ''})
+                </Text>
               </View>
               <TouchableOpacity
                 onPress={() => {
@@ -1859,82 +2073,149 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
                 }}
                 disabled={isSendingToWeb}
               >
-                <Ionicons name="close" size={20} color="#94a3b8" />
+                <Ionicons name="close" size={22} color="#94a3b8" />
               </TouchableOpacity>
             </View>
 
-            <ScrollView showsVerticalScrollIndicator={false}>
-              {/* Preview ảnh chụp con dấu */}
+            <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+              {/* Khung ảnh con dấu vừa chụp (Thay thế phần giải mã offline) */}
               {sendPhotoUri && (
-                <View style={styles.sendPreviewContainer}>
-                  <Image source={{ uri: sendPhotoUri }} style={styles.sendPreviewImage} resizeMode="contain" />
-                  <View style={styles.driveBadgeOverlay}>
-                    <Ionicons name="cloud-outline" size={12} color="#fff" />
-                    <Text style={styles.driveBadgeText}>Lưu Google Drive (CON_DAU)</Text>
+                <View style={{ backgroundColor: '#0f172a', padding: 10, borderRadius: 14, borderWidth: 1, borderColor: '#334155', marginBottom: 10 }}>
+                  <View style={[styles.sendPreviewContainer, { marginBottom: 8, height: 155 }]}>
+                    <Image
+                      source={{ uri: sendPhotoCropUri || sendPhotoUri }}
+                      style={[styles.sendPreviewImage, { height: 155 }]}
+                      resizeMode="contain"
+                    />
+                  </View>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <Text style={{ color: '#a5b4fc', fontSize: 11, fontWeight: '700' }}>
+                      📦 Lưu vào Pallet {activePallet?.code} ({boxes.length}/{activePallet?.target_qty || 30} thùng)
+                    </Text>
+                    <Text style={{ color: '#94a3b8', fontSize: 10 }}>
+                      Đủ {activePallet?.target_qty || 30} thùng sẽ gửi giải mã
+                    </Text>
                   </View>
                 </View>
               )}
 
-              <View style={styles.sendPalletInfoBox}>
-                <Text style={styles.sendPalletLabel}>STT Pallet gửi duyệt:</Text>
-                <Text style={styles.sendPalletCode}>{activePallet?.code || 'Chưa có'}</Text>
-                {activePallet?.tag && (
-                  <Text style={styles.sendPalletSub}>🏷️ Tag: {activePallet.tag}</Text>
-                )}
+              {/* Khối lượng thùng (Kg) - Giống hệt Hình 2 */}
+              <View style={[styles.countInputRow, { marginBottom: 10 }]}>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <Text style={styles.weightLabel}>Khối lượng thùng (Kg):</Text>
+                  <TextInput
+                    style={styles.weightInput}
+                    value={sendBoxWeight}
+                    onChangeText={setSendBoxWeight}
+                    keyboardType="decimal-pad"
+                  />
+                </View>
+                <View style={[styles.quickChipsRow, { marginTop: 8 }]}>
+                  {['10', '15', '18', '20', '25'].map((w) => (
+                    <TouchableOpacity
+                      key={w}
+                      style={[
+                        styles.quickChip,
+                        sendBoxWeight === w && { backgroundColor: 'rgba(14, 165, 233, 0.2)', borderColor: '#38bdf8' }
+                      ]}
+                      onPress={() => setSendBoxWeight(w)}
+                    >
+                      <Text
+                        style={[
+                          styles.quickChipText,
+                          sendBoxWeight === w && { color: '#7dd3fc', fontWeight: '800' }
+                        ]}
+                      >
+                        {w} Kg
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
               </View>
 
-              <Text style={styles.inputLabel}>Số thùng của Pallet này (nhân bản):</Text>
-              <TextInput
-                style={styles.textInput}
-                value={sendBoxCount}
-                onChangeText={setSendBoxCount}
-                keyboardType="numeric"
-                placeholder="Ví dụ: 30 hoặc 40"
-                placeholderTextColor="#64748b"
-              />
-
-              <Text style={styles.inputLabel}>Khối lượng mỗi thùng (Kg):</Text>
-              <TextInput
-                style={styles.textInput}
-                value={sendBoxWeight}
-                onChangeText={setSendBoxWeight}
-                keyboardType="numeric"
-                placeholder="20"
-                placeholderTextColor="#64748b"
-              />
-
-              <View style={styles.sendExplainBox}>
-                <Ionicons name="information-circle-outline" size={16} color="#38bdf8" />
-                <Text style={styles.sendExplainText}>
-                  Ảnh sẽ lưu tự động vào Google Drive & gửi giải mã AI đọc số, tạo thùng. Khi hoàn tất, điện thoại bạn sẽ nhận được thông báo ngay!
-                </Text>
+              {/* Số lượng thùng tạo (Nhân bản nhanh) - Giống hệt Hình 2 */}
+              <View style={styles.countInputRow}>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <Text style={styles.weightLabel}>Số lượng thùng tạo:</Text>
+                  {parseInt(sendBoxCount, 10) > 1 && (
+                    <Text style={styles.bulkNoticeTag}>Nhân bản {sendBoxCount} thùng</Text>
+                  )}
+                </View>
+                <TextInput
+                  style={[styles.countInput, parseInt(sendBoxCount, 10) > 1 && styles.countInputBulk]}
+                  value={sendBoxCount}
+                  onChangeText={setSendBoxCount}
+                  keyboardType="number-pad"
+                  placeholder="1"
+                  placeholderTextColor="#64748b"
+                />
+                {activePallet && (
+                  <View style={styles.quickChipsRow}>
+                    <TouchableOpacity
+                      style={[styles.quickChip, sendBoxCount === '1' && styles.quickChipActive]}
+                      onPress={() => setSendBoxCount('1')}
+                    >
+                      <Text style={[styles.quickChipText, sendBoxCount === '1' && styles.quickChipActiveText]}>1 thùng</Text>
+                    </TouchableOpacity>
+                    {(activePallet.target_qty || 30) - boxes.length > 0 && (
+                      <TouchableOpacity
+                        style={[
+                          styles.quickChip,
+                          sendBoxCount === String(Math.max(1, (activePallet.target_qty || 30) - boxes.length)) && styles.quickChipActive
+                        ]}
+                        onPress={() => setSendBoxCount(String(Math.max(1, (activePallet.target_qty || 30) - boxes.length)))}
+                      >
+                        <Text
+                          style={[
+                            styles.quickChipText,
+                            sendBoxCount === String(Math.max(1, (activePallet.target_qty || 30) - boxes.length)) && styles.quickChipActiveText
+                          ]}
+                        >
+                          Điền đủ ({Math.max(1, (activePallet.target_qty || 30) - boxes.length)})
+                        </Text>
+                      </TouchableOpacity>
+                    )}
+                    {['5', '10', '20'].map((c) => (
+                      <TouchableOpacity
+                        key={c}
+                        style={[styles.quickChip, sendBoxCount === c && styles.quickChipActive]}
+                        onPress={() => setSendBoxCount(c)}
+                      >
+                        <Text style={[styles.quickChipText, sendBoxCount === c && styles.quickChipActiveText]}>+{c}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                )}
               </View>
             </ScrollView>
 
-            <View style={styles.modalActions}>
+            {/* Action Buttons - Giống hệt Hình 2 */}
+            <View style={[styles.confirmActionRow, { marginTop: 12 }]}>
               <TouchableOpacity
-                style={styles.modalCancelBtn}
+                style={styles.btnRescan}
                 onPress={() => setIsSendToWebModal(false)}
                 disabled={isSendingToWeb}
               >
-                <Text style={styles.modalCancelText}>Huỷ</Text>
+                <Ionicons name="refresh" size={16} color="#94a3b8" />
+                <Text style={styles.btnRescanText}>Quét Lại</Text>
               </TouchableOpacity>
 
               <TouchableOpacity
-                style={[styles.modalSendWebBtn, isSendingToWeb && { opacity: 0.6 }]}
+                style={[styles.btnConfirmSave, isSendingToWeb && { opacity: 0.6 }]}
                 onPress={handleConfirmSendToWeb}
                 disabled={isSendingToWeb}
               >
                 {isSendingToWeb ? (
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                    <ActivityIndicator size="small" color="#fff" />
-                    <Text style={styles.modalSendWebText}>Đang gửi Drive...</Text>
-                  </View>
+                  <ActivityIndicator size="small" color="#fff" />
                 ) : (
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                    <Ionicons name="cloud-upload" size={16} color="#fff" />
-                    <Text style={styles.modalSendWebText}>Gửi giải mã</Text>
-                  </View>
+                  <>
+                    <Ionicons name="save" size={16} color="#fff" />
+                    <Text style={styles.btnConfirmSaveText}>
+                      {parseInt(sendBoxCount, 10) > 1
+                        ? `Lưu (${sendBoxCount} Thùng) Vào ${activePallet?.code || ''}`
+                        : `Lưu Vào Pallet ${activePallet?.code || ''}`}
+                    </Text>
+                  </>
                 )}
               </TouchableOpacity>
             </View>
@@ -2028,7 +2309,7 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
                             </View>
                           ) : isDecoded ? (
                             <View style={[styles.queueStatusBadge, { backgroundColor: '#312e81' }]}>
-                              <Ionicons name="sparkles" size={12} color="#a5b4fc" />
+                              <Ionicons name="checkmark-done" size={12} color="#a5b4fc" />
                               <Text style={[styles.queueStatusText, { color: '#a5b4fc' }]}>Đã đọc số</Text>
                             </View>
                           ) : isError ? (
