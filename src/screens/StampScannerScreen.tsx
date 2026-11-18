@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, ScrollView,
-  Alert, Modal, TextInput, ActivityIndicator, Vibration, Animated, Platform, AppState, NativeModules
+  Alert, Modal, TextInput, ActivityIndicator, Vibration, Animated, Platform, AppState, NativeModules, Image
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as ImageManipulator from 'expo-image-manipulator';
 import TextRecognition from '@react-native-ml-kit/text-recognition';
@@ -15,10 +16,18 @@ import {
   getBoxesByPallet, addStampBoxToPallet, deleteBox,
   getPalletByCode, activateExistingPallet, getStampDictionariesMap,
   getActiveStampFormat, cloneBoxToPallet, addStampBoxesBulkToPallet,
-  updatePalletTagAndNotes, resetPalletBoxes
+  updatePalletTagAndNotes, resetPalletBoxes, getDb
 } from '../services/database';
 import { parseStampText, decodeStamp } from '../services/stampParser';
-import { syncStampDictionariesFromSupabase } from '../services/supabase';
+import { syncStampDictionariesFromSupabase, getSupabaseClient } from '../services/supabase';
+import {
+  submitStampPhotoToQueue,
+  fetchRecentStampQueue,
+  StampQueueItemMobile,
+  uploadMobileStampImageToGoogleDrive,
+  enqueueStampPhotoForBackgroundSync,
+  processBackgroundStampQueue,
+} from '../services/stampQueueService';
 
 let VolumeManager: any = null;
 if (NativeModules && NativeModules.VolumeManager) {
@@ -43,10 +52,15 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
   const [isAppActive, setIsAppActive] = useState(AppState.currentState === 'active');
 
   useEffect(() => {
+    // Tự động kiểm tra và đẩy hàng đợi ảnh ngầm khi vào màn hình
+    processBackgroundStampQueue().catch(() => {});
+
     const sub = AppState.addEventListener('change', (nextState) => {
       const active = nextState === 'active';
       setIsAppActive(active);
-      if (!active) {
+      if (active) {
+        processBackgroundStampQueue().catch(() => {});
+      } else {
         setTorch(false);
       }
     });
@@ -132,6 +146,73 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
   const [dictMap, setDictMap] = useState<Record<string, Record<string, string>>>({});
   const [activeFormat, setActiveFormat] = useState<StampFormat | null>(null);
   const [syncingRules, setSyncingRules] = useState(false);
+
+  // Gửi ảnh lên Web Mẹ (Google Drive + Gemini AI)
+  const [isCapturingForWeb, setIsCapturingForWeb] = useState(false);
+  const [isSendToWebModal, setIsSendToWebModal] = useState(false);
+  const [sendPhotoUri, setSendPhotoUri] = useState<string | null>(null);
+  const [sendPhotoCropUri, setSendPhotoCropUri] = useState<string | null>(null);
+  const [sendBoxCount, setSendBoxCount] = useState('30');
+  const [sendBoxWeight, setSendBoxWeight] = useState('20');
+  const [isSendingToWeb, setIsSendingToWeb] = useState(false);
+
+  // Lịch sử gửi dấu lên Web Mẹ
+  const [isQueueHistoryModal, setIsQueueHistoryModal] = useState(false);
+  const [queueHistory, setQueueHistory] = useState<StampQueueItemMobile[]>([]);
+  const [isLoadingQueueHistory, setIsLoadingQueueHistory] = useState(false);
+
+  // ── Lắng nghe Realtime Web Mẹ duyệt Pallet con dấu ───────────
+  useEffect(() => {
+    let channel: any = null;
+    let isMounted = true;
+
+    async function setupQueueRealtime() {
+      try {
+        const client = await getSupabaseClient();
+        const storedSys = await AsyncStorage.getItem('config_system_code');
+        const systemCode = storedSys || 'KHO_DONG_LANH';
+
+        channel = client
+          .channel('stamp_queue_mobile_realtime')
+          .on(
+            'postgres_changes',
+            {
+              event: 'UPDATE',
+              schema: 'public',
+              table: 'stamp_scan_queue',
+              filter: `system_code=eq.${systemCode}`,
+            },
+            (payload: any) => {
+              if (!isMounted) return;
+              const updated = payload?.new;
+              if (updated && updated.status === 'approved') {
+                try {
+                  Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                  Vibration.vibrate([0, 200, 100, 200]);
+                } catch {}
+                triggerSuccessBanner(`🎉 Web Mẹ đã duyệt Pallet STT ${updated.pallet_stt} (${updated.box_count} thùng)!`);
+                Alert.alert(
+                  '🎉 Web Mẹ Đã Duyệt Pallet!',
+                  `Pallet STT ${updated.pallet_stt} (${updated.box_count} thùng) đã được văn phòng duyệt tạo thành công và lưu ảnh vào Google Drive!`,
+                  [{ text: 'Đã hiểu', style: 'default' }]
+                );
+              }
+            }
+          )
+          .subscribe();
+      } catch (err) {
+        console.warn('[RealtimeQueue] Lỗi đăng ký realtime:', err);
+      }
+    }
+
+    setupQueueRealtime();
+    return () => {
+      isMounted = false;
+      if (channel) {
+        channel.unsubscribe();
+      }
+    };
+  }, []);
 
   async function handleSyncStampRules() {
     if (syncingRules) return;
@@ -287,7 +368,10 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
         if (parsed && (parsed.stamp_line1 || parsed.stamp_line2)) {
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
           Vibration.vibrate(80);
-          setPendingStamp(parsed);
+          setPendingStamp({
+            ...parsed,
+            photoUri: recognizeUri || photo.uri,
+          });
           setPendingWeight('20');
         } else {
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
@@ -306,28 +390,54 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
     }
   }
 
-  // ── Xác nhận lưu thùng vào Pallet ─────────────────────────
+  // ── Xác nhận lưu thùng vào Pallet (Thao tác tức thời 0ms delay) ──
   async function handleConfirmSaveStampBox() {
     if (!pendingStamp || !activePallet) return;
 
     setIsSaving(true);
     try {
+      const stampDataToSave: ParsedStampData = { ...pendingStamp };
       const w = parseFloat(pendingWeight) || 20;
       const count = parseInt(pendingCount, 10) || 1;
 
+      let createdBoxIds: string[] = [];
+
+      // 1. Lưu thùng vào CSDL nội bộ SQLite ngay tức thì (dưới 20ms)
       if (count > 1) {
-        const res = await addStampBoxesBulkToPallet(activePallet.id, pendingStamp, w, count);
+        const res = await addStampBoxesBulkToPallet(activePallet.id, stampDataToSave, w, count);
+        createdBoxIds = res.newBoxes.map(b => b.id);
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         triggerSuccessBanner(`✨ Đã nhân bản ${res.addedCount} thùng con dấu vào Pallet ${activePallet.code}!`);
       } else {
-        const res = await addStampBoxToPallet(activePallet.id, pendingStamp, w);
+        const res = await addStampBoxToPallet(activePallet.id, stampDataToSave, w);
+        createdBoxIds = [res.box.id];
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        triggerSuccessBanner(`✅ Đã lưu thùng #${res.box.box_index} (Dòng 1: ${pendingStamp.stamp_line1})`);
+        triggerSuccessBanner(`✅ Đã lưu thùng #${res.box.box_index} (Dòng 1: ${stampDataToSave.stamp_line1})`);
       }
-      
+
+      // 2. Thu dọn form & reset trạng thái ngay lập tức để nhân viên tiếp tục quét thùng tiếp theo
+      const capturedPhotoUri = pendingStamp.photoUri;
+      const palletCode = activePallet.code;
       setPendingStamp(null);
       setPendingCount('1');
       await loadActivePallet();
+
+      // 3. Tải ảnh lên Google Drive CON_DAU chạy HOÀN TOÀN TRONG NỀN (không chặn màn hình)
+      if (capturedPhotoUri && createdBoxIds.length > 0) {
+        uploadMobileStampImageToGoogleDrive(capturedPhotoUri, palletCode)
+          .then(async upRes => {
+            if (upRes.success && upRes.fileId) {
+              const db = await getDb();
+              for (const bxId of createdBoxIds) {
+                await db.runAsync(
+                  `UPDATE boxes SET drive_file_id = ?, drive_view_url = ?, stamp_image_url = ? WHERE id = ?`,
+                  [upRes.fileId, upRes.viewUrl || null, upRes.viewUrl || null, bxId]
+                );
+              }
+            }
+          })
+          .catch(e => console.warn('[StampScanner] Tải ảnh lên Google Drive ngầm:', e));
+      }
     } catch (err: any) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       Alert.alert('Lỗi lưu thùng', err.message);
@@ -439,6 +549,144 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
         }
       ]
     );
+  }
+
+  // ── Gửi ảnh con dấu lên Web Mẹ (Google Drive + Gemini AI) ─
+  async function handleOpenSendToWeb() {
+    if (!activePallet) {
+      Alert.alert(
+        'Chưa có Pallet',
+        'Vui lòng chọn hoặc nhập Số Thứ Tự (STT) Pallet trước khi chụp gửi lên Web Mẹ!',
+        [
+          { text: 'Huỷ', style: 'cancel' },
+          { text: 'Nhập STT', onPress: () => setIsNewPalletModal(true) }
+        ]
+      );
+      return;
+    }
+
+    if (!cameraEnabled) {
+      setCameraEnabled(true);
+    }
+
+    if (!cameraRef.current) {
+      Alert.alert('Camera chưa sẵn sàng', 'Vui lòng căn chỉnh lại camera trước khi gửi.');
+      return;
+    }
+
+    try {
+      setIsCapturingForWeb(true);
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+
+      const photo = await cameraRef.current.takePictureAsync({
+        quality: 0.9,
+        skipProcessing: false,
+      });
+
+      if (!photo?.uri) {
+        throw new Error('Không chụp được ảnh từ camera');
+      }
+
+      // Tự động tạo bản crop theo đúng khung ngắm để AI đọc siêu nhanh (~0.5s) và không dính watermark
+      let cropUri: string | null = null;
+      try {
+        const imgW = photo.width || 0;
+        const imgH = photo.height || 0;
+        const { width: boxW, height: boxH } = cameraBoxSizeRef.current;
+        if (imgW > 100 && imgH > 100 && boxW > 0 && boxH > 0) {
+          const scale = Math.max(boxW / imgW, boxH / imgH);
+          const visW = boxW / scale;
+          const visH = boxH / scale;
+          const visX = Math.max(0, (imgW - visW) / 2);
+          const visY = Math.max(0, (imgH - visH) / 2);
+
+          const cropW = Math.min(imgW, Math.round(visW * 0.98));
+          const cropH = Math.min(imgH, Math.round(visH * 0.74));
+          const originX = Math.max(0, Math.min(imgW - cropW, Math.round(visX + (visW - cropW) / 2)));
+          const originY = Math.max(0, Math.min(imgH - cropH, Math.round(visY + (visH - cropH) / 2)));
+
+          if (cropW > 50 && cropH > 50) {
+            const cropped = await ImageManipulator.manipulateAsync(
+              photo.uri,
+              [{ crop: { originX, originY, width: cropW, height: cropH } }],
+              { compress: 0.88, format: ImageManipulator.SaveFormat.JPEG }
+            );
+            if (cropped?.uri) {
+              cropUri = cropped.uri;
+            }
+          }
+        }
+      } catch (cropErr) {
+        console.warn('Lỗi tạo crop ảnh con dấu:', cropErr);
+      }
+
+      setSendPhotoUri(photo.uri);
+      setSendPhotoCropUri(cropUri);
+      setSendBoxCount(String(activePallet.target_qty || 30));
+      setSendBoxWeight('20');
+      setIsSendToWebModal(true);
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    } catch (err: any) {
+      Alert.alert('Lỗi chụp ảnh', err?.message || 'Không thể chụp ảnh để gửi');
+    } finally {
+      setIsCapturingForWeb(false);
+    }
+  }
+
+  async function handleConfirmSendToWeb() {
+    if (!sendPhotoUri || !activePallet) return;
+
+    const count = parseInt(sendBoxCount, 10);
+    if (!count || count <= 0) {
+      Alert.alert('Lỗi', 'Số lượng thùng phải lớn hơn 0');
+      return;
+    }
+
+    const weight = parseFloat(sendBoxWeight);
+    if (isNaN(weight) || weight <= 0) {
+      Alert.alert('Lỗi', 'Khối lượng thùng không hợp lệ');
+      return;
+    }
+
+    // 1. Phản hồi TỨC THỜI (0ms): Đóng modal ngay lập tức, rung + chuông báo thành công
+    const targetPalletCode = activePallet.code;
+    const targetPhotoUri = sendPhotoUri;
+    const targetCropUri = sendPhotoCropUri;
+    const targetTag = activePallet.tag || null;
+    const targetNotes = activePallet.notes || null;
+
+    setIsSendToWebModal(false);
+    setSendPhotoUri(null);
+    setSendPhotoCropUri(null);
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    Vibration.vibrate(80);
+    triggerSuccessBanner(`🚀 Đã nhận Pallet ${targetPalletCode}! Ảnh con dấu đang được đồng bộ ngầm lên Web Mẹ.`);
+
+    // 2. Chạy ngầm trong nền (hoàn toàn không làm chậm thao tác hay khóa màn hình)
+    enqueueStampPhotoForBackgroundSync({
+      photoUri: targetPhotoUri,
+      cropPhotoUri: targetCropUri,
+      palletStt: targetPalletCode,
+      palletTag: targetTag,
+      palletNotes: targetNotes,
+      boxCount: count,
+      boxWeight: weight,
+    }).catch(err => {
+      console.warn('[StampScanner] Lỗi đưa vào hàng đợi ngầm:', err);
+    });
+  }
+
+  async function handleOpenQueueHistory() {
+    setIsQueueHistoryModal(true);
+    setIsLoadingQueueHistory(true);
+    try {
+      const list = await fetchRecentStampQueue();
+      setQueueHistory(list);
+    } catch (err: any) {
+      Alert.alert('Lỗi', 'Không thể tải lịch sử gửi: ' + err.message);
+    } finally {
+      setIsLoadingQueueHistory(false);
+    }
   }
 
   // ── Tạo Pallet mới ───────────────────────────────────────
@@ -644,6 +892,13 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
 
           <View style={styles.topActionBtns}>
             <TouchableOpacity
+              style={[styles.iconButton, { borderColor: '#818cf855', borderWidth: 1 }]}
+              onPress={handleOpenQueueHistory}
+            >
+              <Ionicons name="time-outline" size={18} color="#a5b4fc" />
+            </TouchableOpacity>
+
+            <TouchableOpacity
               style={[styles.iconButton, { borderColor: '#10b98155', borderWidth: 1 }]}
               onPress={handleSyncStampRules}
               disabled={syncingRules}
@@ -827,18 +1082,33 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
       <View style={styles.actionRow}>
         <TouchableOpacity
           style={[styles.captureActionBtn, (!activePallet || isScanning) && { opacity: 0.6 }]}
-          disabled={isScanning}
+          disabled={isScanning || isCapturingForWeb}
           onPress={handleCaptureAndRecognize}
         >
           {isScanning ? (
             <>
               <ActivityIndicator color="#ffffff" size="small" />
-              <Text style={styles.captureActionText}>Đang đọc dấu...</Text>
+              <Text style={styles.captureActionText}>Đang đọc...</Text>
             </>
           ) : (
             <>
-              <Ionicons name="camera" size={20} color="#ffffff" />
-              <Text style={styles.captureActionText}>Chụp Dấu Mực</Text>
+              <Ionicons name="camera" size={18} color="#ffffff" />
+              <Text style={styles.captureActionText}>Quét Dấu</Text>
+            </>
+          )}
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.aiSendActionBtn, (!activePallet || isCapturingForWeb) && { opacity: 0.6 }]}
+          disabled={isScanning || isCapturingForWeb}
+          onPress={handleOpenSendToWeb}
+        >
+          {isCapturingForWeb ? (
+            <ActivityIndicator color="#ffffff" size="small" />
+          ) : (
+            <>
+              <Ionicons name="sparkles" size={16} color="#fbbf24" />
+              <Text style={styles.aiSendActionText}>Gửi Web Mẹ</Text>
             </>
           )}
         </TouchableOpacity>
@@ -853,7 +1123,7 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
             setIsManualModal(true);
           }}
         >
-          <Ionicons name="keypad-outline" size={20} color="#38bdf8" />
+          <Ionicons name="keypad-outline" size={18} color="#38bdf8" />
           <Text style={styles.manualActionText}>Nhập Số</Text>
         </TouchableOpacity>
 
@@ -862,8 +1132,8 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
             style={styles.completeActionBtn}
             onPress={handleCompletePallet}
           >
-            <Ionicons name="cube-outline" size={20} color="#ffffff" />
-            <Text style={styles.completeActionText}>Chốt Pallet</Text>
+            <Ionicons name="cube-outline" size={18} color="#ffffff" />
+            <Text style={styles.completeActionText}>Chốt</Text>
           </TouchableOpacity>
         )}
       </View>
@@ -1410,6 +1680,230 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
                 ) : (
                   <Text style={styles.modalSaveText}>Xác Nhận Nhân Bản</Text>
                 )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+      {/* ── MODAL GỬI ẢNH LÊN WEB MẸ (GOOGLE DRIVE + GEMINI AI) ──── */}
+      <Modal
+        visible={isSendToWebModal}
+        transparent
+        animationType="slide"
+        onRequestClose={() => {
+          if (!isSendingToWeb) setIsSendToWebModal(false);
+        }}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={[styles.modalCard, { maxHeight: '88%' }]}>
+            <View style={styles.modalHeader}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <Ionicons name="sparkles" size={20} color="#fbbf24" />
+                <Text style={styles.modalTitle}>Gửi Ảnh Con Dấu Lên Web Mẹ</Text>
+              </View>
+              <TouchableOpacity
+                onPress={() => {
+                  if (!isSendingToWeb) setIsSendToWebModal(false);
+                }}
+                disabled={isSendingToWeb}
+              >
+                <Ionicons name="close" size={20} color="#94a3b8" />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView showsVerticalScrollIndicator={false}>
+              {/* Preview ảnh chụp con dấu */}
+              {sendPhotoUri && (
+                <View style={styles.sendPreviewContainer}>
+                  <Image source={{ uri: sendPhotoUri }} style={styles.sendPreviewImage} resizeMode="contain" />
+                  <View style={styles.driveBadgeOverlay}>
+                    <Ionicons name="cloud-outline" size={12} color="#fff" />
+                    <Text style={styles.driveBadgeText}>Lưu Google Drive (CON_DAU)</Text>
+                  </View>
+                </View>
+              )}
+
+              <View style={styles.sendPalletInfoBox}>
+                <Text style={styles.sendPalletLabel}>STT Pallet gửi duyệt:</Text>
+                <Text style={styles.sendPalletCode}>{activePallet?.code || 'Chưa có'}</Text>
+                {activePallet?.tag && (
+                  <Text style={styles.sendPalletSub}>🏷️ Tag: {activePallet.tag}</Text>
+                )}
+              </View>
+
+              <Text style={styles.inputLabel}>Số thùng của Pallet này (nhân bản):</Text>
+              <TextInput
+                style={styles.textInput}
+                value={sendBoxCount}
+                onChangeText={setSendBoxCount}
+                keyboardType="numeric"
+                placeholder="Ví dụ: 30 hoặc 40"
+                placeholderTextColor="#64748b"
+              />
+
+              <Text style={styles.inputLabel}>Khối lượng mỗi thùng (Kg):</Text>
+              <TextInput
+                style={styles.textInput}
+                value={sendBoxWeight}
+                onChangeText={setSendBoxWeight}
+                keyboardType="numeric"
+                placeholder="20"
+                placeholderTextColor="#64748b"
+              />
+
+              <View style={styles.sendExplainBox}>
+                <Ionicons name="information-circle-outline" size={16} color="#38bdf8" />
+                <Text style={styles.sendExplainText}>
+                  Ảnh sẽ lưu tự động vào Google Drive. Web Mẹ kích hoạt Gemini đọc số và duyệt tạo thùng. Khi duyệt xong, điện thoại bạn sẽ nhận được thông báo ngay!
+                </Text>
+              </View>
+            </ScrollView>
+
+            <View style={styles.modalActions}>
+              <TouchableOpacity
+                style={styles.modalCancelBtn}
+                onPress={() => setIsSendToWebModal(false)}
+                disabled={isSendingToWeb}
+              >
+                <Text style={styles.modalCancelText}>Huỷ</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.modalSendWebBtn, isSendingToWeb && { opacity: 0.6 }]}
+                onPress={handleConfirmSendToWeb}
+                disabled={isSendingToWeb}
+              >
+                {isSendingToWeb ? (
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <ActivityIndicator size="small" color="#fff" />
+                    <Text style={styles.modalSendWebText}>Đang gửi Drive...</Text>
+                  </View>
+                ) : (
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <Ionicons name="cloud-upload" size={16} color="#fff" />
+                    <Text style={styles.modalSendWebText}>Gửi Lên Web Mẹ</Text>
+                  </View>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* ── MODAL LỊCH SỬ GỬI DẤU LÊN WEB MẸ ──────────────────────── */}
+      <Modal
+        visible={isQueueHistoryModal}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setIsQueueHistoryModal(false)}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={[styles.modalCard, { maxHeight: '85%' }]}>
+            <View style={styles.modalHeader}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <Ionicons name="time" size={20} color="#a5b4fc" />
+                <Text style={styles.modalTitle}>Lịch Sử Gửi Con Dấu (Web Mẹ)</Text>
+              </View>
+              <TouchableOpacity onPress={() => setIsQueueHistoryModal(false)}>
+                <Ionicons name="close" size={20} color="#94a3b8" />
+              </TouchableOpacity>
+            </View>
+
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+              <Text style={{ color: '#94a3b8', fontSize: 12 }}>
+                Các Pallet bạn đã chụp gửi lên hàng đợi ({queueHistory.length})
+              </Text>
+              <TouchableOpacity
+                onPress={handleOpenQueueHistory}
+                disabled={isLoadingQueueHistory}
+                style={{ flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 8, paddingVertical: 4, backgroundColor: '#1e293b', borderRadius: 6 }}
+              >
+                <Ionicons name="refresh" size={13} color="#38bdf8" />
+                <Text style={{ color: '#38bdf8', fontSize: 11, fontWeight: '700' }}>Làm mới</Text>
+              </TouchableOpacity>
+            </View>
+
+            {isLoadingQueueHistory ? (
+              <View style={{ padding: 30, alignItems: 'center' }}>
+                <ActivityIndicator size="small" color="#38bdf8" />
+                <Text style={{ color: '#94a3b8', fontSize: 12, marginTop: 8 }}>Đang tải hàng đợi...</Text>
+              </View>
+            ) : queueHistory.length === 0 ? (
+              <View style={{ padding: 30, alignItems: 'center' }}>
+                <Ionicons name="file-tray-outline" size={36} color="#64748b" />
+                <Text style={{ color: '#94a3b8', fontSize: 13, marginTop: 8, textAlign: 'center' }}>
+                  Chưa có Pallet nào được gửi lên Web Mẹ.
+                </Text>
+              </View>
+            ) : (
+              <ScrollView showsVerticalScrollIndicator={false} style={{ maxHeight: 380 }}>
+                {queueHistory.map((item) => {
+                  const isApproved = item.status === 'approved';
+                  const isDecoded = item.status === 'decoded';
+                  const isError = item.status === 'error';
+
+                  return (
+                    <View key={item.id} style={styles.queueItemCard}>
+                      <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                        <View style={{ flex: 1 }}>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                            <Text style={styles.queueItemStt}>STT: {item.pallet_stt}</Text>
+                            {item.pallet_tag && (
+                              <View style={styles.queueTagBadge}>
+                                <Text style={styles.queueTagText}>{item.pallet_tag}</Text>
+                              </View>
+                            )}
+                            <Text style={{ color: '#94a3b8', fontSize: 11 }}>
+                              {item.box_count} thùng • {item.box_weight} Kg
+                            </Text>
+                          </View>
+                          {item.decoded_json?.productTitle && (
+                            <Text style={styles.queueItemProd} numberOfLines={1}>
+                              {item.decoded_json.productTitle}
+                            </Text>
+                          )}
+                          <Text style={{ color: '#64748b', fontSize: 10, marginTop: 3 }}>
+                            {new Date(item.created_at).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })}{' '}
+                            {new Date(item.created_at).toLocaleDateString('vi-VN')}
+                          </Text>
+                        </View>
+
+                        <View>
+                          {isApproved ? (
+                            <View style={[styles.queueStatusBadge, { backgroundColor: '#064e3b' }]}>
+                              <Ionicons name="checkmark-circle" size={12} color="#34d399" />
+                              <Text style={[styles.queueStatusText, { color: '#34d399' }]}>Đã duyệt</Text>
+                            </View>
+                          ) : isDecoded ? (
+                            <View style={[styles.queueStatusBadge, { backgroundColor: '#312e81' }]}>
+                              <Ionicons name="sparkles" size={12} color="#a5b4fc" />
+                              <Text style={[styles.queueStatusText, { color: '#a5b4fc' }]}>Đã đọc số</Text>
+                            </View>
+                          ) : isError ? (
+                            <View style={[styles.queueStatusBadge, { backgroundColor: '#4c0519' }]}>
+                              <Ionicons name="alert-circle" size={12} color="#f43f5e" />
+                              <Text style={[styles.queueStatusText, { color: '#f43f5e' }]}>Lỗi đọc</Text>
+                            </View>
+                          ) : (
+                            <View style={[styles.queueStatusBadge, { backgroundColor: '#451a03' }]}>
+                              <Ionicons name="time" size={12} color="#f59e0b" />
+                              <Text style={[styles.queueStatusText, { color: '#f59e0b' }]}>Chờ duyệt</Text>
+                            </View>
+                          )}
+                        </View>
+                      </View>
+                    </View>
+                  );
+                })}
+              </ScrollView>
+            )}
+
+            <View style={[styles.modalActions, { justifyContent: 'flex-end', marginTop: 12 }]}>
+              <TouchableOpacity
+                style={styles.modalCancelBtn}
+                onPress={() => setIsQueueHistoryModal(false)}
+              >
+                <Text style={styles.modalCancelText}>Đóng</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -2366,5 +2860,148 @@ const styles = StyleSheet.create({
     color: '#94a3b8',
     fontSize: 11,
     marginTop: 2,
+  },
+  aiSendActionBtn: {
+    flex: 1.1,
+    backgroundColor: '#4338ca',
+    borderWidth: 1,
+    borderColor: '#6366f1',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5,
+    paddingVertical: 11,
+    borderRadius: 10,
+  },
+  aiSendActionText: {
+    color: '#ffffff',
+    fontWeight: '800',
+    fontSize: 13,
+  },
+  sendPreviewContainer: {
+    width: '100%',
+    height: 180,
+    backgroundColor: '#020617',
+    borderRadius: 12,
+    overflow: 'hidden',
+    position: 'relative',
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  sendPreviewImage: {
+    width: '100%',
+    height: '100%',
+  },
+  driveBadgeOverlay: {
+    position: 'absolute',
+    bottom: 8,
+    left: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: 'rgba(37, 99, 235, 0.85)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+  },
+  driveBadgeText: {
+    color: '#ffffff',
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  sendPalletInfoBox: {
+    backgroundColor: '#1e293b',
+    padding: 10,
+    borderRadius: 10,
+    marginBottom: 10,
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  sendPalletLabel: {
+    color: '#94a3b8',
+    fontSize: 11,
+  },
+  sendPalletCode: {
+    color: '#38bdf8',
+    fontSize: 16,
+    fontWeight: '900',
+    marginTop: 2,
+  },
+  sendPalletSub: {
+    color: '#fbbf24',
+    fontSize: 11,
+    marginTop: 2,
+    fontWeight: '700',
+  },
+  sendExplainBox: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 6,
+    backgroundColor: 'rgba(56, 189, 248, 0.1)',
+    padding: 10,
+    borderRadius: 10,
+    marginTop: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(56, 189, 248, 0.25)',
+  },
+  sendExplainText: {
+    flex: 1,
+    color: '#bae6fd',
+    fontSize: 11,
+    lineHeight: 16,
+  },
+  modalSendWebBtn: {
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+    borderRadius: 10,
+    backgroundColor: '#4f46e5',
+  },
+  modalSendWebText: {
+    color: '#ffffff',
+    fontWeight: '800',
+    fontSize: 13,
+  },
+  queueItemCard: {
+    backgroundColor: '#1e293b',
+    padding: 10,
+    borderRadius: 10,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  queueItemStt: {
+    color: '#f8fafc',
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  queueTagBadge: {
+    backgroundColor: '#ea580c',
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 4,
+  },
+  queueTagText: {
+    color: '#ffffff',
+    fontSize: 10,
+    fontWeight: '800',
+  },
+  queueItemProd: {
+    color: '#cbd5e1',
+    fontSize: 11,
+    marginTop: 2,
+    fontWeight: '600',
+  },
+  queueStatusBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderRadius: 6,
+  },
+  queueStatusText: {
+    fontSize: 10,
+    fontWeight: '800',
   },
 });

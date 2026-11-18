@@ -2,8 +2,9 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   View, Text, StyleSheet, FlatList, TouchableOpacity,
   Alert, ActivityIndicator, Modal, ScrollView, TextInput,
-  KeyboardAvoidingView, Platform, RefreshControl
+  KeyboardAvoidingView, Platform, RefreshControl, Image
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { Pallet, BoxLabel, CloudPallet, CloudFilterCriteria } from '../types';
@@ -16,8 +17,15 @@ import {
   syncPalletToSupabase, testConnection,
   fetchCloudPallets, fetchCloudPalletBoxes,
   fetchProductsForSuggestions, ProductSuggestion,
-  syncCloudPalletsOffline, getLastOfflineSyncInfo
+  syncCloudPalletsOffline, getLastOfflineSyncInfo,
+  getSupabaseClient
 } from '../services/supabase';
+import {
+  fetchRecentStampQueue, triggerDecodeStampFromApp,
+  StampQueueItemMobile, StampQueueBackgroundItem,
+  getPendingStampQueueList, removePendingStampQueueItem,
+  syncSingleStampBackgroundItem, getDirectDriveImage
+} from '../services/stampQueueService';
 import { calculateSearchScore, matchSearch, normalizeSearchString } from '../utils/searchUtils';
 
 function normalizeText(text?: string | null): string {
@@ -83,14 +91,22 @@ export default function PalletListScreen({
   onBackToScanner: () => void;
   isActive?: boolean;
 }) {
-  // Tabs: 'pending' (Chờ đẩy lên / Chưa đồng bộ) vs 'cloud' (Đã lên Web mẹ / Đã đồng bộ)
-  const [activeTab, setActiveTab] = useState<'pending' | 'cloud'>('pending');
+  // 4 Tabs: 'pending' (Chờ đẩy) vs 'stamp_pending' (Chờ giải mã) vs 'stamp_decoded' (Đã giải mã) vs 'cloud' (Đã duyệt)
+  const [activeTab, setActiveTab] = useState<'pending' | 'stamp_pending' | 'stamp_decoded' | 'cloud'>('pending');
 
   // Local pending pallets
   const [pallets, setPallets] = useState<Pallet[]>([]);
   const [loading, setLoading] = useState(false);
   const [syncingId, setSyncingId] = useState<string | null>(null);
   const [isSyncingAll, setIsSyncingAll] = useState(false);
+
+  // Stamp queue states (Chờ giải mã & Đã giải mã)
+  const [stampQueueItems, setStampQueueItems] = useState<StampQueueItemMobile[]>([]);
+  const [offlineStampItems, setOfflineStampItems] = useState<StampQueueBackgroundItem[]>([]);
+  const [syncingOfflineStampId, setSyncingOfflineStampId] = useState<string | null>(null);
+  const [loadingStampQueue, setLoadingStampQueue] = useState(false);
+  const [decodingQueueId, setDecodingQueueId] = useState<string | null>(null);
+  const [isDecodingAllQueue, setIsDecodingAllQueue] = useState(false);
 
   // Cloud pallets (Web mẹ)
   const [cloudPallets, setCloudPallets] = useState<CloudPallet[]>([]);
@@ -126,10 +142,108 @@ export default function PalletListScreen({
     palletsLengthRef.current = pallets.length;
   }, [pallets.length]);
 
+  async function loadStampQueue(isSilent = false) {
+    if (!isSilent) setLoadingStampQueue(true);
+    try {
+      const [list, offlineList] = await Promise.all([
+        fetchRecentStampQueue(),
+        getPendingStampQueueList(),
+      ]);
+      setStampQueueItems(list);
+      setOfflineStampItems(offlineList);
+    } catch (e: any) {
+      console.warn('loadStampQueue error:', e);
+    } finally {
+      if (!isSilent) setLoadingStampQueue(false);
+    }
+  }
+
+  async function handleSyncSingleOfflineStamp(item: StampQueueBackgroundItem) {
+    setSyncingOfflineStampId(item.id);
+    try {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      const ok = await syncSingleStampBackgroundItem(item.id);
+      if (ok) {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        Alert.alert('Thành công', `Đã tải ảnh Pallet ${item.palletStt} lên Google Drive & đưa vào hàng đợi AI!`);
+        await loadStampQueue(true);
+      } else {
+        Alert.alert('Chưa gửi được', 'Vui lòng kiểm tra lại kết nối mạng hoặc thử lại sau.');
+      }
+    } catch (err: any) {
+      Alert.alert('Lỗi gửi', err?.message || 'Có lỗi xảy ra khi gửi ảnh');
+    } finally {
+      setSyncingOfflineStampId(null);
+    }
+  }
+
+  async function handleDeleteOfflineStamp(item: StampQueueBackgroundItem) {
+    Alert.alert(
+      `Xóa ảnh Pallet ${item.palletStt}?`,
+      'Ảnh con dấu này đang lưu tạm trên máy chưa gửi lên. Bạn có chắc muốn xóa không?',
+      [
+        { text: 'Hủy', style: 'cancel' },
+        {
+          text: 'Xóa',
+          style: 'destructive',
+          onPress: async () => {
+            await removePendingStampQueueItem(item.id);
+            const updated = await getPendingStampQueueList();
+            setOfflineStampItems(updated);
+          },
+        },
+      ]
+    );
+  }
+
+  async function handleDecodeItem(id: string) {
+    setDecodingQueueId(id);
+    try {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      const res = await triggerDecodeStampFromApp([id]);
+      if (res.success) {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        Alert.alert('Thành công', 'Đã giải mã xong con dấu bằng AI!');
+        await loadStampQueue(true);
+      } else {
+        Alert.alert('Không thể giải mã', res.message || 'Lỗi khi giải mã con dấu');
+      }
+    } catch (err: any) {
+      Alert.alert('Lỗi', err.message);
+    } finally {
+      setDecodingQueueId(null);
+    }
+  }
+
+  async function handleDecodeAllPending() {
+    const pendingIds = stampQueueItems
+      .filter(i => i.status === 'pending' || i.status === 'error')
+      .map(i => i.id);
+    if (pendingIds.length === 0) return;
+
+    setIsDecodingAllQueue(true);
+    try {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      const res = await triggerDecodeStampFromApp(pendingIds);
+      if (res.success) {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        Alert.alert('Thành công', `Đã giải mã xong ${res.decodedCount || pendingIds.length} pallet!`);
+        await loadStampQueue(true);
+      } else {
+        Alert.alert('Lỗi giải mã', res.message || 'Không thể giải mã');
+      }
+    } catch (err: any) {
+      Alert.alert('Lỗi', err.message);
+    } finally {
+      setIsDecodingAllQueue(false);
+    }
+  }
+
   useEffect(() => {
     (async () => {
       const hasCachedCloud = await loadCacheFirst();
       void loadLocalPallets();
+      void loadStampQueue(true);
       // Chỉ tự tải từ máy chủ nếu máy chưa từng có dữ liệu lưu sẵn (lần đầu cài app).
       // Nếu đã có dữ liệu trong máy, mở tức thì 0ms và để người dùng chủ động bấm nút "Tải dữ liệu" mỗi ca làm việc.
       if (!hasCachedCloud) {
@@ -141,13 +255,43 @@ export default function PalletListScreen({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Lắng nghe Realtime bảng stamp_scan_queue để tự động nhảy số khi AI đọc xong hoặc Web Mẹ duyệt
+  useEffect(() => {
+    let channel: any = null;
+    (async () => {
+      try {
+        const client = await getSupabaseClient();
+        const storedSys = await AsyncStorage.getItem('config_system_code');
+        const systemCode = storedSys || 'KHO_DONG_LANH';
+        channel = client
+          .channel('mobile_stamp_queue_realtime_tab')
+          .on(
+            'postgres_changes',
+            { event: '*', schema: 'public', table: 'stamp_scan_queue', filter: `system_code=eq.${systemCode}` },
+            () => {
+              void loadStampQueue(true);
+            }
+          )
+          .subscribe();
+      } catch (err) {
+        console.warn('Lỗi đăng ký Realtime stamp_scan_queue:', err);
+      }
+    })();
+
+    return () => {
+      if (channel) {
+        void getSupabaseClient().then(c => c.removeChannel(channel)).catch(() => {});
+      }
+    };
+  }, []);
+
   // Tự động làm mới danh sách Pallet từ SQLite ngay lập tức khi người dùng chuyển sang tab Pallet Kho
   useEffect(() => {
     if (!isActive) return;
     const timer = setTimeout(() => {
       void loadLocalPallets(palletsLengthRef.current > 0);
+      void loadStampQueue(true);
       void checkNetwork();
-      setActiveTab('pending');
     }, 0);
     return () => clearTimeout(timer);
   }, [isActive]);
@@ -243,8 +387,11 @@ export default function PalletListScreen({
 
   async function handleRefreshAll() {
     checkNetwork();
-    await loadLocalPallets();
-    await loadCloudPallets();
+    await Promise.all([
+      loadLocalPallets(),
+      loadStampQueue(),
+      loadCloudPallets(),
+    ]);
   }
 
   // ── SYNC ACTIONS (TAB 1) ──────────────────────────────────
@@ -854,6 +1001,16 @@ export default function PalletListScreen({
   const modalTag = selectedPallet?.tag || selectedCloudPallet?.tag;
   const modalWeight = selectedPallet ? selectedPallet.total_weight : selectedCloudPallet?.total_weight || 0;
 
+  const stampPendingList = useMemo(() => {
+    return stampQueueItems.filter(i => i.status === 'pending' || i.status === 'error');
+  }, [stampQueueItems]);
+  const stampDecodedList = useMemo(() => {
+    return stampQueueItems.filter(i => i.status === 'decoded');
+  }, [stampQueueItems]);
+  const stampPendingCount = offlineStampItems.length + stampPendingList.length;
+  const stampDecodedCount = stampDecodedList.length;
+  const cloudCount = cloudPallets.length;
+
   return (
     <View style={styles.container}>
       {/* ── TOP BAR ───────────────────────────────── */}
@@ -876,38 +1033,82 @@ export default function PalletListScreen({
         </TouchableOpacity>
       </View>
 
-      {/* ── TAB SWITCHER ──────────────────────────── */}
+      {/* ── 4 TAB SWITCHER: Chờ đẩy, Chờ giải mã, Đã giải mã, Đã duyệt ─────────── */}
       <View style={styles.tabContainer}>
-        <TouchableOpacity
-          style={[styles.tabButton, activeTab === 'pending' && styles.tabButtonActive]}
-          onPress={() => setActiveTab('pending')}
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.tabScrollContent}
         >
-          <Ionicons
-            name="time-outline"
-            size={18}
-            color={activeTab === 'pending' ? '#38bdf8' : '#94a3b8'}
-          />
-          <Text style={[styles.tabButtonText, activeTab === 'pending' && styles.tabButtonTextActive]}>
-            Chờ đẩy lên ({pendingCount})
-          </Text>
-        </TouchableOpacity>
+          {/* Tab 1: Chờ đẩy */}
+          <TouchableOpacity
+            style={[styles.tabButton, activeTab === 'pending' && styles.tabButtonActivePending]}
+            onPress={() => setActiveTab('pending')}
+          >
+            <Ionicons
+              name="time-outline"
+              size={15}
+              color={activeTab === 'pending' ? '#fbbf24' : '#94a3b8'}
+            />
+            <Text style={[styles.tabButtonText, activeTab === 'pending' && styles.tabTextPendingActive]}>
+              Chờ đẩy ({pendingCount})
+            </Text>
+          </TouchableOpacity>
 
-        <TouchableOpacity
-          style={[styles.tabButton, activeTab === 'cloud' && styles.tabButtonActive]}
-          onPress={() => {
-            setActiveTab('cloud');
-            if (cloudPallets.length === 0) loadCloudPallets();
-          }}
-        >
-          <Ionicons
-            name="cloud-done-outline"
-            size={18}
-            color={activeTab === 'cloud' ? '#38bdf8' : '#94a3b8'}
-          />
-          <Text style={[styles.tabButtonText, activeTab === 'cloud' && styles.tabButtonTextActive]}>
-            Đã lên Web mẹ ({cloudPallets.length})
-          </Text>
-        </TouchableOpacity>
+          {/* Tab 2: Chờ giải mã */}
+          <TouchableOpacity
+            style={[styles.tabButton, activeTab === 'stamp_pending' && styles.tabButtonActiveStampPending]}
+            onPress={() => {
+              setActiveTab('stamp_pending');
+              void loadStampQueue(stampQueueItems.length > 0);
+            }}
+          >
+            <Ionicons
+              name="hourglass-outline"
+              size={15}
+              color={activeTab === 'stamp_pending' ? '#fb923c' : '#94a3b8'}
+            />
+            <Text style={[styles.tabButtonText, activeTab === 'stamp_pending' && styles.tabTextStampPendingActive]}>
+              Chờ giải mã ({stampPendingCount})
+            </Text>
+          </TouchableOpacity>
+
+          {/* Tab 3: Đã giải mã */}
+          <TouchableOpacity
+            style={[styles.tabButton, activeTab === 'stamp_decoded' && styles.tabButtonActiveStampDecoded]}
+            onPress={() => {
+              setActiveTab('stamp_decoded');
+              void loadStampQueue(stampQueueItems.length > 0);
+            }}
+          >
+            <Ionicons
+              name="sparkles"
+              size={15}
+              color={activeTab === 'stamp_decoded' ? '#c084fc' : '#94a3b8'}
+            />
+            <Text style={[styles.tabButtonText, activeTab === 'stamp_decoded' && styles.tabTextStampDecodedActive]}>
+              Đã giải mã ({stampDecodedCount})
+            </Text>
+          </TouchableOpacity>
+
+          {/* Tab 4: Đã duyệt */}
+          <TouchableOpacity
+            style={[styles.tabButton, activeTab === 'cloud' && styles.tabButtonActiveCloud]}
+            onPress={() => {
+              setActiveTab('cloud');
+              if (cloudPallets.length === 0) void loadCloudPallets();
+            }}
+          >
+            <Ionicons
+              name="checkmark-circle-outline"
+              size={15}
+              color={activeTab === 'cloud' ? '#4ade80' : '#94a3b8'}
+            />
+            <Text style={[styles.tabButtonText, activeTab === 'cloud' && styles.tabTextCloudActive]}>
+              Đã duyệt ({cloudCount})
+            </Text>
+          </TouchableOpacity>
+        </ScrollView>
       </View>
 
       {/* ── TAB 1: CHỜ ĐẨY LÊN (PALLET KHO LOCAL) ───────────────────────────── */}
@@ -1047,7 +1248,351 @@ export default function PalletListScreen({
         </View>
       )}
 
-      {/* ── TAB 2: ĐÃ LÊN WEB MẸ (ĐỒNG BỘ VỚI WEB MẸ & KHÔNG ĐƯỢC XÓA) ───────────── */}
+      {/* ── TAB 2: CHỜ GIẢI MÃ ────────────────────────────────────────────── */}
+      {activeTab === 'stamp_pending' && (
+        <View style={{ flex: 1 }}>
+          {stampPendingCount > 0 ? (
+            <View style={[styles.syncAllCard, { backgroundColor: '#431407', borderColor: '#ea580c' }]}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.syncAllTitle}>Có {stampPendingCount} Pallet trong hàng đợi</Text>
+                <Text style={styles.syncAllSub}>
+                  {offlineStampItems.length > 0 ? `${offlineStampItems.length} chưa gửi (Offline) • ` : ''}
+                  {stampPendingList.length} đã gửi chờ AI giải mã
+                </Text>
+              </View>
+              {stampPendingList.length > 0 && (
+                <TouchableOpacity
+                  style={[styles.syncAllBtn, { backgroundColor: '#ea580c' }]}
+                  disabled={isDecodingAllQueue}
+                  onPress={handleDecodeAllPending}
+                >
+                  {isDecodingAllQueue ? (
+                    <ActivityIndicator color="#fff" size="small" />
+                  ) : (
+                    <>
+                      <Ionicons name="sparkles" size={16} color="#fff" />
+                      <Text style={styles.syncAllBtnText}>GIẢI MÃ TẤT CẢ</Text>
+                    </>
+                  )}
+                </TouchableOpacity>
+              )}
+            </View>
+          ) : null}
+
+          {loadingStampQueue ? (
+            <ActivityIndicator style={{ marginTop: 40 }} size="large" color="#f97316" />
+          ) : stampPendingCount === 0 ? (
+            <View style={styles.emptyContainer}>
+              <Ionicons name="checkmark-circle-outline" size={54} color="#10b981" />
+              <Text style={styles.emptyTitle}>Không có Pallet nào chờ giải mã</Text>
+              <Text style={styles.emptySub}>
+                Tất cả ảnh con dấu gửi lên đã được AI giải mã xong hoặc chưa có lượt chụp con dấu mới.
+              </Text>
+              <TouchableOpacity
+                style={[styles.viewCloudBtn, { borderColor: '#a855f7' }]}
+                onPress={() => setActiveTab('stamp_decoded')}
+              >
+                <Ionicons name="sparkles" size={16} color="#c084fc" />
+                <Text style={[styles.viewCloudBtnText, { color: '#c084fc' }]}>Xem danh sách Đã giải mã ({stampDecodedCount})</Text>
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <ScrollView
+              contentContainerStyle={{ padding: 16 }}
+              refreshControl={
+                <RefreshControl
+                  refreshing={loadingStampQueue}
+                  onRefresh={() => loadStampQueue(false)}
+                  tintColor="#f97316"
+                  colors={['#f97316']}
+                />
+              }
+            >
+              {/* 1. Danh sách Pallet chụp Offline (Chưa gửi được lên server) */}
+              {offlineStampItems.map(item => {
+                const isSyncing = syncingOfflineStampId === item.id;
+                const imgSrc = item.cropPhotoUri || item.photoUri;
+
+                return (
+                  <View key={item.id} style={[styles.palletCard, { borderColor: '#d97706', backgroundColor: '#1c1917' }]}>
+                    <View style={styles.palletCardHeader}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1, flexWrap: 'wrap' }}>
+                        <Ionicons name="phone-portrait-outline" size={18} color="#fbbf24" style={{ marginRight: 6 }} />
+                        <Text style={[styles.palletCode, { color: '#fef3c7' }]}>STT: {item.palletStt}</Text>
+                        {item.palletTag ? (
+                          <View style={styles.tagBadge}>
+                            <Text style={styles.tagBadgeText}>🏷️ {item.palletTag}</Text>
+                          </View>
+                        ) : null}
+                      </View>
+                      <View style={[styles.syncBadge, { backgroundColor: '#78350f', borderColor: '#d97706', borderWidth: 1 }]}>
+                        <Text style={[styles.syncBadgeText, { color: '#fde68a' }]}>
+                          ⚠️ Chưa gửi (Lưu trên máy)
+                        </Text>
+                      </View>
+                    </View>
+
+                    <View style={[styles.palletCardBody, { flexDirection: 'row', gap: 12 }]}>
+                      {imgSrc ? (
+                        <Image
+                          source={{ uri: imgSrc }}
+                          style={{ width: 72, height: 72, borderRadius: 8, backgroundColor: '#0c0a09' }}
+                          resizeMode="cover"
+                        />
+                      ) : (
+                        <View style={{ width: 72, height: 72, borderRadius: 8, backgroundColor: '#0c0a09', alignItems: 'center', justifyContent: 'center' }}>
+                          <Ionicons name="image-outline" size={24} color="#78716c" />
+                        </View>
+                      )}
+                      <View style={{ flex: 1, justifyContent: 'space-between' }}>
+                        <Text style={styles.palletMeta}>
+                          Số lượng: <Text style={{ color: '#22c55e', fontWeight: '900' }}>{item.boxCount || 30}</Text> thùng • {item.boxWeight || 20} Kg
+                        </Text>
+                        <Text style={{ color: '#f59e0b', fontSize: 11, fontWeight: '600' }}>
+                          Chờ có mạng để gửi lên Google Drive & AI
+                        </Text>
+                        <Text style={styles.palletDate}>
+                          Chụp lúc: {item.createdAt?.slice(0, 16).replace('T', ' ')}
+                        </Text>
+                      </View>
+                    </View>
+
+                    <View style={[styles.palletCardFooter, { backgroundColor: 'rgba(120, 53, 15, 0.3)' }]}>
+                      <TouchableOpacity
+                        style={{ padding: 6 }}
+                        onPress={() => handleDeleteOfflineStamp(item)}
+                      >
+                        <Ionicons name="trash-outline" size={18} color="#f87171" />
+                      </TouchableOpacity>
+
+                      <TouchableOpacity
+                        style={[styles.syncSingleBtn, { backgroundColor: '#d97706' }]}
+                        disabled={isSyncing}
+                        onPress={() => handleSyncSingleOfflineStamp(item)}
+                      >
+                        {isSyncing ? (
+                          <ActivityIndicator color="#fff" size="small" />
+                        ) : (
+                          <>
+                            <Ionicons name="cloud-upload-outline" size={14} color="#fff" />
+                            <Text style={styles.syncSingleText}>Gửi ngay</Text>
+                          </>
+                        )}
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                );
+              })}
+
+              {/* 2. Danh sách Pallet đã gửi lên Server (Chờ AI giải mã) */}
+              {stampPendingList.map(item => {
+                const isDecoding = decodingQueueId === item.id;
+                const isErr = item.status === 'error';
+                const imgSrc = getDirectDriveImage(item.image_url, item.cropped_image_url, item.drive_file_id);
+
+                return (
+                  <View key={item.id} style={[styles.palletCard, isErr && { borderColor: '#ef4444' }]}>
+                    <View style={styles.palletCardHeader}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1, flexWrap: 'wrap' }}>
+                        <Ionicons name="cube" size={20} color="#fb923c" style={{ marginRight: 8 }} />
+                        <Text style={styles.palletCode}>STT: {item.pallet_stt}</Text>
+                        {item.pallet_tag ? (
+                          <View style={styles.tagBadge}>
+                            <Text style={styles.tagBadgeText}>🏷️ {item.pallet_tag}</Text>
+                          </View>
+                        ) : null}
+                      </View>
+                      <View style={[
+                        styles.syncBadge,
+                        { backgroundColor: isErr ? '#7f1d1d' : '#7c2d12' }
+                      ]}>
+                        <Text style={[
+                          styles.syncBadgeText,
+                          { color: isErr ? '#fca5a5' : '#fdba74' }
+                        ]}>
+                          {isErr ? '❌ Lỗi đọc AI' : '⏳ Đã gửi (Chờ AI đọc)'}
+                        </Text>
+                      </View>
+                    </View>
+
+                    <View style={[styles.palletCardBody, { flexDirection: 'row', gap: 12 }]}>
+                      {imgSrc ? (
+                        <Image
+                          source={{ uri: imgSrc }}
+                          style={{ width: 72, height: 72, borderRadius: 8, backgroundColor: '#1e293b' }}
+                          resizeMode="cover"
+                        />
+                      ) : (
+                        <View style={{ width: 72, height: 72, borderRadius: 8, backgroundColor: '#1e293b', alignItems: 'center', justifyContent: 'center' }}>
+                          <Ionicons name="image-outline" size={24} color="#64748b" />
+                        </View>
+                      )}
+                      <View style={{ flex: 1, justifyContent: 'space-between' }}>
+                        <Text style={styles.palletMeta}>
+                          Số lượng: <Text style={{ color: '#22c55e', fontWeight: '900' }}>{item.box_count}</Text> thùng • {item.box_weight} Kg
+                        </Text>
+                        {isErr && item.error_message ? (
+                          <Text style={{ color: '#f87171', fontSize: 11, marginTop: 2 }} numberOfLines={2}>
+                            ⚠️ {item.error_message}
+                          </Text>
+                        ) : (
+                          <Text style={{ color: '#94a3b8', fontSize: 11 }}>
+                            Đã tải lên Google Drive (CON_DAU)
+                          </Text>
+                        )}
+                        <Text style={styles.palletDate}>
+                          Gửi lúc: {item.created_at?.slice(0, 16).replace('T', ' ')}
+                        </Text>
+                      </View>
+                    </View>
+
+                    <View style={styles.palletCardFooter}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={{ color: '#64748b', fontSize: 11 }}>
+                          Người gửi: {item.created_by_name || 'Kho'}
+                        </Text>
+                      </View>
+                      <TouchableOpacity
+                        style={[styles.syncSingleBtn, { backgroundColor: '#ea580c' }]}
+                        disabled={isDecoding}
+                        onPress={() => handleDecodeItem(item.id)}
+                      >
+                        {isDecoding ? (
+                          <ActivityIndicator color="#fff" size="small" />
+                        ) : (
+                          <>
+                            <Ionicons name="sparkles" size={14} color="#fff" />
+                            <Text style={styles.syncSingleText}>Giải mã AI</Text>
+                          </>
+                        )}
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                );
+              })}
+            </ScrollView>
+          )}
+        </View>
+      )}
+
+      {/* ── TAB 3: ĐÃ GIẢI MÃ ────────────────────────────────────────────── */}
+      {activeTab === 'stamp_decoded' && (
+        <View style={{ flex: 1 }}>
+          {loadingStampQueue ? (
+            <ActivityIndicator style={{ marginTop: 40 }} size="large" color="#a855f7" />
+          ) : stampDecodedList.length === 0 ? (
+            <View style={styles.emptyContainer}>
+              <Ionicons name="sparkles-outline" size={54} color="#a855f7" />
+              <Text style={styles.emptyTitle}>Chưa có Pallet nào được giải mã</Text>
+              <Text style={styles.emptySub}>
+                Khi AI giải mã xong ảnh con dấu, kết quả nhận diện sẽ xuất hiện ngay tại đây.
+              </Text>
+            </View>
+          ) : (
+            <FlatList
+              data={stampDecodedList}
+              keyExtractor={item => item.id}
+              contentContainerStyle={{ padding: 16 }}
+              refreshControl={
+                <RefreshControl
+                  refreshing={loadingStampQueue}
+                  onRefresh={() => loadStampQueue(false)}
+                  tintColor="#a855f7"
+                  colors={['#a855f7']}
+                />
+              }
+              renderItem={({ item }) => {
+                const dec = item.decoded_json || {};
+                const prodTitle = dec.productTitle || dec.special12Name || 'Sản phẩm con dấu';
+                const imgSrc = getDirectDriveImage(item.image_url, item.cropped_image_url, item.drive_file_id);
+
+                return (
+                  <View style={[styles.palletCard, { borderColor: '#7e22ce' }]}>
+                    <View style={styles.palletCardHeader}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1, flexWrap: 'wrap' }}>
+                        <Ionicons name="sparkles" size={18} color="#c084fc" style={{ marginRight: 6 }} />
+                        <Text style={[styles.palletCode, { color: '#e9d5ff' }]}>STT: {item.pallet_stt}</Text>
+                        {item.pallet_tag ? (
+                          <View style={styles.tagBadge}>
+                            <Text style={styles.tagBadgeText}>🏷️ {item.pallet_tag}</Text>
+                          </View>
+                        ) : null}
+                      </View>
+                      <View style={[styles.syncBadge, { backgroundColor: '#581c87' }]}>
+                        <Text style={[styles.syncBadgeText, { color: '#e9d5ff' }]}>
+                          ✨ Đã giải mã AI
+                        </Text>
+                      </View>
+                    </View>
+
+                    <View style={styles.palletCardBody}>
+                      <View style={{ flexDirection: 'row', gap: 10, marginBottom: 8 }}>
+                        {imgSrc ? (
+                          <Image
+                            source={{ uri: imgSrc }}
+                            style={{ width: 68, height: 68, borderRadius: 8, backgroundColor: '#1e293b' }}
+                            resizeMode="cover"
+                          />
+                        ) : null}
+                        <View style={{ flex: 1 }}>
+                          <Text style={{ color: '#fff', fontSize: 13, fontWeight: '700', lineHeight: 18 }} numberOfLines={2}>
+                            {prodTitle}
+                          </Text>
+                          <Text style={{ color: '#38bdf8', fontSize: 11, fontWeight: '700', marginTop: 3 }}>
+                            {item.box_count} thùng • {item.box_weight} Kg
+                          </Text>
+                        </View>
+                      </View>
+
+                      {/* 2 Dòng số đọc được */}
+                      <View style={{ backgroundColor: '#0f172a', padding: 8, borderRadius: 8, gap: 4, borderWidth: 1, borderColor: '#334155' }}>
+                        <Text style={{ color: '#cbd5e1', fontSize: 11, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' }}>
+                          <Text style={{ color: '#94a3b8' }}>Dòng 1: </Text>
+                          <Text style={{ color: '#38bdf8', fontWeight: 'bold' }}>{item.stamp_line1 || '---'}</Text>
+                        </Text>
+                        <Text style={{ color: '#cbd5e1', fontSize: 11, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' }}>
+                          <Text style={{ color: '#94a3b8' }}>Dòng 2: </Text>
+                          <Text style={{ color: '#a78bfa', fontWeight: 'bold' }}>{item.stamp_line2 || '---'}</Text>
+                        </Text>
+                      </View>
+
+                      {/* Thông tin giải mã chi tiết */}
+                      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 6 }}>
+                        {dec.spec ? (
+                          <Text style={{ color: '#94a3b8', fontSize: 11 }}>Quy cách: <Text style={{ color: '#cbd5e1' }}>{dec.spec}</Text></Text>
+                        ) : null}
+                        {dec.packagingDateStr ? (
+                          <Text style={{ color: '#94a3b8', fontSize: 11 }}>Đóng gói: <Text style={{ color: '#cbd5e1' }}>{dec.packagingDateStr}</Text></Text>
+                        ) : null}
+                        {dec.rawMaterialDateStr ? (
+                          <Text style={{ color: '#94a3b8', fontSize: 11 }}>Nhập NL: <Text style={{ color: '#cbd5e1' }}>{dec.rawMaterialDateStr}</Text></Text>
+                        ) : null}
+                        {dec.provinceName ? (
+                          <Text style={{ color: '#94a3b8', fontSize: 11 }}>Vùng: <Text style={{ color: '#cbd5e1' }}>{dec.provinceName}</Text></Text>
+                        ) : null}
+                      </View>
+                    </View>
+
+                    <View style={[styles.palletCardFooter, { backgroundColor: 'rgba(88, 28, 135, 0.2)' }]}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+                        <Ionicons name="time" size={14} color="#a855f7" />
+                        <Text style={{ color: '#c084fc', fontSize: 11, fontWeight: '700' }}>
+                          Chờ Web Mẹ duyệt tạo Lot
+                        </Text>
+                      </View>
+                      <Text style={{ color: '#64748b', fontSize: 10 }}>
+                        {item.created_at?.slice(0, 16).replace('T', ' ')}
+                      </Text>
+                    </View>
+                  </View>
+                );
+              }}
+            />
+          )}
+        </View>
+      )}
+
+      {/* ── TAB 4: ĐÃ DUYỆT (ĐỒNG BỘ VỚI WEB MẸ & KHÔNG ĐƯỢC XÓA) ───────────── */}
       {activeTab === 'cloud' && (
         <View style={{ flex: 1 }}>
           {/* Offline Status & Quick Sync Bar */}
@@ -2043,20 +2588,21 @@ const styles = StyleSheet.create({
 
   /* ── Tab Switcher ── */
   tabContainer: {
-    flexDirection: 'row',
     backgroundColor: '#1e293b',
-    paddingHorizontal: 12,
     paddingVertical: 8,
     borderBottomWidth: 1,
     borderBottomColor: '#334155',
+  },
+  tabScrollContent: {
+    paddingHorizontal: 10,
     gap: 8,
   },
   tabButton: {
-    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 9,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
     borderRadius: 8,
     backgroundColor: '#0f172a',
     gap: 6,
@@ -2067,13 +2613,45 @@ const styles = StyleSheet.create({
     backgroundColor: '#1e3a8a',
     borderColor: '#38bdf8',
   },
+  tabButtonActivePending: {
+    backgroundColor: 'rgba(245, 158, 11, 0.16)',
+    borderColor: '#f59e0b',
+  },
+  tabButtonActiveStampPending: {
+    backgroundColor: 'rgba(249, 115, 22, 0.18)',
+    borderColor: '#f97316',
+  },
+  tabButtonActiveStampDecoded: {
+    backgroundColor: 'rgba(168, 85, 247, 0.18)',
+    borderColor: '#c084fc',
+  },
+  tabButtonActiveCloud: {
+    backgroundColor: 'rgba(16, 185, 129, 0.18)',
+    borderColor: '#34d399',
+  },
   tabButtonText: {
     color: '#94a3b8',
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: '700',
   },
   tabButtonTextActive: {
     color: '#38bdf8',
+    fontWeight: '900',
+  },
+  tabTextPendingActive: {
+    color: '#fbbf24',
+    fontWeight: '900',
+  },
+  tabTextStampPendingActive: {
+    color: '#fb923c',
+    fontWeight: '900',
+  },
+  tabTextStampDecodedActive: {
+    color: '#d8b4fe',
+    fontWeight: '900',
+  },
+  tabTextCloudActive: {
+    color: '#4ade80',
     fontWeight: '900',
   },
 

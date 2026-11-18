@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   Modal,
   View,
@@ -11,6 +11,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../../contexts/AuthContext';
+import { DriveImageSettingsModal } from '../operations/DriveImageSettingsModal';
 
 export type AppTab =
   | 'scanner'
@@ -36,8 +37,13 @@ export const FullMenuModal: React.FC<FullMenuModalProps> = ({
 }) => {
   const insets = useSafeAreaInsets();
   const { user, logout } = useAuth();
+  const [isDriveSettingsOpen, setIsDriveSettingsOpen] = useState(false);
 
-  const handleSelect = (tab: AppTab) => {
+  const handleSelect = (tab: AppTab, action?: string) => {
+    if (action === 'drive_settings') {
+      setIsDriveSettingsOpen(true);
+      return;
+    }
     onSelectTab(tab);
     onClose();
   };
@@ -46,6 +52,7 @@ export const FullMenuModal: React.FC<FullMenuModalProps> = ({
     title: string;
     items: {
       tab: AppTab;
+      action?: string;
       label: string;
       desc: string;
       icon: keyof typeof Ionicons.glyphMap;
@@ -121,6 +128,15 @@ export const FullMenuModal: React.FC<FullMenuModalProps> = ({
       items: [
         {
           tab: 'settings',
+          action: 'drive_settings',
+          label: 'Cài Đặt Hình Ảnh & Drive',
+          desc: 'Xóa ảnh gốc trên máy (1/3/7 ngày), Google Drive & Timemark',
+          icon: 'images',
+          color: '#34d399',
+          bgColor: 'rgba(52, 211, 153, 0.15)',
+        },
+        {
+          tab: 'settings',
           label: 'Cài Đặt & Phân Hệ',
           desc: 'Chọn phân hệ kho làm việc, máy in & cấu hình',
           icon: 'settings',
@@ -179,12 +195,12 @@ export const FullMenuModal: React.FC<FullMenuModalProps> = ({
 
                     return (
                       <TouchableOpacity
-                        key={item.tab}
-                        onPress={() => handleSelect(item.tab)}
+                        key={item.action || item.tab}
+                        onPress={() => handleSelect(item.tab, item.action)}
                         style={[
                           styles.menuItemRow,
                           !isLast && styles.menuItemBorder,
-                          isSelected && styles.menuItemRowActive,
+                          isSelected && !item.action && styles.menuItemRowActive,
                         ]}
                         activeOpacity={0.7}
                       >
@@ -240,6 +256,12 @@ export const FullMenuModal: React.FC<FullMenuModalProps> = ({
           </ScrollView>
         </View>
       </View>
+
+      {/* Modal Cài Đặt Hình Ảnh & Google Drive (Có thể mở trực tiếp từ Menu) */}
+      <DriveImageSettingsModal
+        visible={isDriveSettingsOpen}
+        onClose={() => setIsDriveSettingsOpen(false)}
+      />
     </Modal>
   );
 };

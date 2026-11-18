@@ -18,6 +18,7 @@ import {
   syncOfflineAdjustmentProposals,
   getSubmittedAdjustmentProposals,
 } from '../services/warehouseAdjustmentService';
+import { DriveImageSettingsModal } from '../components/operations/DriveImageSettingsModal';
 
 export default function SettingsScreen({ onBack }: { onBack: () => void }) {
   const { user, logout } = useAuth();
@@ -50,6 +51,7 @@ export default function SettingsScreen({ onBack }: { onBack: () => void }) {
   // Advanced Technician Server Config
   const [showAdvancedConfig, setShowAdvancedConfig] = useState(false);
   const [showKeyPlain, setShowKeyPlain] = useState(false);
+  const [isDriveModalVisible, setIsDriveModalVisible] = useState(false);
   const versionTapCountRef = useRef(0);
   const lastTapTimeRef = useRef(0);
 
@@ -332,6 +334,32 @@ export default function SettingsScreen({ onBack }: { onBack: () => void }) {
         </TouchableOpacity>
       </View>
 
+      {/* ── CÀI ĐẶT HÌNH ẢNH & GOOGLE DRIVE ───────── */}
+      <View style={[styles.card, { borderColor: '#10b981', borderWidth: 1 }]}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <Ionicons name="images" size={20} color="#34d399" />
+            <Text style={[styles.sectionTitle, { color: '#34d399', marginBottom: 0 }]}>
+              HÌNH ẢNH & GOOGLE DRIVE
+            </Text>
+          </View>
+        </View>
+
+        <Text style={{ color: '#94a3b8', fontSize: 12, lineHeight: 18, marginBottom: 12 }}>
+          Cấu hình Webhook Google Drive, tùy chọn tự động xóa ảnh gốc trên máy sau 1/3/7/14/30 ngày và đóng dấu thông tin Timemark lên ảnh.
+        </Text>
+
+        <TouchableOpacity 
+          style={{ backgroundColor: '#10b981', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 12, borderRadius: 12 }}
+          onPress={() => setIsDriveModalVisible(true)}
+        >
+          <Ionicons name="settings-outline" size={18} color="#fff" />
+          <Text style={{ color: '#fff', fontWeight: '700', fontSize: 13 }}>
+            Cài Đặt Hình Ảnh & Google Drive
+          </Text>
+        </TouchableOpacity>
+      </View>
+
       {/* ── NÚT TỔNG HỢP: TẢI TOÀN BỘ DỮ LIỆU KHO (ALL-IN-ONE) ───────── */}
       <View style={[styles.card, { borderColor: '#38bdf8', borderWidth: 1.5, backgroundColor: '#071626' }]}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 }}>
@@ -580,6 +608,13 @@ export default function SettingsScreen({ onBack }: { onBack: () => void }) {
           </Text>
         )}
       </TouchableOpacity>
+
+      {/* Modal Cài Đặt Hình Ảnh & Google Drive */}
+      <DriveImageSettingsModal
+        visible={isDriveModalVisible}
+        onClose={() => setIsDriveModalVisible(false)}
+        systemCode={systemCode}
+      />
     </ScrollView>
   );
 }

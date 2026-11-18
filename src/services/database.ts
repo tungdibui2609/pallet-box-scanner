@@ -182,6 +182,15 @@ async function initTables(db: SQLite.SQLiteDatabase) {
   try {
     await db.execAsync(`ALTER TABLE boxes ADD COLUMN stamp_line2 TEXT;`);
   } catch {}
+  try {
+    await db.execAsync(`ALTER TABLE boxes ADD COLUMN drive_file_id TEXT;`);
+  } catch {}
+  try {
+    await db.execAsync(`ALTER TABLE boxes ADD COLUMN drive_view_url TEXT;`);
+  } catch {}
+  try {
+    await db.execAsync(`ALTER TABLE boxes ADD COLUMN stamp_image_url TEXT;`);
+  } catch {}
 }
 
 // ── Pallet operations ─────────────────────────────────────────
@@ -448,14 +457,17 @@ export async function addStampBoxToPallet(
     `INSERT INTO boxes (
       id, pallet_id, sku, lot_code, product_name, box_index, weight, unit,
       shift_group, region, production_date, packaging_date, spec, raw_text,
-      scan_type, stamp_line1, stamp_line2, sync_status, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'Kg', ?, ?, ?, ?, ?, ?, 'stamp', ?, ?, 'pending', ?)`,
+      scan_type, stamp_line1, stamp_line2, drive_file_id, drive_view_url, stamp_image_url,
+      sync_status, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'Kg', ?, ?, ?, ?, ?, ?, 'stamp', ?, ?, ?, ?, ?, 'pending', ?)`,
     [
       id, palletId, cleanSku, stampData.stamp_line2 || 'STAMP',
       productName, boxIdx, weight,
       decoded.factory_name || '', decoded.province_name || '',
       decoded.inbound_date || '', decoded.packaging_date || '', specText,
-      stampData.raw_text, stampData.stamp_line1, stampData.stamp_line2, now
+      stampData.raw_text, stampData.stamp_line1, stampData.stamp_line2,
+      stampData.drive_file_id || null, stampData.drive_view_url || null, stampData.drive_view_url || null,
+      now
     ]
   );
 
@@ -493,6 +505,9 @@ export async function addStampBoxToPallet(
     scan_type: 'stamp',
     stamp_line1: stampData.stamp_line1,
     stamp_line2: stampData.stamp_line2,
+    drive_file_id: stampData.drive_file_id,
+    drive_view_url: stampData.drive_view_url,
+    stamp_image_url: stampData.drive_view_url,
     raw_text: stampData.raw_text,
     sync_status: 'pending',
     created_at: now
@@ -660,14 +675,17 @@ export async function addStampBoxesBulkToPallet(
       `INSERT INTO boxes (
         id, pallet_id, sku, lot_code, product_name, box_index, weight, unit,
         shift_group, region, production_date, packaging_date, spec, raw_text,
-        scan_type, stamp_line1, stamp_line2, sync_status, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'Kg', ?, ?, ?, ?, ?, ?, 'stamp', ?, ?, 'pending', ?)`,
+        scan_type, stamp_line1, stamp_line2, drive_file_id, drive_view_url, stamp_image_url,
+        sync_status, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'Kg', ?, ?, ?, ?, ?, ?, 'stamp', ?, ?, ?, ?, ?, 'pending', ?)`,
       [
         newId, palletId, cleanSku, stampData.stamp_line2 || 'STAMP',
         productName, newIdx, weight,
         decoded.factory_name || '', decoded.province_name || '',
         decoded.inbound_date || '', decoded.packaging_date || '', specText,
-        stampData.raw_text, stampData.stamp_line1, stampData.stamp_line2, now
+        stampData.raw_text, stampData.stamp_line1, stampData.stamp_line2,
+        stampData.drive_file_id || null, stampData.drive_view_url || null, stampData.drive_view_url || null,
+        now
       ]
     );
 
@@ -694,6 +712,9 @@ export async function addStampBoxesBulkToPallet(
       scan_type: 'stamp',
       stamp_line1: stampData.stamp_line1,
       stamp_line2: stampData.stamp_line2,
+      drive_file_id: stampData.drive_file_id,
+      drive_view_url: stampData.drive_view_url,
+      stamp_image_url: stampData.drive_view_url,
       raw_text: stampData.raw_text,
       sync_status: 'pending',
       created_at: now

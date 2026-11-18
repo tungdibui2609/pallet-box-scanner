@@ -35,6 +35,9 @@ export interface BoxLabel {
   scan_type?: 'label' | 'stamp';
   stamp_line1?: string;
   stamp_line2?: string;
+  drive_file_id?: string;
+  drive_view_url?: string;
+  stamp_image_url?: string;
   is_special_12?: boolean;
   special_12_code?: string;
   special_12_name?: string;
@@ -128,6 +131,9 @@ export interface ParsedStampData {
   raw_text: string;
   detected_lines: string[];
   decoded?: DecodedStampDetails;
+  photoUri?: string;
+  drive_file_id?: string;
+  drive_view_url?: string;
 }
 
 export interface ParsedLabelData {

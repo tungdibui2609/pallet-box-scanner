@@ -249,6 +249,10 @@ export async function syncPalletToSupabase(pallet: Pallet, boxes: BoxLabel[]): P
           production_date: b.scan_type === 'stamp' ? null : (b.production_date || null),
           packaging_date: b.packaging_date || null,
           raw_material_date: b.scan_type === 'stamp' ? (b.raw_material_date || null) : null,
+          // Đính kèm ảnh con dấu Google Drive của đợt quét này
+          drive_file_id: b.drive_file_id || null,
+          drive_view_url: b.drive_view_url || null,
+          stamp_image_url: b.stamp_image_url || b.drive_view_url || null,
         }
       };
       if (companyId) row.company_id = companyId;
