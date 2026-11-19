@@ -26,6 +26,7 @@ import {
   syncOfflineAdjustmentProposals,
 } from '../../services/warehouseAdjustmentService';
 import { useAuth } from '../../contexts/AuthContext';
+import WarehouseMovementHistoryView from './WarehouseMovementHistoryView';
 
 interface WarehouseDraftListModalProps {
   visible: boolean;
@@ -53,6 +54,7 @@ export default function WarehouseDraftListModal({
   // State cho Tab Đã gửi duyệt
   const [submittedList, setSubmittedList] = useState<SubmittedProposal[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
+  const [historyViewMode, setHistoryViewMode] = useState<'LIST' | 'MOVEMENTS'>('LIST');
   const [historyFilter, setHistoryFilter] = useState<'ALL' | 'PENDING' | 'APPROVED' | 'REJECTED'>('ALL');
   const [historySearchQuery, setHistorySearchQuery] = useState<string>('');
   const [expandedProposalId, setExpandedProposalId] = useState<string | null>(null);
@@ -493,7 +495,67 @@ export default function WarehouseDraftListModal({
             </>
           ) : (
             <View style={{ flex: 1 }}>
-              {/* Thanh lọc trạng thái & nút tải lại */}
+              {/* Thanh chuyển đổi: Danh sách phiếu vs Biến động SP + nút tải lại */}
+              <View style={styles.historyModeBar}>
+                <TouchableOpacity
+                  onPress={() => {
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                    setHistoryViewMode('LIST');
+                  }}
+                  style={[
+                    styles.historyModeBtn,
+                    historyViewMode === 'LIST' && styles.historyModeBtnActiveList,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.historyModeText,
+                      historyViewMode === 'LIST' && { color: '#38bdf8' },
+                    ]}
+                  >
+                    📋 Danh sách phiếu
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  onPress={() => {
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                    setHistoryViewMode('MOVEMENTS');
+                  }}
+                  style={[
+                    styles.historyModeBtn,
+                    historyViewMode === 'MOVEMENTS' && styles.historyModeBtnActiveMove,
+                  ]}
+                >
+                  <Ionicons
+                    name="stats-chart-outline"
+                    size={13}
+                    color={historyViewMode === 'MOVEMENTS' ? '#34d399' : '#94a3b8'}
+                  />
+                  <Text
+                    style={[
+                      styles.historyModeText,
+                      historyViewMode === 'MOVEMENTS' && { color: '#34d399' },
+                    ]}
+                  >
+                    Biến động SP
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  onPress={loadSubmittedProposals}
+                  style={styles.refreshHistoryBtn}
+                  disabled={loadingHistory}
+                >
+                  <Ionicons name="refresh" size={16} color="#38bdf8" />
+                </TouchableOpacity>
+              </View>
+
+              {historyViewMode === 'MOVEMENTS' ? (
+                <WarehouseMovementHistoryView submittedList={submittedList} />
+              ) : (
+                <>
+              {/* Thanh lọc trạng thái */}
               <View style={styles.historyFilterBar}>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6 }}>
                   {(
@@ -526,14 +588,6 @@ export default function WarehouseDraftListModal({
                     </TouchableOpacity>
                   ))}
                 </ScrollView>
-
-                <TouchableOpacity
-                  onPress={loadSubmittedProposals}
-                  style={styles.refreshHistoryBtn}
-                  disabled={loadingHistory}
-                >
-                  <Ionicons name="refresh" size={16} color="#38bdf8" />
-                </TouchableOpacity>
               </View>
 
               {/* Ô tìm kiếm lịch sử theo mã vị trí */}
@@ -832,6 +886,8 @@ export default function WarehouseDraftListModal({
                   })
                 )}
               </ScrollView>
+                </>
+              )}
             </View>
           )}
         </View>
@@ -1158,6 +1214,38 @@ const styles = StyleSheet.create({
   },
   tabTextActive: {
     color: '#f59e0b',
+    fontWeight: '800',
+  },
+  historyModeBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 8,
+  },
+  historyModeBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 5,
+    paddingVertical: 7,
+    paddingHorizontal: 10,
+    borderRadius: 10,
+    backgroundColor: '#1e293b',
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  historyModeBtnActiveList: {
+    backgroundColor: '#0c4a6e55',
+    borderColor: '#38bdf8',
+  },
+  historyModeBtnActiveMove: {
+    backgroundColor: '#064e3b55',
+    borderColor: '#10b981',
+  },
+  historyModeText: {
+    color: '#94a3b8',
+    fontSize: 11.5,
     fontWeight: '800',
   },
   historyFilterBar: {
