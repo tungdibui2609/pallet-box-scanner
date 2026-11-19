@@ -114,6 +114,9 @@ export default function WarehouseAdjustmentDraftModal({
 
   const noteInputRef = useRef<any>(null);
   const scrollViewRef = useRef<any>(null);
+  const subCardYRef = useRef<number>(0);
+  const addSectionYRef = useRef<number>(0);
+  const addPanelYRef = useRef<number>(0);
   const [isKeyboardVisible, setIsKeyboardVisible] = useState<boolean>(false);
   const [isInputFocused, setIsInputFocused] = useState<boolean>(false);
   const [isNoteFocused, setIsNoteFocused] = useState<boolean>(false);
@@ -246,6 +249,19 @@ export default function WarehouseAdjustmentDraftModal({
 
   const handleInputBlur = useCallback(() => {
     setIsInputFocused(false);
+  }, []);
+
+  const handleProductSearchFocus = useCallback(() => {
+    setIsInputFocused(true);
+    const scrollToSearch = () => {
+      const targetY = subCardYRef.current + addSectionYRef.current + addPanelYRef.current;
+      scrollViewRef.current?.scrollTo({
+        y: Math.max(0, targetY - 8),
+        animated: true,
+      });
+    };
+    setTimeout(scrollToSearch, 80);
+    setTimeout(scrollToSearch, 260);
   }, []);
 
   const handleNoteFocus = useCallback(() => {
@@ -672,7 +688,10 @@ export default function WarehouseAdjustmentDraftModal({
             ref={scrollViewRef}
             style={styles.scrollBody}
             contentContainerStyle={{
-              paddingBottom: isNoteFocused ? 380 : (isInputFocused ? 280 : 30),
+              paddingBottom: Math.max(
+                isKeyboardVisible ? keyboardHeight + 140 : 30,
+                isNoteFocused ? 380 : isInputFocused ? 340 : 30
+              ),
             }}
             keyboardShouldPersistTaps="handled"
           >
@@ -979,7 +998,12 @@ export default function WarehouseAdjustmentDraftModal({
             )}
 
             {actionType === 'SET_QTY' && (
-              <View style={styles.subCard}>
+              <View
+                style={styles.subCard}
+                onLayout={(e) => {
+                  subCardYRef.current = e.nativeEvent.layout.y;
+                }}
+              >
                 {hasMultipleProducts ? (
                   /* ── GIAO DIỆN CHỈNH SỬA TỪNG DÒNG SẢN PHẨM CON ── */
                   <View>
@@ -1130,7 +1154,12 @@ export default function WarehouseAdjustmentDraftModal({
                 )}
 
                 {/* Nút & Khung Thêm 1 sản phẩm mới vào Lot hiện tại (hoặc tạo Lot mới cho ô trống) */}
-                <View style={[styles.addProductSection, !isCurrentlyOccupied && subItems.length === 0 && { marginTop: 4, borderTopWidth: 0, paddingTop: 0 }]}>
+                <View
+                  style={[styles.addProductSection, !isCurrentlyOccupied && subItems.length === 0 && { marginTop: 4, borderTopWidth: 0, paddingTop: 0 }]}
+                  onLayout={(e) => {
+                    addSectionYRef.current = e.nativeEvent.layout.y;
+                  }}
+                >
                     <TouchableOpacity
                       onPress={handleOpenAddProductPanel}
                       style={[
@@ -1149,16 +1178,35 @@ export default function WarehouseAdjustmentDraftModal({
                     </TouchableOpacity>
 
                     {showAddProductPanel && (
-                      <View style={styles.addProductPanel}>
-                        <Text style={styles.addProductPanelTitle}>
-                          CHỌN SẢN PHẨM THÊM VÀO LOT:
-                        </Text>
+                      <View
+                        style={styles.addProductPanel}
+                        onLayout={(e) => {
+                          addPanelYRef.current = e.nativeEvent.layout.y;
+                        }}
+                      >
+                        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+                          <Text style={[styles.addProductPanelTitle, { marginBottom: 0 }]}>
+                            CHỌN SẢN PHẨM THÊM VÀO LOT:
+                          </Text>
+                          {isKeyboardVisible && (
+                            <TouchableOpacity
+                              onPress={() => {
+                                Keyboard.dismiss();
+                                setIsInputFocused(false);
+                              }}
+                              style={styles.dismissKeyboardBtn}
+                            >
+                              <Ionicons name="chevron-down-circle" size={13} color="#38bdf8" />
+                              <Text style={styles.dismissKeyboardBtnText}>Ẩn phím</Text>
+                            </TouchableOpacity>
+                          )}
+                        </View>
                         <View style={styles.productSearchBox}>
                           <Ionicons name="search" size={15} color="#64748b" />
                           <TextInput
                             style={styles.productSearchInput}
                             value={productQuery}
-                            onFocus={handleInputFocus}
+                            onFocus={handleProductSearchFocus}
                             onBlur={handleInputBlur}
                             onChangeText={(txt) => {
                               setProductQuery(txt);
@@ -1175,7 +1223,11 @@ export default function WarehouseAdjustmentDraftModal({
                         </View>
 
                         {!selectedNewProduct ? (
-                          <ScrollView style={styles.productListBox} nestedScrollEnabled>
+                          <ScrollView
+                            style={styles.productListBox}
+                            nestedScrollEnabled
+                            keyboardShouldPersistTaps="handled"
+                          >
                             {loadingCatalog ? (
                               <Text style={styles.productEmptyText}>Đang tải danh mục sản phẩm...</Text>
                             ) : filteredProductSuggestions.length === 0 ? (
