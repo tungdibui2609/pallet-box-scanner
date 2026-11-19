@@ -618,24 +618,19 @@ export async function submitStampPhotoToQueue(params: SubmitStampQueueParams): P
  * Lấy danh sách các ảnh con dấu gửi gần đây của người dùng
  */
 export async function fetchRecentStampQueue(): Promise<StampQueueItemMobile[]> {
-  try {
-    const client = await getSupabaseClient();
-    const storedSys = await AsyncStorage.getItem('config_system_code');
-    const systemCode = storedSys || 'KHO_DONG_LANH';
+  const client = await getSupabaseClient();
+  const storedSys = await AsyncStorage.getItem('config_system_code');
+  const systemCode = storedSys || 'KHO_DONG_LANH';
 
-    const { data, error } = await client
-      .from('stamp_scan_queue')
-      .select('id, pallet_stt, pallet_tag, pallet_notes, box_count, box_weight, image_url, cropped_image_url, drive_file_id, drive_view_url, status, stamp_line1, stamp_line2, decoded_json, created_at, created_by_name, error_message, approved_lot_code')
-      .eq('system_code', systemCode)
-      .order('created_at', { ascending: false })
-      .limit(60);
+  const { data, error } = await client
+    .from('stamp_scan_queue')
+    .select('id, pallet_stt, pallet_tag, pallet_notes, box_count, box_weight, image_url, cropped_image_url, drive_file_id, drive_view_url, status, stamp_line1, stamp_line2, decoded_json, created_at, created_by_name, error_message, approved_lot_code')
+    .eq('system_code', systemCode)
+    .order('created_at', { ascending: false })
+    .limit(60);
 
-    if (error) throw error;
-    return (data || []) as StampQueueItemMobile[];
-  } catch (e) {
-    console.warn('[StampQueue] Lỗi tải lịch sử hàng đợi:', e);
-    return [];
-  }
+  if (error) throw error;
+  return (data || []) as StampQueueItemMobile[];
 }
 
 function parseMobileGeminiKeys(raw: string): string[] {

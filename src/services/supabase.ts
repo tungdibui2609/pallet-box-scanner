@@ -987,10 +987,13 @@ export interface ProductSuggestion {
   name: string;
   sku: string;
   aliases?: string | null;
+  unit?: string | null;
+  available_units?: string[];
 }
 
 /**
  * Tải danh mục sản phẩm từ Web mẹ để gợi ý autocomplete khi người dùng tìm kiếm / gõ tắt
+ * Tự động đồng bộ các đơn vị tính cài đặt trên Web mẹ (đơn vị cơ sở + đơn vị quy đổi từ bảng product_units)
  */
 export async function fetchProductsForSuggestions(): Promise<ProductSuggestion[]> {
   try {
@@ -998,25 +1001,87 @@ export async function fetchProductsForSuggestions(): Promise<ProductSuggestion[]
     const storedSys = await AsyncStorage.getItem('config_system_code');
     const systemCode = storedSys || 'KHO_DONG_LANH';
 
-    const { data, error } = await client
-      .from('products')
-      .select('id, name, sku, aliases')
-      .eq('system_type', systemCode)
-      .order('name');
+    // 1. Fetch song song products, product_units, units để ghép đúng danh sách đơn vị như Web mẹ
+    const [prodRes, pUnitRes, unitRes] = await Promise.all([
+      client
+        .from('products')
+        .select('id, name, sku, aliases, unit')
+        .eq('system_type', systemCode)
+        .order('name'),
+      client
+        .from('product_units')
+        .select('product_id, unit_id, conversion_rate'),
+      client
+        .from('units')
+        .select('id, name'),
+    ]);
 
-    let products = data;
-    if (error || !products || products.length === 0) {
+    let products = prodRes.data;
+    if (prodRes.error || !products || products.length === 0) {
       const { data: allData } = await client
         .from('products')
-        .select('id, name, sku, aliases')
+        .select('id, name, sku, aliases, unit')
         .order('name')
         .limit(500);
       products = allData || [];
     }
 
-    if (products && products.length > 0) {
-      saveProductsToCache(products).catch(e => console.warn('Cache products error:', e));
-      return products;
+    const pUnits = pUnitRes.data || [];
+    const unitList = unitRes.data || [];
+    const unitMap = new Map<string, string>();
+    unitList.forEach((u: any) => {
+      if (u.id && u.name) unitMap.set(u.id, u.name.trim());
+    });
+
+    const pUnitsByProd = new Map<string, Array<{ unit_name: string; rate: number }>>();
+    pUnits.forEach((pu: any) => {
+      const uName = unitMap.get(pu.unit_id);
+      if (pu.product_id && uName) {
+        if (!pUnitsByProd.has(pu.product_id)) {
+          pUnitsByProd.set(pu.product_id, []);
+        }
+        pUnitsByProd.get(pu.product_id)!.push({
+          unit_name: uName,
+          rate: Number(pu.conversion_rate) || 1,
+        });
+      }
+    });
+
+    const enriched: ProductSuggestion[] = (products || []).map((p: any) => {
+      const baseUnit = (p.unit || 'Kg').trim();
+      const unitsList: string[] = [];
+
+      // 1. Đơn vị quy đổi cài đặt trên Web mẹ (VD: Thùng (20kg))
+      const pus = pUnitsByProd.get(p.id) || [];
+      pus.forEach(pu => {
+        const uName = pu.unit_name.split('(')[0].trim();
+        const normU = uName.toLowerCase();
+        if (normU === baseUnit.toLowerCase()) return;
+        const rate = pu.rate;
+        const label = rate > 0 ? `${uName} (${rate}kg)` : uName;
+        if (!unitsList.includes(label)) {
+          unitsList.push(label);
+        }
+      });
+
+      // 2. Đơn vị cơ sở cài đặt trên Web mẹ (VD: Kg)
+      if (!unitsList.includes(baseUnit)) {
+        unitsList.push(baseUnit);
+      }
+
+      return {
+        id: p.id,
+        name: p.name,
+        sku: p.sku,
+        aliases: p.aliases,
+        unit: p.unit,
+        available_units: unitsList,
+      };
+    });
+
+    if (enriched.length > 0) {
+      saveProductsToCache(enriched).catch(e => console.warn('Cache products error:', e));
+      return enriched;
     }
 
     return await getProductsFromCache();

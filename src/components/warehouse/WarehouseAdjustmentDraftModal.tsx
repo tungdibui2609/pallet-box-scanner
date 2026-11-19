@@ -87,6 +87,17 @@ export function extractSubItemsFromPosition(pos: any): ProposalSubItem[] {
   return [];
 }
 
+function getProductAvailableUnits(prod?: ProductSuggestion | null, fallbackUnit = 'Thùng'): string[] {
+  if (!prod) return [fallbackUnit];
+  if (Array.isArray(prod.available_units) && prod.available_units.length > 0) {
+    return prod.available_units;
+  }
+  if (prod.unit && prod.unit.trim()) {
+    return [prod.unit.trim()];
+  }
+  return [fallbackUnit];
+}
+
 export default function WarehouseAdjustmentDraftModal({
   visible,
   onClose,
@@ -1176,6 +1187,8 @@ export default function WarehouseAdjustmentDraftModal({
                                   onPress={() => {
                                     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
                                     setSelectedNewProduct(prod);
+                                    const units = getProductAvailableUnits(prod, position?.unit || 'Thùng');
+                                    setNewProductUnit(units[0]);
                                   }}
                                   style={styles.productSuggestionItem}
                                 >
@@ -1183,7 +1196,7 @@ export default function WarehouseAdjustmentDraftModal({
                                     {prod.name}
                                   </Text>
                                   <Text style={styles.productSuggestionSku}>
-                                    SKU: {prod.sku || '---'}{prod.aliases ? ` • ${prod.aliases}` : ''}
+                                    SKU: {prod.sku || '---'}{prod.aliases ? ` • ${prod.aliases}` : ''}{prod.available_units && prod.available_units.length > 0 ? ` • ĐVT: ${prod.available_units.join(', ')}` : prod.unit ? ` • ĐVT: ${prod.unit}` : ''}
                                   </Text>
                                 </TouchableOpacity>
                               ))
@@ -1234,25 +1247,29 @@ export default function WarehouseAdjustmentDraftModal({
                             </View>
 
                             <View style={styles.unitQuickRow}>
-                              {['Thùng (20kg)', 'Thùng (9.6kg)', 'Thùng', 'Kg', 'Khay'].map((u) => (
-                                <TouchableOpacity
-                                  key={u}
-                                  onPress={() => setNewProductUnit(u)}
-                                  style={[
-                                    styles.unitQuickChip,
-                                    newProductUnit === u && styles.unitQuickChipActive,
-                                  ]}
-                                >
-                                  <Text
+                              {(() => {
+                                // CHỈ hiển thị đúng các đơn vị được cài đặt trên Web mẹ cho sản phẩm này (VD: Thùng (20kg), Kg)
+                                const units = getProductAvailableUnits(selectedNewProduct, position?.unit || 'Thùng');
+                                return units.map((u) => (
+                                  <TouchableOpacity
+                                    key={u}
+                                    onPress={() => setNewProductUnit(u)}
                                     style={[
-                                      styles.unitQuickChipText,
-                                      newProductUnit === u && { color: '#38bdf8', fontWeight: '800' },
+                                      styles.unitQuickChip,
+                                      newProductUnit === u && styles.unitQuickChipActive,
                                     ]}
                                   >
-                                    {u}
-                                  </Text>
-                                </TouchableOpacity>
-                              ))}
+                                    <Text
+                                      style={[
+                                        styles.unitQuickChipText,
+                                        newProductUnit === u && { color: '#38bdf8', fontWeight: '800' },
+                                      ]}
+                                    >
+                                      {u}
+                                    </Text>
+                                  </TouchableOpacity>
+                                ));
+                              })()}
                             </View>
 
                             <TouchableOpacity

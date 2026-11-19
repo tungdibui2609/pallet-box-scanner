@@ -76,6 +76,46 @@ function matchDate(dateStr?: string | null, filterStr?: string | null): boolean 
   return false;
 }
 
+function getTodayDateStr(): string {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function getYesterdayDateStr(): string {
+  const d = new Date();
+  d.setDate(d.getDate() - 1);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function formatDisplayDate(ymd: string): string {
+  if (!ymd) return '';
+  const parts = ymd.split('-');
+  if (parts.length === 3) {
+    return `${parts[2]}/${parts[1]}/${parts[0]}`;
+  }
+  return ymd;
+}
+
+function getLocalDateYmd(isoStr?: string | null): string {
+  if (!isoStr) return '';
+  try {
+    const d = new Date(isoStr);
+    if (isNaN(d.getTime())) return '';
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  } catch {
+    return '';
+  }
+}
+
 export interface ProductSuggestionItem {
   product: ProductSuggestion;
   score: number;
@@ -128,9 +168,25 @@ export default function PalletListScreen({
   const [showModalProductSuggestions, setShowModalProductSuggestions] = useState(false);
 
   // Lịch chọn ngày (Calendar DatePicker)
-  const [calendarTargetField, setCalendarTargetField] = useState<'packagingDate' | 'productionDate' | null>(null);
+  const [calendarTargetField, setCalendarTargetField] = useState<'packagingDate' | 'productionDate' | 'stampDecodedDate' | null>(null);
+  const [stampDecodedDateFilter, setStampDecodedDateFilter] = useState<string>(''); // YYYY-MM-DD hoặc ''
   const [calendarYear, setCalendarYear] = useState<number>(new Date().getFullYear());
   const [calendarMonth, setCalendarMonth] = useState<number>(new Date().getMonth());
+
+  function openCalendarPickerForStampDecoded() {
+    let initYear = new Date().getFullYear();
+    let initMonth = new Date().getMonth();
+    if (stampDecodedDateFilter) {
+      const match = stampDecodedDateFilter.match(/^(\d{4})-(\d{2})/);
+      if (match) {
+        initYear = parseInt(match[1], 10) || initYear;
+        initMonth = (parseInt(match[2], 10) || 1) - 1;
+      }
+    }
+    setCalendarYear(initYear);
+    setCalendarMonth(initMonth);
+    setCalendarTargetField('stampDecodedDate');
+  }
 
   // Connection status
   const [connectionStatus, setConnectionStatus] = useState<string>('Đang kiểm tra...');
@@ -165,19 +221,18 @@ export default function PalletListScreen({
 
     if (!isSilent) setLoadingStampQueue(true);
     try {
-      // 2. Fetch danh sách online kèm timeout 2.5s (tránh bị treo 10-15s khi offline/mất mạng)
-      const fetchWithTimeout = Promise.race([
-        fetchRecentStampQueue(),
-        new Promise<StampQueueItemMobile[]>((resolve) => setTimeout(() => resolve([]), 2500))
-      ]);
-
-      const [list, offlineList] = await Promise.all([
-        fetchWithTimeout,
+      // 2. Fetch danh sách online từ Supabase (nếu lỗi mạng trả về null để không đè mất cache)
+      const [listResult, offlineList] = await Promise.all([
+        fetchRecentStampQueue().catch((err) => {
+          console.warn('Lỗi fetchRecentStampQueue:', err);
+          return null;
+        }),
         getPendingStampQueueList(),
       ]);
 
-      if (list && list.length > 0) {
-        setStampQueueItems(list);
+      if (listResult !== null) {
+        // Fetch thành công từ server (kể cả khi server trả về [] do Web Mẹ đã xóa hết)
+        setStampQueueItems(listResult);
       }
       setOfflineStampItems(offlineList);
 
@@ -185,10 +240,10 @@ export default function PalletListScreen({
       if (offlineList.length > 0) {
         processBackgroundStampQueue(() => {
           void Promise.all([
-            fetchRecentStampQueue(),
+            fetchRecentStampQueue().catch(() => null),
             getPendingStampQueueList(),
           ]).then(([newList, newOffline]) => {
-            if (newList && newList.length > 0) setStampQueueItems(newList);
+            if (newList !== null) setStampQueueItems(newList);
             setOfflineStampItems(newOffline);
           }).catch(() => {});
         }).catch(() => {});
@@ -997,6 +1052,12 @@ export default function PalletListScreen({
     const dStr = String(day).padStart(2, '0');
     const formatted = `${calendarYear}-${mStr}-${dStr}`;
 
+    if (calendarTargetField === 'stampDecodedDate') {
+      setStampDecodedDateFilter(formatted);
+      setCalendarTargetField(null);
+      return;
+    }
+
     setDraftFilter(prev => ({
       ...prev,
       [calendarTargetField]: formatted
@@ -1007,6 +1068,11 @@ export default function PalletListScreen({
   function handleQuickDate(type: 'today' | 'yesterday' | 'clear') {
     if (!calendarTargetField) return;
     if (type === 'clear') {
+      if (calendarTargetField === 'stampDecodedDate') {
+        setStampDecodedDateFilter('');
+        setCalendarTargetField(null);
+        return;
+      }
       setDraftFilter(prev => ({
         ...prev,
         [calendarTargetField]: undefined
@@ -1023,6 +1089,12 @@ export default function PalletListScreen({
     const mStr = String(d.getMonth() + 1).padStart(2, '0');
     const dStr = String(d.getDate()).padStart(2, '0');
     const formatted = `${yStr}-${mStr}-${dStr}`;
+
+    if (calendarTargetField === 'stampDecodedDate') {
+      setStampDecodedDateFilter(formatted);
+      setCalendarTargetField(null);
+      return;
+    }
 
     setDraftFilter(prev => ({
       ...prev,
@@ -1210,8 +1282,14 @@ export default function PalletListScreen({
   }, [stampQueueItems]);
 
   const stampDecodedList = useMemo(() => {
-    return stampQueueItems.filter(i => i.status === 'decoded');
-  }, [stampQueueItems]);
+    return stampQueueItems.filter(i => {
+      if (i.status !== 'decoded') return false;
+      if (stampDecodedDateFilter) {
+        if (getLocalDateYmd(i.created_at) !== stampDecodedDateFilter) return false;
+      }
+      return true;
+    });
+  }, [stampQueueItems, stampDecodedDateFilter]);
 
   // Gom nhóm các con dấu offline chờ mạng theo cùng STT Pallet
   const groupedOfflineStampList = useMemo(() => {
@@ -2179,15 +2257,136 @@ export default function PalletListScreen({
       {/* ── TAB 3: ĐÃ GIẢI MÃ ────────────────────────────────────────────── */}
       {activeTab === 'stamp_decoded' && (
         <View style={{ flex: 1 }}>
+          {/* Thanh Bộ Lọc Ngày Tháng */}
+          <View style={styles.stampDateFilterBar}>
+            <View style={styles.stampDateFilterRow}>
+              <TouchableOpacity
+                style={[
+                  styles.stampDateChip,
+                  !stampDecodedDateFilter && styles.stampDateChipActive
+                ]}
+                onPress={() => {
+                  setStampDecodedDateFilter('');
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                }}
+              >
+                <Text style={[
+                  styles.stampDateChipText,
+                  !stampDecodedDateFilter && styles.stampDateChipTextActive
+                ]}>
+                  Tất cả
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[
+                  styles.stampDateChip,
+                  stampDecodedDateFilter === getTodayDateStr() && styles.stampDateChipActive
+                ]}
+                onPress={() => {
+                  setStampDecodedDateFilter(getTodayDateStr());
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                }}
+              >
+                <Text style={[
+                  styles.stampDateChipText,
+                  stampDecodedDateFilter === getTodayDateStr() && styles.stampDateChipTextActive
+                ]}>
+                  Hôm nay
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[
+                  styles.stampDateChip,
+                  stampDecodedDateFilter === getYesterdayDateStr() && styles.stampDateChipActive
+                ]}
+                onPress={() => {
+                  setStampDecodedDateFilter(getYesterdayDateStr());
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                }}
+              >
+                <Text style={[
+                  styles.stampDateChipText,
+                  stampDecodedDateFilter === getYesterdayDateStr() && styles.stampDateChipTextActive
+                ]}>
+                  Hôm qua
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[
+                  styles.stampDateChipCalendar,
+                  Boolean(stampDecodedDateFilter && stampDecodedDateFilter !== getTodayDateStr() && stampDecodedDateFilter !== getYesterdayDateStr()) && styles.stampDateChipActive
+                ]}
+                onPress={() => {
+                  openCalendarPickerForStampDecoded();
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                }}
+              >
+                <Ionicons
+                  name="calendar-outline"
+                  size={14}
+                  color={Boolean(stampDecodedDateFilter && stampDecodedDateFilter !== getTodayDateStr() && stampDecodedDateFilter !== getYesterdayDateStr()) ? '#fff' : '#c084fc'}
+                  style={{ marginRight: 4 }}
+                />
+                <Text style={[
+                  styles.stampDateChipText,
+                  Boolean(stampDecodedDateFilter && stampDecodedDateFilter !== getTodayDateStr() && stampDecodedDateFilter !== getYesterdayDateStr()) && styles.stampDateChipTextActive
+                ]}>
+                  {Boolean(stampDecodedDateFilter && stampDecodedDateFilter !== getTodayDateStr() && stampDecodedDateFilter !== getYesterdayDateStr())
+                    ? formatDisplayDate(stampDecodedDateFilter)
+                    : 'Chọn ngày'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            {stampDecodedDateFilter ? (
+              <View style={styles.stampFilterActiveSummary}>
+                <Text style={styles.stampFilterActiveSummaryText}>
+                  Đang lọc ngày: <Text style={{ color: '#c084fc', fontWeight: '800' }}>{formatDisplayDate(stampDecodedDateFilter)}</Text> • {groupedStampDecodedList.length} Pallet
+                </Text>
+                <TouchableOpacity
+                  onPress={() => {
+                    setStampDecodedDateFilter('');
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  }}
+                  style={styles.stampClearDateBtn}
+                >
+                  <Ionicons name="close-circle" size={15} color="#f87171" />
+                  <Text style={{ color: '#f87171', fontSize: 11, fontWeight: '700' }}>Bỏ lọc</Text>
+                </TouchableOpacity>
+              </View>
+            ) : null}
+          </View>
+
           {loadingStampQueue ? (
             <ActivityIndicator style={{ marginTop: 40 }} size="large" color="#a855f7" />
           ) : groupedStampDecodedList.length === 0 ? (
             <View style={styles.emptyContainer}>
-              <Ionicons name="checkmark-done-circle-outline" size={54} color="#a855f7" />
-              <Text style={styles.emptyTitle}>Chưa có Pallet nào được giải mã</Text>
-              <Text style={styles.emptySub}>
-                Khi giải mã xong ảnh con dấu, kết quả nhận diện sẽ xuất hiện ngay tại đây.
+              <Ionicons name={stampDecodedDateFilter ? "calendar-outline" : "checkmark-done-circle-outline"} size={54} color="#a855f7" />
+              <Text style={styles.emptyTitle}>
+                {stampDecodedDateFilter
+                  ? `Không có Pallet nào trong ngày ${formatDisplayDate(stampDecodedDateFilter)}`
+                  : 'Chưa có Pallet nào được giải mã'}
               </Text>
+              <Text style={styles.emptySub}>
+                {stampDecodedDateFilter
+                  ? 'Hãy chọn ngày khác hoặc bấm "Tất cả" để xem toàn bộ danh sách.'
+                  : 'Khi giải mã xong ảnh con dấu, kết quả nhận diện sẽ xuất hiện ngay tại đây.'}
+              </Text>
+              {stampDecodedDateFilter ? (
+                <TouchableOpacity
+                  style={[styles.viewCloudBtn, { borderColor: '#a855f7', marginTop: 16 }]}
+                  onPress={() => {
+                    setStampDecodedDateFilter('');
+                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  }}
+                >
+                  <Ionicons name="refresh" size={16} color="#c084fc" />
+                  <Text style={[styles.viewCloudBtnText, { color: '#c084fc' }]}>Xem tất cả các ngày</Text>
+                </TouchableOpacity>
+              ) : null}
             </View>
           ) : (
             <FlatList
@@ -3304,7 +3503,11 @@ export default function PalletListScreen({
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
                 <Ionicons name="calendar" size={18} color="#38bdf8" />
                 <Text style={styles.calendarTitle}>
-                  {calendarTargetField === 'packagingDate' ? 'Chọn ngày đóng gói' : 'Chọn ngày sản xuất'}
+                  {calendarTargetField === 'packagingDate'
+                    ? 'Chọn ngày đóng gói'
+                    : calendarTargetField === 'productionDate'
+                    ? 'Chọn ngày sản xuất'
+                    : 'Chọn ngày xem Pallet đã giải mã'}
                 </Text>
               </View>
               <TouchableOpacity onPress={() => setCalendarTargetField(null)}>
@@ -3346,10 +3549,12 @@ export default function PalletListScreen({
                 const dayDateStr = `${calendarYear}-${mStr}-${dStr}`;
 
                 const isSelected = Boolean(
-                  calendarTargetField &&
-                  draftFilter[calendarTargetField] &&
-                  (draftFilter[calendarTargetField] === dayDateStr ||
-                   draftFilter[calendarTargetField] === `${dStr}/${mStr}/${calendarYear}`)
+                  calendarTargetField === 'stampDecodedDate'
+                    ? stampDecodedDateFilter === dayDateStr
+                    : calendarTargetField &&
+                      draftFilter[calendarTargetField] &&
+                      (draftFilter[calendarTargetField] === dayDateStr ||
+                       draftFilter[calendarTargetField] === `${dStr}/${mStr}/${calendarYear}`)
                 );
 
                 const now = new Date();
@@ -4562,5 +4767,72 @@ const styles = StyleSheet.create({
     color: '#ffffff',
     fontSize: 12,
     fontWeight: '700',
+  },
+  stampDateFilterBar: {
+    backgroundColor: '#0f172a',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#1e293b',
+    gap: 8,
+  },
+  stampDateFilterRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flexWrap: 'wrap',
+  },
+  stampDateChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: '#1e293b',
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  stampDateChipCalendar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: '#1e293b',
+    borderWidth: 1,
+    borderColor: '#7e22ce',
+  },
+  stampDateChipActive: {
+    backgroundColor: '#7e22ce',
+    borderColor: '#a855f7',
+  },
+  stampDateChipText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#94a3b8',
+  },
+  stampDateChipTextActive: {
+    color: '#ffffff',
+  },
+  stampFilterActiveSummary: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#1e1b4b',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#4338ca',
+  },
+  stampFilterActiveSummaryText: {
+    fontSize: 12,
+    color: '#e0e7ff',
+    fontWeight: '600',
+  },
+  stampClearDateBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingVertical: 2,
+    paddingHorizontal: 4,
   },
 });

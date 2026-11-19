@@ -116,6 +116,8 @@ async function initTables(db: SQLite.SQLiteDatabase) {
       sku TEXT,
       aliases TEXT,
       system_type TEXT,
+      unit TEXT,
+      available_units TEXT,
       updated_at TEXT
     );
 
@@ -190,6 +192,12 @@ async function initTables(db: SQLite.SQLiteDatabase) {
   } catch {}
   try {
     await db.execAsync(`ALTER TABLE boxes ADD COLUMN stamp_image_url TEXT;`);
+  } catch {}
+  try {
+    await db.execAsync(`ALTER TABLE products_cache ADD COLUMN unit TEXT;`);
+  } catch {}
+  try {
+    await db.execAsync(`ALTER TABLE products_cache ADD COLUMN available_units TEXT;`);
   } catch {}
 }
 
@@ -1231,13 +1239,16 @@ export async function saveProductsToCache(items: any[]): Promise<number> {
       const CHUNK_SIZE = 50;
       for (let i = 0; i < items.length; i += CHUNK_SIZE) {
         const chunk = items.slice(i, i + CHUNK_SIZE);
-        const placeholders = chunk.map(() => '(?, ?, ?, ?, ?, ?)').join(', ');
+        const placeholders = chunk.map(() => '(?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
         const values: any[] = [];
         for (const p of chunk) {
-          values.push(p.id, p.name, p.sku || null, p.aliases || null, p.system_type || null, now);
+          const availStr = Array.isArray(p.available_units) && p.available_units.length > 0
+            ? JSON.stringify(p.available_units)
+            : null;
+          values.push(p.id, p.name, p.sku || null, p.aliases || null, p.system_type || null, p.unit || null, availStr, now);
         }
         await db.runAsync(
-          `INSERT OR REPLACE INTO products_cache (id, name, sku, aliases, system_type, updated_at) VALUES ${placeholders}`,
+          `INSERT OR REPLACE INTO products_cache (id, name, sku, aliases, system_type, unit, available_units, updated_at) VALUES ${placeholders}`,
           values
         );
       }
@@ -1256,9 +1267,24 @@ export async function getProductsFromCache(): Promise<any[]> {
   try {
     const db = await getDb();
     const rows = await db.getAllAsync<any>(
-      `SELECT id, name, sku, aliases, system_type FROM products_cache ORDER BY name ASC`
+      `SELECT id, name, sku, aliases, system_type, unit, available_units FROM products_cache ORDER BY name ASC`
     );
-    return rows || [];
+    return (rows || []).map(r => {
+      let available_units: string[] = [];
+      if (r.available_units) {
+        try {
+          const parsed = JSON.parse(r.available_units);
+          if (Array.isArray(parsed) && parsed.length > 0) available_units = parsed;
+        } catch {}
+      }
+      if (available_units.length === 0 && r.unit) {
+        available_units = [r.unit];
+      }
+      return {
+        ...r,
+        available_units,
+      };
+    });
   } catch {
     return [];
   }
