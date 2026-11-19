@@ -203,6 +203,9 @@ export async function createNewPallet(
   notes?: string | null
 ): Promise<Pallet> {
   const db = await getDb();
+  // Đóng toàn bộ các pallet active cũ để đảm bảo chỉ có duy nhất 1 pallet active
+  await db.runAsync(`UPDATE pallets SET status = 'completed' WHERE status = 'active'`);
+
   const id = 'pl_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
   const now = new Date().toISOString();
   const cleanTag = tag ? tag.trim().toUpperCase() : null;
@@ -263,6 +266,14 @@ export async function updatePalletTagAndNotes(palletId: string, tag: string | nu
 
 export async function getActivePallet(): Promise<Pallet | null> {
   const db = await getDb();
+  // Tự động đóng các pallet active cũ mà không có thùng nào để tránh kẹt STT rác
+  await db.runAsync(
+    `UPDATE pallets 
+     SET status = 'completed' 
+     WHERE status = 'active' 
+       AND NOT EXISTS (SELECT 1 FROM boxes WHERE boxes.pallet_id = pallets.id)`
+  );
+
   const row = await db.getFirstAsync<Pallet>(
     `SELECT * FROM pallets WHERE status = 'active' ORDER BY created_at DESC LIMIT 1`
   );
@@ -472,6 +483,10 @@ export async function addStampBoxToPallet(
 
   const id = 'bx_st_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
   const now = new Date().toISOString();
+  const localPhoto = stampData.photoUri || stampData.drive_view_url || null;
+  const rawTextWithPhoto = stampData.photoUri
+    ? JSON.stringify({ text: stampData.raw_text, photo_uri: stampData.photoUri, crop_uri: (stampData as any).cropPhotoUri || stampData.photoUri })
+    : stampData.raw_text;
 
   await db.runAsync(
     `INSERT INTO boxes (
@@ -485,8 +500,8 @@ export async function addStampBoxToPallet(
       productName, boxIdx, weight,
       decoded.factory_name || '', decoded.province_name || '',
       decoded.inbound_date || '', decoded.packaging_date || '', specText,
-      stampData.raw_text, stampData.stamp_line1, stampData.stamp_line2,
-      stampData.drive_file_id || null, stampData.drive_view_url || null, stampData.drive_view_url || null,
+      rawTextWithPhoto, stampData.stamp_line1, stampData.stamp_line2,
+      stampData.drive_file_id || null, stampData.drive_view_url || null, localPhoto,
       now
     ]
   );
@@ -527,8 +542,8 @@ export async function addStampBoxToPallet(
     stamp_line2: stampData.stamp_line2,
     drive_file_id: stampData.drive_file_id,
     drive_view_url: stampData.drive_view_url,
-    stamp_image_url: stampData.drive_view_url,
-    raw_text: stampData.raw_text,
+    stamp_image_url: localPhoto || undefined,
+    raw_text: rawTextWithPhoto,
     sync_status: 'pending',
     created_at: now
   };
@@ -691,6 +706,10 @@ export async function addStampBoxesBulkToPallet(
 
   const now = new Date().toISOString();
   const createdBoxes: BoxLabel[] = [];
+  const localBulkPhoto = stampData.photoUri || stampData.drive_view_url || null;
+  const rawTextWithPhoto = stampData.photoUri
+    ? JSON.stringify({ text: stampData.raw_text, photo_uri: stampData.photoUri, crop_uri: (stampData as any).cropPhotoUri || stampData.photoUri })
+    : stampData.raw_text;
 
   for (let i = 0; i < newIndexes.length; i++) {
     const newIdx = newIndexes[i];
@@ -708,8 +727,8 @@ export async function addStampBoxesBulkToPallet(
         productName, newIdx, weight,
         decoded.factory_name || '', decoded.province_name || '',
         decoded.inbound_date || '', decoded.packaging_date || '', specText,
-        stampData.raw_text, stampData.stamp_line1, stampData.stamp_line2,
-        stampData.drive_file_id || null, stampData.drive_view_url || null, stampData.drive_view_url || null,
+        rawTextWithPhoto, stampData.stamp_line1, stampData.stamp_line2,
+        stampData.drive_file_id || null, stampData.drive_view_url || null, localBulkPhoto,
         now
       ]
     );
@@ -739,8 +758,8 @@ export async function addStampBoxesBulkToPallet(
       stamp_line2: stampData.stamp_line2,
       drive_file_id: stampData.drive_file_id,
       drive_view_url: stampData.drive_view_url,
-      stamp_image_url: stampData.drive_view_url,
-      raw_text: stampData.raw_text,
+      stamp_image_url: localBulkPhoto || undefined,
+      raw_text: rawTextWithPhoto,
       sync_status: 'pending',
       created_at: now
     });

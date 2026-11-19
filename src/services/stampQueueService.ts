@@ -23,6 +23,8 @@ export interface SubmitStampQueueParams {
   palletNotes?: string | null;
   boxCount: number;
   boxWeight: number;
+  stamp_line1?: string | null;
+  stamp_line2?: string | null;
 }
 
 export interface StampQueueItemMobile {
@@ -59,6 +61,8 @@ export interface StampQueueBackgroundItem {
   palletNotes?: string | null;
   boxCount?: number;
   boxWeight?: number;
+  stamp_line1?: string | null;
+  stamp_line2?: string | null;
   createdAt: string;
   retryCount?: number;
 }
@@ -83,6 +87,8 @@ export async function enqueueStampPhotoForBackgroundSync(
       palletNotes: params.palletNotes,
       boxCount: params.boxCount,
       boxWeight: params.boxWeight,
+      stamp_line1: params.stamp_line1,
+      stamp_line2: params.stamp_line2,
       createdAt: new Date().toISOString(),
       retryCount: 0,
     };
@@ -128,6 +134,8 @@ export async function processBackgroundStampQueue(
             palletNotes: item.palletNotes,
             boxCount: item.boxCount || 30,
             boxWeight: item.boxWeight || 20,
+            stamp_line1: item.stamp_line1,
+            stamp_line2: item.stamp_line2,
           });
           syncedCount++;
 
@@ -302,6 +310,9 @@ export async function getStampDriveWebhookUrl(): Promise<string | null> {
         companyId = JSON.parse(rawUser)?.company_id || null;
       }
     } catch {}
+    if (!companyId) {
+      companyId = 'b503014d-19b6-464e-91f3-f34eba4b4b05';
+    }
 
     let q = client.from('company_ai_settings').select('drive_webhook_url').limit(1);
     if (companyId) q = q.eq('company_id', companyId);
@@ -445,6 +456,9 @@ export async function submitStampPhotoToQueue(params: SubmitStampQueueParams): P
       companyId = u.company_id || null;
     }
   } catch {}
+  if (!companyId) {
+    companyId = 'b503014d-19b6-464e-91f3-f34eba4b4b05';
+  }
 
   // 1. Nén ảnh và chuyển sang Base64
   const manipulated = await ImageManipulator.manipulateAsync(
@@ -551,10 +565,21 @@ export async function submitStampPhotoToQueue(params: SubmitStampQueueParams): P
     cropped_image_url: finalCropUrl,
     drive_file_id: driveFileId,
     drive_view_url: driveViewUrl,
-    status: 'pending',
+    status: (params.stamp_line1 && params.stamp_line2) ? 'decoded' : 'pending',
+    stamp_line1: params.stamp_line1 || null,
+    stamp_line2: params.stamp_line2 || null,
     created_by: userId,
     created_by_name: userName,
   };
+
+  if (params.stamp_line1 && params.stamp_line2) {
+    try {
+      const dictMap = await getStampDictionariesMap();
+      const activeFormat = await getActiveStampFormat();
+      const dec = decodeStamp(params.stamp_line1, params.stamp_line2, dictMap, activeFormat);
+      insertPayload.decoded_json = dec;
+    } catch {}
+  }
 
   if (companyId) {
     insertPayload.company_id = companyId;

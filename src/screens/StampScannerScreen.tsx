@@ -7,6 +7,7 @@ import {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as ImageManipulator from 'expo-image-manipulator';
+import * as ImagePicker from 'expo-image-picker';
 import TextRecognition from '@react-native-ml-kit/text-recognition';
 import * as Haptics from 'expo-haptics';
 import { Ionicons } from '@expo/vector-icons';
@@ -401,15 +402,90 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
         console.warn('Crop ảnh khung ngắm fallback về ảnh gốc:', cropErr);
       }
 
-      // OCR qua Google ML Kit
-      if (TextRecognition && typeof TextRecognition.recognize === 'function') {
-        const mlResult = await TextRecognition.recognize(recognizeUri);
-        const raw = mlResult?.text || '';
+      // OCR qua Google ML Kit (Native) kèm fallback thông minh khi chạy trên Expo Go
+      let raw = '';
+      let isMlKitLinked = false;
+
+      try {
+        if (TextRecognition && typeof TextRecognition.recognize === 'function') {
+          const mlResult = await TextRecognition.recognize(recognizeUri);
+          raw = mlResult?.text || '';
+          isMlKitLinked = true;
+        }
+      } catch (mlErr: any) {
+        console.warn('[ML Kit] Module native chưa được link (đang chạy trong Expo Go):', mlErr?.message);
+        isMlKitLinked = false;
+      }
+
+      // Nếu đang chạy trong Expo Go (ML Kit native bị chặn): Tự động fallback sang Server OCR hoặc gợi ý gửi Server
+      if (!isMlKitLinked) {
+        try {
+          const base64Crop = await ImageManipulator.manipulateAsync(
+            recognizeUri,
+            [{ resize: { width: 1200 } }],
+            { compress: 0.85, format: ImageManipulator.SaveFormat.JPEG, base64: true }
+          );
+          if (base64Crop.base64) {
+            const serverUrl = 'https://api.chanhthu.click/api/ocr';
+            const res = await fetch(serverUrl, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ image: `data:image/jpeg;base64,${base64Crop.base64}`, mode: 'stamp' })
+            });
+            if (res.ok) {
+              const resJson = await res.json();
+              if (resJson?.rawText) {
+                raw = resJson.rawText;
+              } else if (resJson?.data?.stamp_line1 || resJson?.data?.stamp_line2) {
+                Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                Vibration.vibrate(80);
+                setPendingStamp({
+                  stamp_line1: resJson.data.stamp_line1 || '',
+                  stamp_line2: resJson.data.stamp_line2 || '',
+                  raw_text: resJson.rawText || '',
+                  detected_lines: [],
+                  decoded: resJson.data.decoded,
+                  photoUri: recognizeUri || photo.uri,
+                });
+                setPendingWeight('20');
+                const fillCount = activePallet
+                  ? Math.max(1, activePallet.target_qty - boxes.length)
+                  : 30;
+                setPendingCount(String(fillCount));
+                return;
+              }
+            }
+          }
+        } catch (serverOcrErr) {
+          console.warn('[Server OCR Fallback] Lỗi gọi server OCR khi test Expo Go:', serverOcrErr);
+        }
 
         if (!raw.trim()) {
-          Alert.alert('Không nhận diện được', 'Camera không thấy chữ số nào trong khung ngắm. Vui lòng căn chỉnh lại gần dấu mực hơn.');
+          Alert.alert(
+            'Lưu ý Expo Go',
+            'Thư viện nhận diện ML Kit Native chỉ chạy trên ứng dụng cài từ file APK (không hỗ trợ Expo Go).\n\nBạn có muốn chuyển ảnh này sang mục "Gửi Server" để giải mã không?',
+            [
+              { text: 'Huỷ', style: 'cancel' },
+              {
+                text: 'Gửi Server giải mã',
+                onPress: () => {
+                  setSendPhotoUri(photo.uri);
+                  setSendPhotoCropUri(recognizeUri);
+                  setSendBoxCount('1');
+                  setSendBoxWeight('20');
+                  setIsSendToWebModal(true);
+                }
+              }
+            ]
+          );
           return;
         }
+      }
+
+      if (!raw.trim()) {
+        Alert.alert('Không nhận diện được', 'Camera không thấy chữ số nào trong khung ngắm. Vui lòng căn chỉnh lại gần dấu mực hơn.');
+        return;
+      }
 
         let currentDict = dictMap;
         let currentFmt = activeFormat;
@@ -441,11 +517,154 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
             `Văn bản đọc được:\n"${raw.slice(0, 100)}"\n\nVui lòng giữ chắc tay và chụp vuông góc với 2 dòng số đóng dấu.`
           );
         }
-      } else {
-        Alert.alert('Thông báo', 'Bộ nhận diện ML Kit chưa sẵn sàng trên thiết bị này.');
-      }
     } catch (err: any) {
       Alert.alert('Lỗi quét', err.message || 'Không thể chụp ảnh');
+    } finally {
+      setIsScanning(false);
+    }
+  }
+
+  // ── Tải ảnh con dấu từ thư viện & Căn chỉnh crop tâm ─────────────
+  async function handlePickStampImage() {
+    if (!activePallet) {
+      Alert.alert(
+        'Chưa có Pallet',
+        'Vui lòng nhập Số Thứ Tự (STT) Pallet trước khi tải ảnh con dấu!',
+        [
+          { text: 'Huỷ', style: 'cancel' },
+          { text: 'Nhập STT Pallet', onPress: () => openNewPalletModal() }
+        ]
+      );
+      return;
+    }
+
+    try {
+      const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!perm.granted) {
+        Alert.alert('Cần quyền truy cập', 'Vui lòng cấp quyền truy cập thư viện ảnh để tải ảnh con dấu.');
+        return;
+      }
+
+      // Mở trình chọn ảnh kèm crop native cho phép zoom và căn chỉnh tâm
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        allowsEditing: true, // Bật trình cắt crop của Android/iOS
+        aspect: [16, 9], // Tỉ lệ tiêu chuẩn khung ngắm con dấu
+        quality: 0.95,
+      });
+
+      if (result.canceled || !result.assets || result.assets.length === 0) {
+        return;
+      }
+
+      const pickedPhoto = result.assets[0];
+      if (!pickedPhoto.uri) return;
+
+      setIsScanning(true);
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+
+      let raw = '';
+      let isMlKitLinked = false;
+
+      try {
+        if (TextRecognition && typeof TextRecognition.recognize === 'function') {
+          const mlResult = await TextRecognition.recognize(pickedPhoto.uri);
+          raw = mlResult?.text || '';
+          isMlKitLinked = true;
+        }
+      } catch (mlErr: any) {
+        console.warn('[ML Kit] Module native chưa link (Expo Go):', mlErr?.message);
+        isMlKitLinked = false;
+      }
+
+      if (!isMlKitLinked) {
+        try {
+          const base64Crop = await ImageManipulator.manipulateAsync(
+            pickedPhoto.uri,
+            [{ resize: { width: 1200 } }],
+            { compress: 0.85, format: ImageManipulator.SaveFormat.JPEG, base64: true }
+          );
+          if (base64Crop.base64) {
+            const serverUrl = 'https://api.chanhthu.click/api/ocr';
+            const res = await fetch(serverUrl, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ image: `data:image/jpeg;base64,${base64Crop.base64}`, mode: 'stamp' })
+            });
+            if (res.ok) {
+              const resJson = await res.json();
+              if (resJson?.rawText) {
+                raw = resJson.rawText;
+              } else if (resJson?.data?.stamp_line1 || resJson?.data?.stamp_line2) {
+                Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                Vibration.vibrate(80);
+                setPendingStamp({
+                  stamp_line1: resJson.data.stamp_line1 || '',
+                  stamp_line2: resJson.data.stamp_line2 || '',
+                  raw_text: resJson.rawText || '',
+                  detected_lines: [],
+                  decoded: resJson.data.decoded,
+                  photoUri: pickedPhoto.uri,
+                });
+                setPendingWeight('20');
+                const fillCount = activePallet
+                  ? Math.max(1, activePallet.target_qty - boxes.length)
+                  : 30;
+                setPendingCount(String(fillCount));
+                return;
+              }
+            }
+          }
+        } catch (serverOcrErr) {
+          console.warn('[Server OCR Fallback] Lỗi khi nhận diện ảnh upload:', serverOcrErr);
+        }
+      }
+
+      let currentDict = dictMap;
+      let currentFmt = activeFormat;
+      try {
+        const [m, f] = await Promise.all([getStampDictionariesMap(), getActiveStampFormat()]);
+        currentDict = m;
+        currentFmt = f;
+        setDictMap(m);
+        setActiveFormat(f);
+      } catch {}
+
+      const parsed = raw.trim() ? parseStampText(raw, currentDict, currentFmt) : null;
+      if (parsed && (parsed.stamp_line1 || parsed.stamp_line2)) {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+        Vibration.vibrate(80);
+        setPendingStamp({
+          ...parsed,
+          photoUri: pickedPhoto.uri,
+        });
+        setPendingWeight('20');
+        const fillCount = activePallet
+          ? Math.max(1, activePallet.target_qty - boxes.length)
+          : 30;
+        setPendingCount(String(fillCount));
+      } else {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+        Alert.alert(
+          'Chưa nhận diện rõ dãy số con dấu',
+          'Ảnh đã chọn và cắt nhưng phần chữ số bị mờ hoặc không đủ ký tự.\n\nBạn có muốn chuyển ảnh này sang mục "Gửi giải mã" để Server phân tích không?',
+          [
+            { text: 'Hủy', style: 'cancel' },
+            {
+              text: 'Gửi Giải Mã',
+              onPress: () => {
+                setSendPhotoUri(pickedPhoto.uri);
+                setSendPhotoCropUri(pickedPhoto.uri);
+                setSendBoxCount('1');
+                setSendBoxWeight('20');
+                setIsSendToWebModal(true);
+              }
+            }
+          ]
+        );
+      }
+    } catch (err: any) {
+      Alert.alert('Lỗi tải ảnh', err.message || 'Không thể chọn ảnh từ thư viện');
     } finally {
       setIsScanning(false);
     }
@@ -1005,9 +1224,7 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
         const palletTag = activePallet?.tag || null;
         const palletNotes = activePallet?.notes || null;
         const flushRes = await flushPalletAiQueueBatches(palletId, palletCode, palletTag, palletNotes);
-        if (flushRes.normalBoxCount > 0) {
-          await completePallet(palletId);
-        }
+        await completePallet(palletId);
         setActivePallet(null);
         setBoxes([]);
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -1049,9 +1266,7 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
             const palletTag = activePallet.tag || null;
             const palletNotes = activePallet.notes || null;
             const flushRes = await flushPalletAiQueueBatches(palletId, palletCode, palletTag, palletNotes);
-            if (flushRes.normalBoxCount > 0) {
-              await completePallet(palletId);
-            }
+            await completePallet(palletId);
             setActivePallet(null);
             setBoxes([]);
             Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -1317,14 +1532,23 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
           {isScanning ? (
             <>
               <ActivityIndicator color="#ffffff" size="small" />
-              <Text style={styles.captureActionText}>Đang đọc...</Text>
+              <Text numberOfLines={1} style={styles.captureActionText}>Đang đọc...</Text>
             </>
           ) : (
             <>
-              <Ionicons name="camera" size={18} color="#ffffff" />
-              <Text style={styles.captureActionText}>Quét Dấu</Text>
+              <Ionicons name="camera" size={15} color="#ffffff" />
+              <Text numberOfLines={1} style={styles.captureActionText}>Chụp</Text>
             </>
           )}
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.uploadActionBtn, (!activePallet || isScanning) && { opacity: 0.6 }]}
+          disabled={isScanning || isCapturingForWeb}
+          onPress={handlePickStampImage}
+        >
+          <Ionicons name="image-outline" size={14} color="#c084fc" />
+          <Text numberOfLines={1} style={styles.uploadActionText}>Tải ảnh</Text>
         </TouchableOpacity>
 
         <TouchableOpacity
@@ -1336,8 +1560,8 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
             <ActivityIndicator color="#ffffff" size="small" />
           ) : (
             <>
-              <Ionicons name="cloud-upload-outline" size={16} color="#fbbf24" />
-              <Text style={styles.aiSendActionText}>Gửi giải mã</Text>
+              <Ionicons name="cloud-upload-outline" size={14} color="#fbbf24" />
+              <Text numberOfLines={1} style={styles.aiSendActionText}>Gửi AI</Text>
             </>
           )}
         </TouchableOpacity>
@@ -1356,8 +1580,8 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
             setIsManualModal(true);
           }}
         >
-          <Ionicons name="keypad-outline" size={18} color="#38bdf8" />
-          <Text style={styles.manualActionText}>Nhập Số</Text>
+          <Ionicons name="keypad-outline" size={14} color="#38bdf8" />
+          <Text numberOfLines={1} style={styles.manualActionText}>Nhập số</Text>
         </TouchableOpacity>
 
         {activePallet && boxes.length > 0 && (
@@ -1365,8 +1589,8 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
             style={styles.completeActionBtn}
             onPress={handleCompletePallet}
           >
-            <Ionicons name="cube-outline" size={18} color="#ffffff" />
-            <Text style={styles.completeActionText}>Chốt</Text>
+            <Ionicons name="cube-outline" size={14} color="#ffffff" />
+            <Text numberOfLines={1} style={styles.completeActionText}>Chốt</Text>
           </TouchableOpacity>
         )}
       </View>
@@ -1641,7 +1865,7 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
                   ) : (
                     <>
                       <Ionicons name={parseInt(pendingCount, 10) > 1 ? "copy" : "save"} size={16} color="#fff" />
-                      <Text style={styles.btnConfirmSaveText}>
+                      <Text style={styles.btnConfirmSaveText} numberOfLines={1} ellipsizeMode="tail">
                         {parseInt(pendingCount, 10) > 1
                           ? `Lưu (${pendingCount} Thùng) Vào ${activePallet?.code || ''}`
                           : `Lưu Vào Pallet ${activePallet?.code || ''}`}
@@ -2210,7 +2434,7 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
                 ) : (
                   <>
                     <Ionicons name="save" size={16} color="#fff" />
-                    <Text style={styles.btnConfirmSaveText}>
+                    <Text style={styles.btnConfirmSaveText} numberOfLines={1} ellipsizeMode="tail">
                       {parseInt(sendBoxCount, 10) > 1
                         ? `Lưu (${sendBoxCount} Thùng) Vào ${activePallet?.code || ''}`
                         : `Lưu Vào Pallet ${activePallet?.code || ''}`}
@@ -2775,15 +2999,16 @@ const styles = StyleSheet.create({
   },
   confirmActionRow: {
     flexDirection: 'row',
-    gap: 12,
+    alignItems: 'center',
+    gap: 8,
   },
   btnRescan: {
-    flex: 1,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 6,
-    paddingVertical: 12,
     borderRadius: 12,
     backgroundColor: '#334155',
   },
@@ -2793,12 +3018,14 @@ const styles = StyleSheet.create({
     fontSize: 13,
   },
   btnConfirmSave: {
-    flex: 1.5,
+    flex: 1,
+    minWidth: 0,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 6,
     paddingVertical: 12,
+    paddingHorizontal: 12,
     borderRadius: 12,
     backgroundColor: '#10b981',
   },
@@ -3154,25 +3381,26 @@ const styles = StyleSheet.create({
   },
   actionRow: {
     flexDirection: 'row',
-    gap: 8,
-    paddingHorizontal: 16,
-    marginTop: 10,
-    marginBottom: 10,
+    gap: 4,
+    paddingHorizontal: 8,
+    marginTop: 8,
+    marginBottom: 8,
   },
   captureActionBtn: {
-    flex: 1.3,
+    flex: 1.15,
     backgroundColor: '#059669',
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 6,
-    paddingVertical: 11,
-    borderRadius: 10,
+    gap: 3,
+    paddingVertical: 10,
+    paddingHorizontal: 2,
+    borderRadius: 8,
   },
   captureActionText: {
     color: '#ffffff',
     fontWeight: '700',
-    fontSize: 14,
+    fontSize: 12,
   },
   manualActionBtn: {
     flex: 1,
@@ -3182,27 +3410,31 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 5,
-    paddingVertical: 11,
-    borderRadius: 10,
+    gap: 2,
+    paddingVertical: 10,
+    paddingHorizontal: 2,
+    borderRadius: 8,
   },
   manualActionText: {
     color: '#38bdf8',
     fontWeight: '700',
-    fontSize: 13,
+    fontSize: 11,
   },
   completeActionBtn: {
+    flex: 1,
     backgroundColor: '#7c3aed',
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
-    paddingHorizontal: 14,
-    borderRadius: 10,
+    justifyContent: 'center',
+    gap: 2,
+    paddingVertical: 10,
+    paddingHorizontal: 2,
+    borderRadius: 8,
   },
   completeActionText: {
     color: '#fff',
     fontWeight: '700',
-    fontSize: 13,
+    fontSize: 11,
   },
   listHeaderRow: {
     flexDirection: 'row',
@@ -3294,22 +3526,41 @@ const styles = StyleSheet.create({
     fontSize: 11,
     marginTop: 2,
   },
+  uploadActionBtn: {
+    flex: 1,
+    backgroundColor: '#3b0764',
+    borderWidth: 1,
+    borderColor: '#9333ea',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 2,
+    paddingVertical: 10,
+    paddingHorizontal: 2,
+    borderRadius: 8,
+  },
+  uploadActionText: {
+    color: '#f3e8ff',
+    fontWeight: '700',
+    fontSize: 11,
+  },
   aiSendActionBtn: {
-    flex: 1.1,
+    flex: 1,
     backgroundColor: '#4338ca',
     borderWidth: 1,
     borderColor: '#6366f1',
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 5,
-    paddingVertical: 11,
-    borderRadius: 10,
+    gap: 2,
+    paddingVertical: 10,
+    paddingHorizontal: 2,
+    borderRadius: 8,
   },
   aiSendActionText: {
     color: '#ffffff',
     fontWeight: '800',
-    fontSize: 13,
+    fontSize: 11,
   },
   sendPreviewContainer: {
     width: '100%',

@@ -9,7 +9,9 @@ import {
   ScrollView,
   Platform,
   KeyboardAvoidingView,
+  Keyboard,
   Alert,
+  Dimensions,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -100,6 +102,11 @@ export default function WarehouseAdjustmentDraftModal({
   const currentUnit = position?.unit || 'Thùng';
 
   const noteInputRef = useRef<any>(null);
+  const scrollViewRef = useRef<any>(null);
+  const [isKeyboardVisible, setIsKeyboardVisible] = useState<boolean>(false);
+  const [isInputFocused, setIsInputFocused] = useState<boolean>(false);
+  const [isNoteFocused, setIsNoteFocused] = useState<boolean>(false);
+  const [keyboardHeight, setKeyboardHeight] = useState<number>(0);
   const [actionType, setActionType] = useState<ProposalActionType>('NOTE');
   const [newQtyStr, setNewQtyStr] = useState<string>('0');
   const [targetPosCode, setTargetPosCode] = useState<string>('');
@@ -125,6 +132,11 @@ export default function WarehouseAdjustmentDraftModal({
 
   // Khởi tạo state khi mở modal hoặc thay đổi position / initialItem
   useEffect(() => {
+    setIsInputFocused(false);
+    setIsNoteFocused(false);
+    setIsKeyboardVisible(false);
+    setKeyboardHeight(0);
+
     if (!visible || !position) return;
 
     const timer = setTimeout(() => {
@@ -192,6 +204,54 @@ export default function WarehouseAdjustmentDraftModal({
     }, 0);
     return () => clearTimeout(timer);
   }, [visible, position, initialItem, isCurrentlyOccupied, currentQty, productCatalog.length, loadingCatalog]);
+
+  // Lắng nghe sự kiện mở/đóng bàn phím trên thiết bị để nâng giao diện
+  useEffect(() => {
+    const showSub = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow',
+      (e) => {
+        setIsKeyboardVisible(true);
+        if (e && e.endCoordinates && e.endCoordinates.height) {
+          setKeyboardHeight(e.endCoordinates.height);
+        }
+      }
+    );
+    const hideSub = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide',
+      () => {
+        setIsKeyboardVisible(false);
+        setKeyboardHeight(0);
+      }
+    );
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
+
+  const handleInputFocus = useCallback(() => {
+    setIsInputFocused(true);
+  }, []);
+
+  const handleInputBlur = useCallback(() => {
+    setIsInputFocused(false);
+  }, []);
+
+  const handleNoteFocus = useCallback(() => {
+    setIsInputFocused(true);
+    setIsNoteFocused(true);
+    setTimeout(() => {
+      scrollViewRef.current?.scrollToEnd({ animated: true });
+    }, 80);
+    setTimeout(() => {
+      scrollViewRef.current?.scrollToEnd({ animated: true });
+    }, 280);
+  }, []);
+
+  const handleNoteBlur = useCallback(() => {
+    setIsInputFocused(false);
+    setIsNoteFocused(false);
+  }, []);
 
   const hasMultipleProducts = subItems.length > 1 || subItems.some(s => s.is_new);
 
@@ -566,12 +626,26 @@ export default function WarehouseAdjustmentDraftModal({
   if (!visible || !position) return null;
 
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+    <Modal
+      visible={visible}
+      transparent
+      animationType="slide"
+      onRequestClose={onClose}
+      statusBarTranslucent={true}
+    >
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         style={styles.overlay}
       >
-        <View style={[styles.sheetContainer, { paddingBottom: Math.max(insets.bottom, 16) + 8 }]}>
+        <View
+          style={[
+            styles.sheetContainer,
+            {
+              paddingBottom: Math.max(insets.bottom, 16) + 4,
+              maxHeight: '92%',
+            },
+          ]}
+        >
           {/* Header */}
           <View style={styles.header}>
             <View>
@@ -583,7 +657,14 @@ export default function WarehouseAdjustmentDraftModal({
             </TouchableOpacity>
           </View>
 
-          <ScrollView style={styles.scrollBody} keyboardShouldPersistTaps="handled">
+          <ScrollView
+            ref={scrollViewRef}
+            style={styles.scrollBody}
+            contentContainerStyle={{
+              paddingBottom: isNoteFocused ? 380 : (isInputFocused ? 280 : 30),
+            }}
+            keyboardShouldPersistTaps="handled"
+          >
             {/* Thẻ hiển thị trạng thái hiện tại của vị trí */}
             <View style={styles.currentCard}>
               <View style={styles.currentCardHeader}>
@@ -824,6 +905,13 @@ export default function WarehouseAdjustmentDraftModal({
                     placeholderTextColor="#64748b"
                     autoCapitalize="characters"
                     returnKeyType="done"
+                    onFocus={() => {
+                      handleInputFocus();
+                      setTimeout(() => {
+                        scrollViewRef.current?.scrollTo({ y: 220, animated: true });
+                      }, 150);
+                    }}
+                    onBlur={handleInputBlur}
                   />
                   <TouchableOpacity
                     onPress={() => handleSearchAssignLot()}
@@ -925,6 +1013,8 @@ export default function WarehouseAdjustmentDraftModal({
                             placeholder="0"
                             placeholderTextColor="#64748b"
                             selectTextOnFocus
+                            onFocus={handleInputFocus}
+                            onBlur={handleInputBlur}
                           />
 
                           <TouchableOpacity
@@ -996,6 +1086,13 @@ export default function WarehouseAdjustmentDraftModal({
                         placeholder="0"
                         placeholderTextColor="#64748b"
                         selectTextOnFocus
+                        onFocus={() => {
+                          handleInputFocus();
+                          setTimeout(() => {
+                            scrollViewRef.current?.scrollTo({ y: 220, animated: true });
+                          }, 150);
+                        }}
+                        onBlur={handleInputBlur}
                       />
                       <Text style={styles.unitSuffix}>{currentUnit}</Text>
                     </View>
@@ -1050,6 +1147,8 @@ export default function WarehouseAdjustmentDraftModal({
                           <TextInput
                             style={styles.productSearchInput}
                             value={productQuery}
+                            onFocus={handleInputFocus}
+                            onBlur={handleInputBlur}
                             onChangeText={(txt) => {
                               setProductQuery(txt);
                               if (selectedNewProduct) setSelectedNewProduct(null);
@@ -1116,6 +1215,8 @@ export default function WarehouseAdjustmentDraftModal({
                                   placeholder="1"
                                   placeholderTextColor="#64748b"
                                   selectTextOnFocus
+                                  onFocus={handleInputFocus}
+                                  onBlur={handleInputBlur}
                                 />
                               </View>
                               <View style={{ flex: 1.4 }}>
@@ -1126,6 +1227,8 @@ export default function WarehouseAdjustmentDraftModal({
                                   onChangeText={setNewProductUnit}
                                   placeholder="Thùng (20kg)..."
                                   placeholderTextColor="#64748b"
+                                  onFocus={handleInputFocus}
+                                  onBlur={handleInputBlur}
                                 />
                               </View>
                             </View>
@@ -1204,6 +1307,13 @@ export default function WarehouseAdjustmentDraftModal({
                     placeholder="Nhập hoặc chọn gợi ý bên dưới..."
                     placeholderTextColor="#64748b"
                     autoCapitalize="characters"
+                    onFocus={() => {
+                      handleInputFocus();
+                      setTimeout(() => {
+                        scrollViewRef.current?.scrollTo({ y: 220, animated: true });
+                      }, 150);
+                    }}
+                    onBlur={handleInputBlur}
                   />
                   {targetPosCode.length > 0 && (
                     <TouchableOpacity
@@ -1307,7 +1417,32 @@ export default function WarehouseAdjustmentDraftModal({
             )}
 
             {/* Ghi chú */}
-            <Text style={styles.sectionLabel}>GHI CHÚ:</Text>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+              <Text style={styles.sectionLabel}>GHI CHÚ:</Text>
+              {(isNoteFocused || isInputFocused || isKeyboardVisible) && (
+                <View style={{ flexDirection: 'row', gap: 6, alignItems: 'center' }}>
+                  <TouchableOpacity
+                    onPress={() => {
+                      Keyboard.dismiss();
+                      setIsInputFocused(false);
+                      setIsNoteFocused(false);
+                    }}
+                    style={styles.dismissKeyboardBtn}
+                  >
+                    <Ionicons name="chevron-down-circle" size={14} color="#38bdf8" />
+                    <Text style={styles.dismissKeyboardBtnText}>Ẩn phím</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    onPress={handleSave}
+                    style={styles.quickSaveNoteBtn}
+                  >
+                    <Ionicons name="checkmark-circle" size={14} color="#ffffff" />
+                    <Text style={styles.quickSaveNoteBtnText}>Lưu nhanh</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+            </View>
             <TextInput
               ref={noteInputRef}
               style={[
@@ -1316,6 +1451,8 @@ export default function WarehouseAdjustmentDraftModal({
               ]}
               value={note}
               onChangeText={setNote}
+              onFocus={handleNoteFocus}
+              onBlur={handleNoteBlur}
               placeholder="Nhập nội dung ghi chú..."
               placeholderTextColor="#64748b"
               multiline
@@ -1912,6 +2049,36 @@ const styles = StyleSheet.create({
     fontSize: 10,
     marginTop: 3,
     fontWeight: '600',
+  },
+  dismissKeyboardBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#0369a133',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#0284c744',
+  },
+  dismissKeyboardBtnText: {
+    color: '#38bdf8',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  quickSaveNoteBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#059669',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+  },
+  quickSaveNoteBtnText: {
+    color: '#ffffff',
+    fontSize: 11,
+    fontWeight: '800',
   },
   noteInput: {
     backgroundColor: '#1e293b',

@@ -577,17 +577,31 @@ export default function PalletListScreen({
         if (photoUri) break;
       }
 
+      // Nếu chưa có ảnh nhưng Pallet có dữ liệu số con dấu đã quét (Dòng 1 / Dòng 2)
+      let sampleStampBox: any = null;
+      if (!photoUri) {
+        sampleStampBox = boxList.find(b => b.stamp_line1 || b.stamp_line2 || b.scan_type === 'stamp' || b.lot_code === 'STAMP');
+        if (sampleStampBox) {
+          const l1 = sampleStampBox.stamp_line1 || '';
+          const l2 = sampleStampBox.stamp_line2 || sampleStampBox.lot_code || '';
+          const svgContent = `<svg xmlns="http://www.w3.org/2000/svg" width="400" height="220" viewBox="0 0 400 220"><rect width="100%" height="100%" fill="%230f172a" rx="16"/><rect x="12" y="12" width="376" height="196" fill="%231e293b" rx="12" stroke="%23f59e0b" stroke-width="2" stroke-dasharray="6,4"/><text x="50%" y="45" fill="%2338bdf8" font-size="16" font-family="sans-serif" font-weight="bold" text-anchor="middle">PALLET ${pallet.code}</text><text x="50%" y="95" fill="%23facc15" font-size="15" font-family="monospace" font-weight="bold" text-anchor="middle">D1: ${l1 || '---'}</text><text x="50%" y="135" fill="%234ade80" font-size="15" font-family="monospace" font-weight="bold" text-anchor="middle">D2: ${l2 || '---'}</text><text x="50%" y="180" fill="%2394a3b8" font-size="12" font-family="sans-serif" text-anchor="middle">Chuyển từ mục Chờ đẩy</text></svg>`;
+          photoUri = `data:image/svg+xml;utf8,${encodeURIComponent(svgContent)}`;
+          cropPhotoUri = photoUri;
+        }
+      }
+
       if (!photoUri) {
         Alert.alert(
-          'Không tìm thấy ảnh con dấu',
-          `Pallet "${pallet.code}" không có ảnh con dấu lưu kèm.\n\nTính năng này chỉ áp dụng cho Pallet đóng dấu đã chụp ảnh để Server phân tích lại.`
+          'Không thể chuyển giải mã',
+          `Pallet "${pallet.code}" không phải là Pallet đóng dấu hoặc không có dữ liệu số đóng dấu để chuyển.`
         );
         return;
       }
 
+      const hasDirectInfo = sampleStampBox?.stamp_line1 ? ` (D1: ${sampleStampBox.stamp_line1})` : '';
       Alert.alert(
         'Chuyển sang Chờ giải mã',
-        `Bạn có chắc muốn chuyển Pallet "${pallet.code}" (${boxList.length} thùng) sang hàng đợi Chờ giải mã không?\n\nPallet sẽ được rút khỏi mục Chờ đẩy và chuyển vào tab Chờ giải mã để Server phân tích lại con dấu.`,
+        `Bạn có chắc muốn chuyển Pallet "${pallet.code}" (${boxList.length} thùng)${hasDirectInfo} sang hàng đợi Chờ giải mã không?\n\nPallet sẽ được rút khỏi mục Chờ đẩy và chuyển vào tab Chờ giải mã để Server duyệt tạo LOT.`,
         [
           { text: 'Hủy', style: 'cancel' },
           {
@@ -606,6 +620,8 @@ export default function PalletListScreen({
                   palletNotes: pallet.notes || null,
                   boxCount: boxList.length,
                   boxWeight: boxList[0]?.weight || 20,
+                  stamp_line1: sampleStampBox?.stamp_line1 || null,
+                  stamp_line2: sampleStampBox?.stamp_line2 || null,
                 });
 
                 // Xóa pallet khỏi SQLite bảng pallets & boxes
