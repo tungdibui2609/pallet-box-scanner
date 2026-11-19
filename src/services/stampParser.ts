@@ -348,18 +348,39 @@ export function decodeStamp(
     const cFactory = cleanL2.substring(0, 1);
     const dd = cleanL2.substring(1, 3);
     const mm = cleanL2.substring(3, 5);
-    const DD = cleanL2.substring(5, 7);
-    const MM = cleanL2.substring(7, 9);
-    const YY = cleanL2.substring(9, 11);
-    const cSupplier = cleanL2.substring(11, 14);
-    const cProvince = cleanL2.substring(14, 16);
+    let DD = cleanL2.substring(5, 7);
+    let MM = cleanL2.substring(7, 9);
+    let YY = cleanL2.substring(9, 11);
+
+    // Nếu ngày/tháng nhập NL không hợp lệ (ví dụ MM > 12) và chuỗi có >= 17 ký tự (bị OCR đọc dư số chèn ở giữa)
+    const mNum = parseInt(MM, 10);
+    const dNum = parseInt(DD, 10);
+    if ((mNum < 1 || mNum > 12 || dNum < 1 || dNum > 31) && cleanL2.length >= 17) {
+      const altDD = cleanL2.substring(6, 8);
+      const altMM = cleanL2.substring(8, 10);
+      const altYY = cleanL2.substring(10, 12);
+      const altM = parseInt(altMM, 10);
+      const altD = parseInt(altDD, 10);
+      if (altM >= 1 && altM <= 12 && altD >= 1 && altD <= 31) {
+        DD = altDD;
+        MM = altMM;
+        YY = altYY;
+      }
+    }
 
     result.factory_code = cFactory;
     result.factory_name = dict.factory?.[cFactory] || `Nhà máy ${cFactory}`;
 
+    const parsedM = parseInt(MM, 10);
+    const parsedD = parseInt(DD, 10);
+    const isValidNL = parsedM >= 1 && parsedM <= 12 && parsedD >= 1 && parsedD <= 31;
+
     result.packaging_date = `${dd}/${mm}`;
-    result.inbound_date = `${DD}/${MM}/20${YY}`;
-    result.raw_material_date = `${DD}/${MM}/20${YY}`;
+    result.inbound_date = isValidNL ? `${DD}/${MM}/20${YY}` : '';
+    result.raw_material_date = isValidNL ? `${DD}/${MM}/20${YY}` : '';
+
+    const cSupplier = cleanL2.length >= 16 ? cleanL2.slice(-5, -2) : cleanL2.substring(11, 14);
+    const cProvince = cleanL2.length >= 16 ? cleanL2.slice(-2) : cleanL2.substring(14, 16);
 
     result.supplier_code = cSupplier;
     const declaredSupplier = dict.supplier?.[cSupplier];
