@@ -20,6 +20,57 @@ export interface ShiftProductItem {
   available_units?: string[];
 }
 
+export interface ShiftParticipant {
+  user_id?: string | null;
+  user_name: string;
+  joined_at?: string;
+  last_active_at?: string;
+  source?: string;
+}
+
+export interface InterimCloseConfirmation {
+  user_id?: string | null;
+  user_name: string;
+  confirmed_at: string;
+  notes?: string | null;
+}
+
+export interface PendingInterimClose {
+  sub_shift_number: number;
+  from_time: string;
+  started_at: string;
+  started_by?: string | null;
+  started_by_name?: string | null;
+  confirmations: InterimCloseConfirmation[];
+}
+
+export interface InterimCloseStatus {
+  shift_id: string;
+  next_sub_shift_number: number;
+  from_time: string;
+  current_batch_count: number;
+  per_user_counts: Record<string, number>;
+  participants: ShiftParticipant[];
+  pending_interim_close: PendingInterimClose | null;
+  confirmed_users: InterimCloseConfirmation[];
+  missing_users: ShiftParticipant[];
+  total_participants: number;
+  confirmed_count: number;
+}
+
+export interface ConfirmInterimCloseResult {
+  status: 'waiting' | 'finalized';
+  shift_id: string;
+  sub_shift_number: number;
+  sub_shift?: SubShift | null;
+  participants: ShiftParticipant[];
+  confirmed_users: InterimCloseConfirmation[];
+  missing_users: ShiftParticipant[];
+  total_participants: number;
+  confirmed_count: number;
+  pending_interim_close?: PendingInterimClose | null;
+}
+
 export interface DeliveryShift {
   id: string;
   system_code: string;
@@ -42,6 +93,8 @@ export interface DeliveryShift {
     order_type_code?: string | null;
     products_summary?: Record<string, any>;
     units_summary?: Record<string, any>;
+    participants?: ShiftParticipant[];
+    pending_interim_close?: PendingInterimClose | null;
     is_offline?: boolean;
     [key: string]: any;
   } | null;
@@ -1514,6 +1567,145 @@ export async function getSubShifts(shiftId: string): Promise<SubShift[]> {
   return cached;
 }
 
+// 10.1 Đăng ký người dùng tham gia công việc (chạy ngầm khi có mạng)
+export async function registerShiftParticipant(shiftId: string, user: any): Promise<void> {
+  if (!shiftId || shiftId.startsWith('offline_shift_') || isOfflineDetected()) return;
+  try {
+    const supabase = await getSupabaseClient();
+    await withNetworkTimeout(
+      (supabase as any).rpc('register_shift_participant', {
+        p_shift_id: shiftId,
+        p_user_id: user?.id || null,
+        p_user_name: user?.full_name || user?.email || 'Nhân viên kho',
+      }),
+      2500
+    );
+  } catch {
+    // Bỏ qua im lặng nếu mất mạng trong kho đông
+  }
+}
+
+// 10.2 Kiểm tra mạng thật & lấy trạng thái chốt ca tạm đa người dùng (BẮT BUỘC CÓ MẠNG)
+export async function getInterimCloseStatus(shiftId: string): Promise<InterimCloseStatus> {
+  if (!shiftId || shiftId.startsWith('offline_shift_')) {
+    throw new Error('OFFLINE_SHIFT_UNSYNCED');
+  }
+  // Reset cờ offline để thử kết nối mạng thật ngay lúc người dùng mở chốt ca tạm
+  setKnownOffline(false);
+  try {
+    const supabase = await getSupabaseClient();
+    const { data, error } = await withNetworkTimeout(
+      (supabase as any).rpc('get_interim_close_status', {
+        p_shift_id: shiftId,
+      }),
+      5000
+    );
+    if (error) throw error;
+    return data as InterimCloseStatus;
+  } catch (err: any) {
+    const msg = String(err?.message || err || '');
+    if (
+      msg.includes('NETWORK_TIMEOUT_COLD_ROOM') ||
+      msg.includes('Network request failed') ||
+      msg.includes('Failed to fetch') ||
+      msg.includes('fetch')
+    ) {
+      throw new Error('OFFLINE_REQUIRED');
+    }
+    throw err;
+  }
+}
+
+// 10.3 Xác nhận Chốt Ca Tạm đa người dùng (Bắt buộc có mạng + tự động đồng bộ offline queue trước)
+export async function confirmInterimClose(params: {
+  shift: DeliveryShift;
+  user: any;
+  notes?: string;
+  forceFinalize?: boolean;
+  keepWaiting?: boolean;
+}): Promise<ConfirmInterimCloseResult> {
+  setKnownOffline(false);
+
+  // 1. Đẩy toàn bộ số liệu offline trên máy người này lên server trước
+  try {
+    const syncRes = await syncOperationsOfflineQueue();
+    if (!syncRes.success) {
+      throw new Error('OFFLINE_SYNC_INCOMPLETE');
+    }
+  } catch (err: any) {
+    const msg = String(err?.message || err || '');
+    if (msg === 'OFFLINE_SYNC_INCOMPLETE') throw err;
+    throw new Error('OFFLINE_REQUIRED');
+  }
+
+  if (params.shift.id.startsWith('offline_shift_')) {
+    throw new Error('OFFLINE_SHIFT_UNSYNCED');
+  }
+
+  // 2. Gọi RPC chốt ca tạm atomic trên server
+  try {
+    const supabase = await getSupabaseClient();
+    const { data, error } = await withNetworkTimeout(
+      (supabase as any).rpc('confirm_interim_close', {
+        p_shift_id: params.shift.id,
+        p_user_id: params.user?.id || null,
+        p_user_name: params.user?.full_name || params.user?.email || 'Nhân viên kho',
+        p_notes: params.notes?.trim() || null,
+        p_force_finalize: Boolean(params.forceFinalize),
+        p_keep_waiting: Boolean(params.keepWaiting),
+      }),
+      8000
+    );
+    if (error) throw error;
+    const res = data as ConfirmInterimCloseResult;
+    if (res.status === 'finalized' && res.sub_shift) {
+      const existing = await getCachedSubShifts(params.shift.id);
+      await setCachedSubShifts(params.shift.id, [
+        ...existing.filter(s => s.id !== res.sub_shift!.id),
+        res.sub_shift,
+      ]);
+    }
+    return res;
+  } catch (err: any) {
+    const msg = String(err?.message || err || '');
+    if (
+      msg.includes('NETWORK_TIMEOUT_COLD_ROOM') ||
+      msg.includes('Network request failed') ||
+      msg.includes('Failed to fetch') ||
+      msg.includes('fetch')
+    ) {
+      throw new Error('OFFLINE_REQUIRED');
+    }
+    throw err;
+  }
+}
+
+// 10.4 Rút xác nhận chốt ca tạm (khi còn đang ở trạng thái chờ người khác)
+export async function cancelMyInterimClose(shiftId: string, user: any): Promise<void> {
+  setKnownOffline(false);
+  try {
+    const supabase = await getSupabaseClient();
+    const { error } = await withNetworkTimeout(
+      (supabase as any).rpc('cancel_my_interim_close', {
+        p_shift_id: shiftId,
+        p_user_id: user?.id || null,
+      }),
+      5000
+    );
+    if (error) throw error;
+  } catch (err: any) {
+    const msg = String(err?.message || err || '');
+    if (
+      msg.includes('NETWORK_TIMEOUT_COLD_ROOM') ||
+      msg.includes('Network request failed') ||
+      msg.includes('Failed to fetch')
+    ) {
+      throw new Error('OFFLINE_REQUIRED');
+    }
+    throw err;
+  }
+}
+
 // 11. Thực hiện Chốt Ca Tạm (Interim Close / Sub-Shift)
 export async function createSubShift(params: {
   shift: DeliveryShift;
@@ -1530,15 +1722,15 @@ export async function createSubShift(params: {
   const lastSub = existingSubShifts[existingSubShifts.length - 1];
   const fromTime = lastSub ? lastSub.to_time : params.shift.opened_at;
   const toTime = new Date().toISOString();
-  const nextSubNumber = existingSubShifts.length + 1;
+  const nextSubNumber = existingSubShifts.reduce((max, s) => Math.max(max, Number(s.sub_shift_number) || 0), 0) + 1;
 
-  // 2. Lấy các bản ghi trong đợt tạm này
+  // 2. Lấy các bản ghi trong đợt tạm này (cả shiftSys và baseSys)
   const { data: records } = await supabase
     .from('delivery_journal')
     .select('*')
-    .eq('system_code', shiftSys)
+    .or(`system_code.eq.${shiftSys},system_code.eq.${baseSys}`)
     .ilike('notes', `%[CV_ID: ${params.shift.id}]%`)
-    .gte('sent_at', fromTime)
+    .gt('sent_at', fromTime)
     .lte('sent_at', toTime);
 
   const lines = records || [];
@@ -1551,11 +1743,17 @@ export async function createSubShift(params: {
     const isImport = l.to_department === 'Kho';
     const qty = Number(l.quantity_sent || l.result_quantity) || 0;
 
-    if (!unitMap[u]) unitMap[u] = { sent: 0, received: 0 };
-    if (isImport) unitMap[u].received += qty;
-    else unitMap[u].sent += qty;
+    if (!unitMap[u]) unitMap[u] = { sent: 0, received: 0, in_qty: 0, out_qty: 0, count: 0 };
+    if (isImport) {
+      unitMap[u].received += qty;
+      unitMap[u].in_qty += qty;
+    } else {
+      unitMap[u].sent += qty;
+      unitMap[u].out_qty += qty;
+    }
+    unitMap[u].count += 1;
 
-    const key = `${name}_${u}`;
+    const key = `${name}___${u}`;
     if (!prodMap[key]) prodMap[key] = { product_name: name, unit: u, in_qty: 0, out_qty: 0, count: 0 };
     if (isImport) prodMap[key].in_qty += qty;
     else prodMap[key].out_qty += qty;
@@ -1576,6 +1774,7 @@ export async function createSubShift(params: {
       total_records: lines.length,
       products_summary: prodMap,
       units_summary: unitMap,
+      journal_ids: lines.map((l: any) => l.id),
     },
   };
 
@@ -1588,6 +1787,9 @@ export async function createSubShift(params: {
   if (error) {
     console.error('Lỗi tạo đợt chốt tạm:', error);
     throw error;
+  }
+  if (data) {
+    await setCachedSubShifts(params.shift.id, [...existingSubShifts, data]);
   }
   return data;
 }

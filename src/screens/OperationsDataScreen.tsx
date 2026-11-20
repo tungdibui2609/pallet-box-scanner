@@ -41,7 +41,9 @@ import {
   ReconcileEntry,
   getCachedShiftReconciliations,
   saveShiftReconciliations,
+  registerShiftParticipant,
 } from '../services/operationsService';
+import { getSupabaseClient } from '../services/supabase';
 import OperationNumberPadModal from '../components/operations/OperationNumberPadModal';
 import ReconcileTabView from '../components/operations/ReconcileTabView';
 import OpenJobModal from '../components/operations/OpenJobModal';
@@ -934,6 +936,70 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
     }, 0);
     return () => clearTimeout(timer);
   }, []);
+
+  // Ghi nhận người dùng tham gia công việc & lắng nghe Realtime chốt ca tạm từ đồng nghiệp
+  useEffect(() => {
+    const shiftId = selectedShift?.id;
+    if (!shiftId || shiftId.startsWith('offline_shift_')) return;
+
+    if (user) {
+      void registerShiftParticipant(shiftId, user);
+    }
+
+    let cancelled = false;
+    let activeChannel: any = null;
+    let sbClient: any = null;
+
+    (async () => {
+      try {
+        sbClient = await getSupabaseClient();
+        if (cancelled || !sbClient) return;
+        activeChannel = sbClient
+          .channel(`mobile_solieu_shift_${shiftId}`)
+          .on(
+            'postgres_changes',
+            { event: '*', schema: 'public', table: 'delivery_shifts', filter: `id=eq.${shiftId}` },
+            async () => {
+              const freshShifts = await getOpenShifts();
+              setOpenShifts(freshShifts);
+              const fresh = freshShifts.find(s => s.id === shiftId);
+              if (fresh) setSelectedShift(fresh);
+            }
+          )
+          .on(
+            'postgres_changes',
+            { event: '*', schema: 'public', table: 'delivery_sub_shifts', filter: `shift_id=eq.${shiftId}` },
+            async () => {
+              await reloadShiftDataRef.current(shiftId);
+              const freshShifts = await getOpenShifts();
+              setOpenShifts(freshShifts);
+              const fresh = freshShifts.find(s => s.id === shiftId);
+              if (fresh) setSelectedShift(fresh);
+            }
+          )
+          .on(
+            'postgres_changes',
+            { event: '*', schema: 'public', table: 'delivery_journal' },
+            (payload: any) => {
+              const notesStr = String(payload?.new?.notes || payload?.old?.notes || '');
+              if (notesStr.includes(`[CV_ID: ${shiftId}]`)) {
+                void reloadShiftDataRef.current(shiftId);
+              }
+            }
+          )
+          .subscribe();
+      } catch {
+        // Offline trong kho lạnh -> bỏ qua realtime
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      if (sbClient && activeChannel) {
+        void sbClient.removeChannel(activeChannel);
+      }
+    };
+  }, [selectedShift?.id, user]);
 
   // Danh sách các lượt bấm hiển thị trên bàn làm việc
   // Nếu ở chế độ 'sub-shift' và có đợt chốt tạm: chỉ lấy sau mốc chốt tạm cuối cùng -> TỰ ĐỘNG RESET VỀ 0 KHI CHỐT TẠM!
@@ -1832,6 +1898,71 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
               }}
               ListFooterComponent={
                 <View style={styles.footerReportWrapper}>
+                  {/* Banner trạng thái đang chờ chốt ca tạm đa người dùng */}
+                  {selectedShift?.summary_data?.pending_interim_close && (() => {
+                    const pend = selectedShift.summary_data!.pending_interim_close!;
+                    const confs = pend.confirmations || [];
+                    const myId = user?.id ? String(user.id) : '';
+                    const myName = (user?.full_name || user?.email || '').trim().toLowerCase();
+                    const iDone = confs.some(
+                      c =>
+                        (myId && c.user_id && String(c.user_id) === myId) ||
+                        (myName && (c.user_name || '').trim().toLowerCase() === myName)
+                    );
+                    return (
+                      <TouchableOpacity
+                        onPress={() => setIsInterimCloseModal(true)}
+                        activeOpacity={0.8}
+                        style={{
+                          marginBottom: 8,
+                          paddingHorizontal: 12,
+                          paddingVertical: 10,
+                          borderRadius: 12,
+                          borderWidth: 1,
+                          backgroundColor: iDone
+                            ? 'rgba(16, 185, 129, 0.12)'
+                            : 'rgba(245, 158, 11, 0.16)',
+                          borderColor: iDone
+                            ? 'rgba(16, 185, 129, 0.45)'
+                            : 'rgba(245, 158, 11, 0.55)',
+                          flexDirection: 'row',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          gap: 8,
+                        }}
+                      >
+                        <View style={{ flex: 1 }}>
+                          <Text
+                            style={{
+                              fontSize: 12,
+                              fontWeight: '800',
+                              color: iDone ? '#34d399' : '#fcd34d',
+                            }}
+                          >
+                            {iDone
+                              ? `✅ Bạn đã chốt tạm Đợt #${pend.sub_shift_number} (${confs.length} người đã chốt) — Đang chờ người khác`
+                              : `⏳ Đợt #${pend.sub_shift_number} đang chờ bạn chốt (${confs.map(c => c.user_name).join(', ')} đã chốt)`}
+                          </Text>
+                          <Text style={{ fontSize: 10, color: '#cbd5e1', marginTop: 2 }}>
+                            Chạm để xem chi tiết danh sách ai đã chốt / ai chưa chốt
+                          </Text>
+                        </View>
+                        <View
+                          style={{
+                            backgroundColor: '#f59e0b',
+                            paddingHorizontal: 10,
+                            paddingVertical: 5,
+                            borderRadius: 8,
+                          }}
+                        >
+                          <Text style={{ fontSize: 11, fontWeight: '800', color: '#0f172a' }}>
+                            Xem
+                          </Text>
+                        </View>
+                      </TouchableOpacity>
+                    );
+                  })()}
+
                   {/* Thanh chuyển đổi chế độ xem: Đợt hiện tại vs Toàn ca (Nếu có đợt chốt tạm) */}
                   {subShifts.length > 0 && (
                     <View style={styles.viewModeNoticeRow}>
@@ -3743,10 +3874,23 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
         visible={isInterimCloseModal}
         shift={selectedShift}
         onClose={() => setIsInterimCloseModal(false)}
+        onSyncedReload={async () => {
+          if (!selectedShift) return;
+          const freshShifts = await getOpenShifts();
+          setOpenShifts(freshShifts);
+          const fresh = freshShifts.find(s => s.id === selectedShift.id);
+          if (fresh) setSelectedShift(fresh);
+          await reloadShiftData(selectedShift.id);
+          await refreshPendingCount();
+        }}
         onSuccess={async () => {
-          if (selectedShift) {
-            await reloadShiftData(selectedShift.id);
-          }
+          if (!selectedShift) return;
+          const freshShifts = await getOpenShifts();
+          setOpenShifts(freshShifts);
+          const fresh = freshShifts.find(s => s.id === selectedShift.id);
+          if (fresh) setSelectedShift(fresh);
+          await reloadShiftData(selectedShift.id);
+          await refreshPendingCount();
         }}
         user={user}
       />
