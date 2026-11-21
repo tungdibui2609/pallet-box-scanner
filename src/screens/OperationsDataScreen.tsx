@@ -307,6 +307,7 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
   const [isOpenJobModal, setIsOpenJobModal] = useState(false);
   const [isCloseJobModal, setIsCloseJobModal] = useState(false);
   const [isInterimCloseModal, setIsInterimCloseModal] = useState(false);
+  const [isActionMenuOpen, setIsActionMenuOpen] = useState(false);
   const [isImagesModalVisible, setIsImagesModalVisible] = useState(false);
   const [journalTargetForImages, setJournalTargetForImages] = useState<JournalImageTarget | null>(null);
   const [shiftImageCount, setShiftImageCount] = useState(0);
@@ -1461,70 +1462,163 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
         </View>
       )}
 
-      {/* ── TOP NAV BAR: TABS ĐANG LÀM / ĐÃ HOÀN THÀNH ── */}
-      <View style={styles.topTabBar}>
-        <TouchableOpacity
-          onPress={() => setActiveTab('active')}
-          style={[styles.tabBtn, activeTab === 'active' && styles.tabBtnActive]}
-        >
-          <View style={[styles.pulseDot, openShifts.length > 0 && styles.pulseDotActive]} />
-          <Text style={[styles.tabBtnText, activeTab === 'active' && styles.tabBtnTextActive]}>
-            Đang làm ({openShifts.length})
-          </Text>
-        </TouchableOpacity>
+      {/* ── HEADER SÁNG GỌN CHUẨN /SO-LIEU MOBILE (HÌNH 2) ── */}
+      <View style={styles.lightHeaderWrapper}>
+        {/* Hàng 1: Segmented Pill Đang làm / Đã hoàn thành */}
+        <View style={styles.topTabBar}>
+          <TouchableOpacity
+            onPress={() => setActiveTab('active')}
+            style={[styles.tabBtn, activeTab === 'active' && styles.tabBtnActive]}
+          >
+            <View style={[styles.pulseDot, openShifts.length > 0 && styles.pulseDotActive]} />
+            <Text style={[styles.tabBtnText, activeTab === 'active' && styles.tabBtnTextActive]}>
+              Đang làm ({openShifts.length})
+            </Text>
+          </TouchableOpacity>
 
-        <TouchableOpacity
-          onPress={() => setActiveTab('done')}
-          style={[styles.tabBtn, activeTab === 'done' && styles.tabBtnActive]}
-        >
-          <Ionicons name="checkmark-circle-outline" size={15} color={activeTab === 'done' ? '#6366f1' : '#94a3b8'} />
-          <Text style={[styles.tabBtnText, activeTab === 'done' && styles.tabBtnTextActive]}>
-            Đã hoàn thành ({pastShifts.length})
-          </Text>
-        </TouchableOpacity>
+          <TouchableOpacity
+            onPress={() => setActiveTab('done')}
+            style={[styles.tabBtn, activeTab === 'done' && styles.tabBtnActive]}
+          >
+            <Ionicons
+              name="checkmark-circle-outline"
+              size={15}
+              color={activeTab === 'done' ? '#4f46e5' : '#78716c'}
+            />
+            <Text style={[styles.tabBtnText, activeTab === 'done' && styles.tabBtnTextActive]}>
+              Đã hoàn thành ({pastShifts.length})
+            </Text>
+          </TouchableOpacity>
+        </View>
 
-        <TouchableOpacity
-          onPress={async () => {
-            const sys = await getCurrentSystemCode().catch(() => '');
-            if (sys) setAlbumSystemCode(sys);
-            setIsWarehouseAlbumVisible(true);
-          }}
-          style={{
-            width: 36,
-            height: 36,
-            borderRadius: 10,
-            backgroundColor: '#1e293b',
-            borderWidth: 1,
-            borderColor: '#10b98144',
-            justifyContent: 'center',
-            alignItems: 'center',
-          }}
-          accessibilityLabel="Thư viện ảnh theo ngày và công việc"
-        >
-          <Ionicons name="images-outline" size={17} color="#34d399" />
-        </TouchableOpacity>
+        {/* Hàng 2 & 3 (khi đang ở tab Đang làm) */}
+        {activeTab === 'active' && (
+          <>
+            <View style={styles.jobBar}>
+              {selectedShift ? (
+                <TouchableOpacity
+                  onPress={() => setIsShiftDropdownOpen(!isShiftDropdownOpen)}
+                  style={styles.jobDropdownBtn}
+                  activeOpacity={0.85}
+                >
+                  <Ionicons name="briefcase-outline" size={16} color="rgba(255,255,255,0.9)" style={{ marginRight: 8 }} />
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.jobLabel}>
+                      Công việc {openShifts.length > 1 ? `(${openShifts.length} đang mở)` : ''}
+                    </Text>
+                    <Text style={styles.jobTitle} numberOfLines={1}>
+                      {currentJobName}
+                    </Text>
+                  </View>
+                  <Ionicons
+                    name={isShiftDropdownOpen ? 'caret-up' : 'caret-down'}
+                    size={14}
+                    color="rgba(255,255,255,0.85)"
+                  />
+                </TouchableOpacity>
+              ) : (
+                <TouchableOpacity
+                  onPress={() => setIsOpenJobModal(true)}
+                  style={styles.jobDropdownBtn}
+                  activeOpacity={0.85}
+                >
+                  <Ionicons name="add-circle-outline" size={18} color="#fff" />
+                  <Text style={{ color: '#fff', fontWeight: '800', fontSize: 13, marginLeft: 8 }}>
+                    Tạo Công Việc Mới
+                  </Text>
+                </TouchableOpacity>
+              )}
 
-        <TouchableOpacity
-          onPress={handleSyncOperationsOffline}
-          disabled={downloadingOpsOffline || refreshing}
-          style={{
-            width: 36,
-            height: 36,
-            borderRadius: 10,
-            backgroundColor: '#1e293b',
-            borderWidth: 1,
-            borderColor: '#38bdf844',
-            justifyContent: 'center',
-            alignItems: 'center',
-          }}
-          accessibilityLabel="Tải dữ liệu số liệu"
-        >
-          {downloadingOpsOffline ? (
-            <ActivityIndicator size="small" color="#38bdf8" />
-          ) : (
-            <Ionicons name="cloud-download-outline" size={17} color="#38bdf8" />
-          )}
-        </TouchableOpacity>
+              {/* Nút tròn ⋯ gọn gàng gom toàn bộ thao tác */}
+              <TouchableOpacity
+                onPress={() => setIsActionMenuOpen(true)}
+                style={styles.moreActionBtn}
+                activeOpacity={0.75}
+                accessibilityLabel="Thao tác công việc"
+              >
+                <Ionicons name="ellipsis-horizontal" size={20} color="#57534e" />
+                {(selectedShift?.summary_data?.pending_interim_close || pendingSyncCount > 0) && (
+                  <View style={styles.moreActionDot} />
+                )}
+              </TouchableOpacity>
+            </View>
+
+            {/* Sổ danh sách các công việc đang mở */}
+            {isShiftDropdownOpen && (
+              <View style={styles.dropdownSheet}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                  <Text style={styles.dropdownHeader}>Chọn công việc để ghi nhận:</Text>
+                  <TouchableOpacity
+                    onPress={() => {
+                      setIsShiftDropdownOpen(false);
+                      setIsOpenJobModal(true);
+                    }}
+                  >
+                    <Text style={{ fontSize: 11, fontWeight: '800', color: '#4f46e5' }}>+ Thêm mới</Text>
+                  </TouchableOpacity>
+                </View>
+                {openShifts.map(s => {
+                  const isCur = selectedShift?.id === s.id;
+                  const name = s.summary_data?.job_name || s.notes || 'Công việc';
+                  return (
+                    <TouchableOpacity
+                      key={s.id}
+                      onPress={() => selectShift(s)}
+                      style={[styles.dropdownItem, isCur && styles.dropdownItemActive]}
+                    >
+                      <View style={[styles.dot, isCur ? { backgroundColor: '#4f46e5' } : { backgroundColor: '#10b981' }]} />
+                      <Text style={[styles.dropdownItemText, isCur && { color: '#4338ca', fontWeight: '800' }]} numberOfLines={1}>
+                        {name}
+                      </Text>
+                      {isCur && <Ionicons name="checkmark" size={16} color="#4f46e5" />}
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            )}
+
+            {/* Hàng 3: Thanh tìm kiếm bo tròn pill (Nhập / Ghim) */}
+            {selectedShift && (
+              <View
+                style={[
+                  styles.searchBarWrapper,
+                  searchMode === 'pin' && { borderColor: '#f59e0b' },
+                ]}
+              >
+                <TouchableOpacity
+                  onPress={() => {
+                    setSearchMode(prev => (prev === 'filter' ? 'pin' : 'filter'));
+                    setSearchQuery('');
+                  }}
+                  style={[styles.modeToggleBtn, searchMode === 'filter' ? styles.modeFilter : styles.modePin]}
+                >
+                  <Ionicons name="search" size={13} color={searchMode === 'filter' ? '#4338ca' : '#b45309'} />
+                  <Text style={[styles.modeToggleText, searchMode === 'filter' ? { color: '#4338ca' } : { color: '#b45309' }]}>
+                    {searchMode === 'filter' ? 'Nhập' : 'Ghim'}
+                  </Text>
+                </TouchableOpacity>
+
+                <TextInput
+                  style={styles.searchInput}
+                  value={searchQuery}
+                  onChangeText={setSearchQuery}
+                  placeholder={
+                    searchMode === 'filter'
+                      ? 'Tìm SP đã ghim (Bấm 🔍 đổi chế độ)'
+                      : 'Tìm SP từ kho để ghim (Bấm 🔍 đổi chế độ)'
+                  }
+                  placeholderTextColor="#a8a29e"
+                />
+
+                {searchQuery ? (
+                  <TouchableOpacity onPress={() => setSearchQuery('')} style={styles.clearSearchBtn}>
+                    <Ionicons name="close-circle" size={16} color="#a8a29e" />
+                  </TouchableOpacity>
+                ) : null}
+              </View>
+            )}
+          </>
+        )}
       </View>
 
       {bgUploadingCount > 0 && (
@@ -1535,13 +1629,13 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
             justifyContent: 'center',
             gap: 6,
             paddingVertical: 5,
-            backgroundColor: 'rgba(14,165,233,0.14)',
+            backgroundColor: '#f0f9ff',
             borderBottomWidth: 1,
-            borderBottomColor: 'rgba(56,189,248,0.3)',
+            borderBottomColor: '#bae6fd',
           }}
         >
-          <ActivityIndicator size="small" color="#38bdf8" />
-          <Text style={{ color: '#7dd3fc', fontSize: 11, fontWeight: '700' }}>
+          <ActivityIndicator size="small" color="#0284c7" />
+          <Text style={{ color: '#0369a1', fontSize: 11, fontWeight: '700' }}>
             Đang đẩy ngầm {bgUploadingCount} ảnh lên hệ thống...
           </Text>
         </View>
@@ -1549,144 +1643,6 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
 
       {activeTab === 'active' ? (
         <>
-          {/* ── SELECTOR CÔNG VIỆC ĐANG LÀM ── */}
-          <View style={styles.jobBar}>
-            {selectedShift ? (
-              <TouchableOpacity
-                onPress={() => setIsShiftDropdownOpen(!isShiftDropdownOpen)}
-                style={styles.jobDropdownBtn}
-              >
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.jobLabel}>
-                    Công việc {openShifts.length > 1 ? `(${openShifts.length} đang mở)` : ''}
-                  </Text>
-                  <Text style={styles.jobTitle} numberOfLines={1}>
-                    {currentJobName}
-                  </Text>
-                </View>
-                <Ionicons
-                  name={isShiftDropdownOpen ? 'chevron-up' : 'chevron-down'}
-                  size={18}
-                  color="#94a3b8"
-                />
-              </TouchableOpacity>
-            ) : (
-              <TouchableOpacity
-                onPress={() => setIsOpenJobModal(true)}
-                style={[styles.jobDropdownBtn, { backgroundColor: '#6366f1' }]}
-              >
-                <Ionicons name="add-circle-outline" size={20} color="#fff" />
-                <Text style={{ color: '#fff', fontWeight: '800', fontSize: 14, marginLeft: 8 }}>
-                  Tạo Công Việc Mới
-                </Text>
-              </TouchableOpacity>
-            )}
-
-            {/* Nút Chốt tạm (Cam), Hoàn thành ca (Đỏ), Thêm mới (Tím) */}
-            {selectedShift && (
-              <View style={{ flexDirection: 'row', gap: 6, marginLeft: 6 }}>
-                <TouchableOpacity
-                  onPress={() => setIsImagesModalVisible(true)}
-                  style={[
-                    styles.actionIconBtnWarning,
-                    { backgroundColor: 'rgba(56, 189, 248, 0.14)', borderColor: 'rgba(56, 189, 248, 0.4)' },
-                  ]}
-                  accessibilityLabel="Album ảnh chứng minh"
-                >
-                  <Ionicons name="camera-outline" size={16} color="#38bdf8" />
-                  {shiftImageCount > 0 && (
-                    <Text style={{ color: '#38bdf8', fontSize: 11, fontWeight: '800', marginLeft: 2 }}>
-                      {shiftImageCount}
-                    </Text>
-                  )}
-                </TouchableOpacity>
-                <TouchableOpacity
-                  onPress={() => setIsInterimCloseModal(true)}
-                  style={styles.actionIconBtnWarning}
-                  accessibilityLabel="Chốt ca tạm"
-                >
-                  <Ionicons name="time-outline" size={18} color="#fff" />
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  onPress={() => setIsCloseJobModal(true)}
-                  style={styles.actionIconBtnDanger}
-                  accessibilityLabel="Hoàn thành công việc"
-                >
-                  <Ionicons name="stop-circle" size={18} color="#fff" />
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  onPress={() => setIsOpenJobModal(true)}
-                  style={styles.actionIconBtnPrimary}
-                  accessibilityLabel="Thêm công việc khác"
-                >
-                  <Ionicons name="add" size={20} color="#fff" />
-                </TouchableOpacity>
-              </View>
-            )}
-          </View>
-
-          {/* Sổ danh sách các công việc đang mở */}
-          {isShiftDropdownOpen && (
-            <View style={styles.dropdownSheet}>
-              <Text style={styles.dropdownHeader}>Chọn công việc để ghi nhận:</Text>
-              {openShifts.map(s => {
-                const isCur = selectedShift?.id === s.id;
-                const name = s.summary_data?.job_name || s.notes || 'Công việc';
-                return (
-                  <TouchableOpacity
-                    key={s.id}
-                    onPress={() => selectShift(s)}
-                    style={[styles.dropdownItem, isCur && styles.dropdownItemActive]}
-                  >
-                    <View style={[styles.dot, isCur ? { backgroundColor: '#6366f1' } : { backgroundColor: '#22c55e' }]} />
-                    <Text style={[styles.dropdownItemText, isCur && { color: '#6366f1', fontWeight: '800' }]} numberOfLines={1}>
-                      {name}
-                    </Text>
-                    {isCur && <Ionicons name="checkmark" size={16} color="#6366f1" />}
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
-          )}
-
-          {/* ── THANH TÌM KIẾM 2 CHẾ ĐỘ: NHẬP (Lọc SP ghim) & GHIM (Tìm kho) ── */}
-          {selectedShift && (
-            <View style={styles.searchBarWrapper}>
-              {/* Nút kính lúp chuyển đổi chế độ */}
-              <TouchableOpacity
-                onPress={() => {
-                  setSearchMode(prev => (prev === 'filter' ? 'pin' : 'filter'));
-                  setSearchQuery('');
-                }}
-                style={[styles.modeToggleBtn, searchMode === 'filter' ? styles.modeFilter : styles.modePin]}
-              >
-                <Ionicons name="search" size={13} color={searchMode === 'filter' ? '#818cf8' : '#fbbf24'} />
-                <Text style={[styles.modeToggleText, searchMode === 'filter' ? { color: '#818cf8' } : { color: '#fbbf24' }]}>
-                  {searchMode === 'filter' ? 'Nhập' : 'Ghim'}
-                </Text>
-              </TouchableOpacity>
-
-              <TextInput
-                style={styles.searchInput}
-                value={searchQuery}
-                onChangeText={setSearchQuery}
-                placeholder={
-                  searchMode === 'filter'
-                    ? 'Tìm SP đã ghim (Bấm 🔍 đổi chế độ)...'
-                    : 'Tìm SP từ kho để ghim (Bấm 🔍 đổi chế độ)...'
-                }
-                placeholderTextColor="#64748b"
-              />
-
-              {searchQuery ? (
-                <TouchableOpacity onPress={() => setSearchQuery('')} style={styles.clearSearchBtn}>
-                  <Ionicons name="close-circle" size={16} color="#64748b" />
-                </TouchableOpacity>
-              ) : null}
-            </View>
-          )}
 
           {/* Subheader: Chạm vào sản phẩm để nhập số | N = Nhập  X = Xuất */}
           {selectedShift && (
@@ -1699,54 +1655,46 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
             </View>
           )}
 
-          {/* Thanh trạng thái Ghim & Nút Ghim tất cả / Bỏ ghim tất cả */}
-          {selectedShift && (
+          {/* Thanh trạng thái Ghim (chỉ hiện khi ở chế độ Ghim SP để giữ giao diện Nhập thật gọn như hình 1) */}
+          {selectedShift && searchMode === 'pin' && (
             <View style={styles.pinnedStatusRow}>
               <Text style={styles.pinnedCountText}>
-                {searchMode === 'pin' ? 'Đang duyệt kho để ghim:' : 'Đã ghim:'}{' '}
-                <Text style={{ color: '#f8fafc', fontWeight: '800' }}>
-                  {pinnedProducts.length}{searchMode === 'pin' ? `/${allProducts.length}` : ''} SP
+                Đang duyệt kho để ghim:{' '}
+                <Text style={{ color: '#1c1917', fontWeight: '800' }}>
+                  {pinnedProducts.length}/{allProducts.length} SP
                 </Text>
               </Text>
 
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                {searchMode === 'pin' && (
-                  <TouchableOpacity
-                    onPress={() => void handlePinAll()}
-                    style={{
-                      paddingHorizontal: 10,
-                      paddingVertical: 5,
-                      borderRadius: 8,
-                      backgroundColor: '#f59e0b',
-                    }}
-                  >
-                    <Text style={{ fontSize: 11, fontWeight: '800', color: '#0f172a' }}>
-                      {searchQuery.trim() ? `Ghim lọc (${displayedProducts.length})` : 'Ghim tất cả'}
-                    </Text>
-                  </TouchableOpacity>
-                )}
+                <TouchableOpacity
+                  onPress={() => void handlePinAll()}
+                  style={{
+                    paddingHorizontal: 10,
+                    paddingVertical: 5,
+                    borderRadius: 8,
+                    backgroundColor: '#f59e0b',
+                  }}
+                >
+                  <Text style={{ fontSize: 11, fontWeight: '800', color: '#fff' }}>
+                    {searchQuery.trim() ? `Ghim lọc (${displayedProducts.length})` : 'Ghim tất cả'}
+                  </Text>
+                </TouchableOpacity>
 
-                {pinnedProducts.length > 0 && searchMode === 'pin' && (
+                {pinnedProducts.length > 0 && (
                   <TouchableOpacity
                     onPress={handleClearPinned}
                     style={{
                       paddingHorizontal: 10,
                       paddingVertical: 5,
                       borderRadius: 8,
-                      backgroundColor: 'rgba(244,63,94,0.18)',
+                      backgroundColor: '#fff1f2',
                       borderWidth: 1,
-                      borderColor: 'rgba(244,63,94,0.45)',
+                      borderColor: '#fecdd3',
                     }}
                   >
-                    <Text style={{ fontSize: 11, fontWeight: '700', color: '#fda4af' }}>
+                    <Text style={{ fontSize: 11, fontWeight: '700', color: '#e11d48' }}>
                       Bỏ ghim tất cả
                     </Text>
-                  </TouchableOpacity>
-                )}
-
-                {pinnedProducts.length > 0 && searchMode === 'filter' && (
-                  <TouchableOpacity onPress={handleClearPinned} style={styles.trashBtn}>
-                    <Ionicons name="trash-outline" size={15} color="#f43f5e" />
                   </TouchableOpacity>
                 )}
               </View>
@@ -1872,9 +1820,21 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
                             style={[styles.unitRowPill, isSelected && styles.unitRowPillActive]}
                             activeOpacity={0.7}
                           >
-                            <Text style={[styles.unitRowName, isSelected && styles.unitRowNameActive]}>
-                              {u}
-                            </Text>
+                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                              <Text style={[styles.unitRowName, isSelected && styles.unitRowNameActive]}>
+                                {u}
+                              </Text>
+                              {isSelected && (
+                                <View
+                                  style={{
+                                    width: 6,
+                                    height: 6,
+                                    borderRadius: 3,
+                                    backgroundColor: '#6366f1',
+                                  }}
+                                />
+                              )}
+                            </View>
 
                             <View style={styles.statsWrapper}>
                               <View style={[styles.statBadgeIn, uStats.inQty > 0 && styles.statBadgeInActive]}>
@@ -4006,6 +3966,140 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
         }}
       />
 
+      {/* Bottom Sheet Menu Thao Tác (nút ⋯ chuẩn /so-lieu mobile) */}
+      <Modal
+        visible={isActionMenuOpen}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setIsActionMenuOpen(false)}
+      >
+        <TouchableOpacity
+          activeOpacity={1}
+          onPress={() => setIsActionMenuOpen(false)}
+          style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'flex-end' }}
+        >
+          <View
+            style={{
+              backgroundColor: '#ffffff',
+              borderTopLeftRadius: 24,
+              borderTopRightRadius: 24,
+              paddingHorizontal: 16,
+              paddingTop: 10,
+              paddingBottom: 28,
+            }}
+          >
+            <View
+              style={{
+                width: 40,
+                height: 4,
+                borderRadius: 2,
+                backgroundColor: '#d6d3d1',
+                alignSelf: 'center',
+                marginBottom: 12,
+              }}
+            />
+            {selectedShift && (
+              <View style={{ marginBottom: 10, paddingHorizontal: 4 }}>
+                <Text style={{ fontSize: 13, fontWeight: '800', color: '#1c1917' }} numberOfLines={1}>
+                  {currentJobName}
+                </Text>
+                <Text style={{ fontSize: 11, color: '#78716c', marginTop: 2 }}>
+                  {subShifts.length > 0 ? `${subShifts.length} lần chốt tạm • ` : ''}
+                  {pinnedProducts.length} SP đã ghim
+                </Text>
+              </View>
+            )}
+
+            {selectedShift && (
+              <>
+                <TouchableOpacity
+                  onPress={() => {
+                    setIsActionMenuOpen(false);
+                    setIsInterimCloseModal(true);
+                  }}
+                  style={styles.actionMenuRow}
+                >
+                  <Ionicons name="time-outline" size={19} color="#d97706" />
+                  <Text style={styles.actionMenuText}>Chốt ca tạm (Đợt #{subShifts.length + 1})</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  onPress={() => {
+                    setIsActionMenuOpen(false);
+                    setIsCloseJobModal(true);
+                  }}
+                  style={styles.actionMenuRow}
+                >
+                  <Ionicons name="stop-circle-outline" size={19} color="#e11d48" />
+                  <Text style={[styles.actionMenuText, { color: '#e11d48' }]}>Hoàn thành công việc</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  onPress={() => {
+                    setIsActionMenuOpen(false);
+                    setIsImagesModalVisible(true);
+                  }}
+                  style={styles.actionMenuRow}
+                >
+                  <Ionicons name="camera-outline" size={19} color="#0284c7" />
+                  <Text style={styles.actionMenuText}>Album ảnh công việc này ({shiftImageCount})</Text>
+                </TouchableOpacity>
+              </>
+            )}
+
+            <TouchableOpacity
+              onPress={() => {
+                setIsActionMenuOpen(false);
+                setIsOpenJobModal(true);
+              }}
+              style={styles.actionMenuRow}
+            >
+              <Ionicons name="add-circle-outline" size={19} color="#4f46e5" />
+              <Text style={[styles.actionMenuText, { color: '#4f46e5' }]}>Mở công việc mới</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              onPress={async () => {
+                setIsActionMenuOpen(false);
+                const sys = await getCurrentSystemCode().catch(() => '');
+                if (sys) setAlbumSystemCode(sys);
+                setIsWarehouseAlbumVisible(true);
+              }}
+              style={styles.actionMenuRow}
+            >
+              <Ionicons name="images-outline" size={19} color="#059669" />
+              <Text style={styles.actionMenuText}>Thư viện ảnh theo ngày & công việc</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              onPress={() => {
+                setIsActionMenuOpen(false);
+                void handleSyncOperationsOffline();
+              }}
+              style={styles.actionMenuRow}
+            >
+              <Ionicons name="cloud-download-outline" size={19} color="#0284c7" />
+              <Text style={styles.actionMenuText}>Tải & Đồng bộ dữ liệu ngoại tuyến</Text>
+            </TouchableOpacity>
+
+            {selectedShift && pinnedProducts.length > 0 && (
+              <TouchableOpacity
+                onPress={() => {
+                  setIsActionMenuOpen(false);
+                  handleClearPinned();
+                }}
+                style={[styles.actionMenuRow, { borderBottomWidth: 0 }]}
+              >
+                <Ionicons name="trash-outline" size={19} color="#78716c" />
+                <Text style={[styles.actionMenuText, { color: '#78716c' }]}>
+                  Bỏ ghim tất cả ({pinnedProducts.length} SP)
+                </Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
       <Modal
         visible={Boolean(previewReconcileImage)}
         transparent
@@ -4032,80 +4126,125 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0f172a',
+    backgroundColor: '#f8fafc',
+  },
+  lightHeaderWrapper: {
+    backgroundColor: '#ffffff',
+    borderBottomWidth: 1,
+    borderBottomColor: '#e7e5e4',
+    paddingHorizontal: 12,
+    paddingTop: 8,
+    paddingBottom: 10,
+    gap: 8,
   },
   topTabBar: {
     flexDirection: 'row',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    backgroundColor: '#1e293b',
-    borderBottomWidth: 1,
-    borderBottomColor: '#334155',
-    gap: 8,
+    padding: 4,
+    backgroundColor: '#f5f5f4',
+    borderRadius: 999,
+    gap: 4,
   },
   tabBtn: {
     flex: 1,
     height: 34,
-    borderRadius: 8,
+    borderRadius: 999,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 6,
-    backgroundColor: '#0f172a',
+    backgroundColor: 'transparent',
   },
   tabBtnActive: {
-    backgroundColor: '#334155',
-    borderWidth: 1,
-    borderColor: '#6366f1',
+    backgroundColor: '#ffffff',
+    shadowColor: '#000',
+    shadowOpacity: 0.06,
+    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 1 },
+    elevation: 2,
   },
   tabBtnText: {
     fontSize: 12,
     fontWeight: '700',
-    color: '#94a3b8',
+    color: '#78716c',
   },
   tabBtnTextActive: {
-    color: '#f8fafc',
+    color: '#4f46e5',
+    fontWeight: '800',
   },
   pulseDot: {
     width: 7,
     height: 7,
     borderRadius: 4,
-    backgroundColor: '#475569',
+    backgroundColor: '#d6d3d1',
   },
   pulseDotActive: {
-    backgroundColor: '#22c55e',
+    backgroundColor: '#10b981',
   },
   jobBar: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    backgroundColor: '#1e293b',
-    borderBottomWidth: 1,
-    borderBottomColor: '#334155',
+    gap: 8,
   },
   jobDropdownBtn: {
     flex: 1,
-    height: 42,
-    backgroundColor: '#0f172a',
-    borderRadius: 10,
-    paddingHorizontal: 12,
+    height: 44,
+    backgroundColor: '#4f46e5',
+    borderRadius: 999,
+    paddingHorizontal: 14,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    borderWidth: 1,
-    borderColor: '#334155',
+    shadowColor: '#4f46e5',
+    shadowOpacity: 0.18,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 2,
   },
   jobLabel: {
-    fontSize: 9,
-    color: '#64748b',
-    fontWeight: '700',
-    textTransform: 'uppercase',
+    fontSize: 10,
+    color: 'rgba(255,255,255,0.82)',
+    fontWeight: '600',
   },
   jobTitle: {
     fontSize: 13,
     fontWeight: '800',
-    color: '#f8fafc',
+    color: '#ffffff',
+  },
+  moreActionBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 999,
+    backgroundColor: '#ffffff',
+    borderWidth: 1,
+    borderColor: '#e7e5e4',
+    alignItems: 'center',
+    justifyContent: 'center',
+    position: 'relative',
+  },
+  moreActionDot: {
+    position: 'absolute',
+    top: 8,
+    right: 8,
+    width: 9,
+    height: 9,
+    borderRadius: 5,
+    backgroundColor: '#f59e0b',
+    borderWidth: 2,
+    borderColor: '#ffffff',
+  },
+  actionMenuRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 13,
+    paddingHorizontal: 4,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f5f5f4',
+  },
+  actionMenuText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#1c1917',
   },
   actionIconBtnDanger: {
     width: 42,
@@ -4127,37 +4266,39 @@ const styles = StyleSheet.create({
     width: 42,
     height: 42,
     borderRadius: 10,
-    backgroundColor: '#6366f1',
+    backgroundColor: '#4f46e5',
     alignItems: 'center',
     justifyContent: 'center',
   },
   dropdownSheet: {
-    backgroundColor: '#1e293b',
-    paddingHorizontal: 12,
+    backgroundColor: '#fafaf9',
+    paddingHorizontal: 10,
     paddingVertical: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: '#334155',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#e7e5e4',
   },
   dropdownHeader: {
     fontSize: 11,
-    color: '#64748b',
+    color: '#78716c',
     fontWeight: '700',
-    marginBottom: 6,
   },
   dropdownItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 8,
+    paddingVertical: 9,
     paddingHorizontal: 10,
-    borderRadius: 8,
-    backgroundColor: '#0f172a',
-    marginBottom: 4,
+    borderRadius: 10,
+    backgroundColor: '#ffffff',
+    borderWidth: 1,
+    borderColor: '#e7e5e4',
+    marginBottom: 5,
     gap: 8,
   },
   dropdownItemActive: {
     borderWidth: 1,
-    borderColor: '#6366f1',
-    backgroundColor: '#1e1b4b',
+    borderColor: '#a5b4fc',
+    backgroundColor: '#eef2ff',
   },
   dot: {
     width: 8,
@@ -4167,34 +4308,35 @@ const styles = StyleSheet.create({
   dropdownItemText: {
     flex: 1,
     fontSize: 13,
-    color: '#f8fafc',
+    color: '#1c1917',
     fontWeight: '600',
   },
   searchBarWrapper: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginHorizontal: 12,
-    marginTop: 8,
-    height: 38,
-    backgroundColor: '#1e293b',
-    borderRadius: 10,
+    height: 40,
+    backgroundColor: '#ffffff',
+    borderRadius: 999,
     borderWidth: 1,
-    borderColor: '#334155',
-    paddingHorizontal: 4,
+    borderColor: '#a5b4fc',
+    paddingHorizontal: 5,
   },
   modeToggleBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    height: 28,
-    paddingHorizontal: 8,
-    borderRadius: 7,
+    height: 30,
+    paddingHorizontal: 10,
+    borderRadius: 999,
+    borderWidth: 1,
   },
   modeFilter: {
-    backgroundColor: '#312e81',
+    backgroundColor: '#eef2ff',
+    borderColor: '#c7d2fe',
   },
   modePin: {
-    backgroundColor: '#451a03',
+    backgroundColor: '#fffbeb',
+    borderColor: '#fcd34d',
   },
   modeToggleText: {
     fontSize: 11,
@@ -4203,7 +4345,7 @@ const styles = StyleSheet.create({
   searchInput: {
     flex: 1,
     height: 38,
-    color: '#f8fafc',
+    color: '#1c1917',
     fontSize: 12,
     paddingHorizontal: 8,
   },
@@ -4214,12 +4356,18 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 16,
+    paddingHorizontal: 14,
     paddingVertical: 6,
+    marginHorizontal: 10,
+    marginBottom: 6,
+    backgroundColor: '#fffbeb',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#fde68a',
   },
   pinnedCountText: {
     fontSize: 11,
-    color: '#94a3b8',
+    color: '#57534e',
   },
   trashBtn: {
     padding: 4,
@@ -4231,7 +4379,7 @@ const styles = StyleSheet.create({
     padding: 30,
   },
   loadingText: {
-    color: '#94a3b8',
+    color: '#78716c',
     fontSize: 13,
     marginTop: 10,
   },
@@ -4244,12 +4392,12 @@ const styles = StyleSheet.create({
   emptyShiftTitle: {
     fontSize: 16,
     fontWeight: '800',
-    color: '#f8fafc',
+    color: '#1c1917',
     marginTop: 12,
   },
   emptyShiftDesc: {
     fontSize: 12,
-    color: '#94a3b8',
+    color: '#78716c',
     textAlign: 'center',
     marginTop: 6,
     lineHeight: 18,
@@ -4258,8 +4406,8 @@ const styles = StyleSheet.create({
     marginTop: 20,
     height: 44,
     paddingHorizontal: 20,
-    backgroundColor: '#6366f1',
-    borderRadius: 12,
+    backgroundColor: '#4f46e5',
+    borderRadius: 999,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
@@ -4274,7 +4422,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   emptyListText: {
-    color: '#64748b',
+    color: '#78716c',
     fontSize: 12,
     textAlign: 'center',
     lineHeight: 18,
@@ -4394,38 +4542,45 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingTop: 8,
-    paddingBottom: 4,
+    paddingHorizontal: 14,
+    paddingTop: 10,
+    paddingBottom: 6,
   },
   subHeaderHintLeft: {
     fontSize: 11,
-    color: '#64748b',
+    color: '#78716c',
     fontWeight: '500',
   },
   hintIn: {
     fontSize: 11,
-    fontWeight: '700',
-    color: '#22c55e',
+    fontWeight: '800',
+    color: '#059669',
   },
   hintOut: {
     fontSize: 11,
-    fontWeight: '700',
-    color: '#ef4444',
+    fontWeight: '800',
+    color: '#e11d48',
   },
   productCard: {
-    backgroundColor: '#1e293b',
-    borderRadius: 14,
-    padding: 10,
+    backgroundColor: '#ffffff',
+    borderRadius: 16,
+    padding: 12,
     marginBottom: 8,
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: '#e7e5e4',
+    shadowColor: '#000',
+    shadowOpacity: 0.03,
+    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 1 },
+    elevation: 1,
   },
   cardIndigo: {
+    backgroundColor: '#ffffff',
     borderLeftWidth: 4,
-    borderLeftColor: '#6366f1',
+    borderLeftColor: '#4f46e5',
   },
   cardAmber: {
+    backgroundColor: '#fffdf7',
     borderLeftWidth: 4,
     borderLeftColor: '#f59e0b',
   },
@@ -4435,28 +4590,31 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   sttBadge: {
-    width: 22,
-    height: 22,
-    borderRadius: 6,
+    width: 24,
+    height: 24,
+    borderRadius: 8,
     alignItems: 'center',
     justifyContent: 'center',
     marginTop: 1,
+    borderWidth: 1,
   },
   sttBadgeText: {
-    fontSize: 10,
+    fontSize: 11,
     fontWeight: '900',
   },
   sttIndigo: {
-    backgroundColor: '#312e81',
+    backgroundColor: '#eef2ff',
+    borderColor: '#c7d2fe',
   },
   sttIndigoText: {
-    color: '#a5b4fc',
+    color: '#3730a3',
   },
   sttAmber: {
-    backgroundColor: '#78350f',
+    backgroundColor: '#fef3c7',
+    borderColor: '#fcd34d',
   },
   sttAmberText: {
-    color: '#fcd34d',
+    color: '#92400e',
   },
   cardTitleCol: {
     flex: 1,
@@ -4464,45 +4622,48 @@ const styles = StyleSheet.create({
   cardProductName: {
     fontSize: 13,
     fontWeight: '700',
-    color: '#f8fafc',
+    color: '#1c1917',
     lineHeight: 18,
   },
   cardProductSku: {
     fontSize: 10,
-    color: '#64748b',
+    color: '#a8a29e',
     marginTop: 2,
   },
   cardEyeBtn: {
-    padding: 6,
-    backgroundColor: '#0f172a',
-    borderRadius: 8,
+    width: 30,
+    height: 30,
+    backgroundColor: '#f5f5f4',
+    borderRadius: 999,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   cardUnitsList: {
-    marginTop: 8,
-    gap: 5,
+    marginTop: 9,
+    gap: 6,
   },
   unitRowPill: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    backgroundColor: '#0f172a',
-    paddingHorizontal: 10,
+    backgroundColor: '#fafaf9',
+    paddingHorizontal: 12,
     paddingVertical: 7,
-    borderRadius: 8,
+    borderRadius: 999,
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: '#e7e5e4',
   },
   unitRowPillActive: {
-    borderColor: '#6366f1',
-    backgroundColor: 'rgba(99, 102, 241, 0.12)',
+    borderColor: '#a5b4fc',
+    backgroundColor: '#eef2ff',
   },
   unitRowName: {
     fontSize: 12,
     fontWeight: '700',
-    color: '#cbd5e1',
+    color: '#44403c',
   },
   unitRowNameActive: {
-    color: '#a5b4fc',
+    color: '#4338ca',
     fontWeight: '800',
   },
   statsWrapper: {
@@ -4511,67 +4672,65 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   statBadgeIn: {
-    paddingHorizontal: 7,
-    paddingVertical: 2.5,
+    paddingHorizontal: 4,
+    paddingVertical: 1,
     borderRadius: 6,
-    backgroundColor: 'rgba(34, 197, 94, 0.12)',
+    backgroundColor: 'transparent',
   },
   statBadgeInActive: {
-    backgroundColor: 'rgba(34, 197, 94, 0.25)',
-    borderWidth: 1,
-    borderColor: 'rgba(74, 222, 128, 0.4)',
+    backgroundColor: '#dcfce7',
+    paddingHorizontal: 6,
   },
   statTextIn: {
     fontSize: 12,
     fontWeight: '800',
-    color: '#4ade80',
+    color: '#a8a29e',
   },
   statTextInActive: {
-    color: '#22c55e',
+    color: '#059669',
     fontWeight: '900',
   },
   statDivider: {
-    color: '#475569',
+    color: '#d6d3d1',
     fontSize: 11,
     fontWeight: '600',
   },
   statBadgeOut: {
-    paddingHorizontal: 7,
-    paddingVertical: 2.5,
+    paddingHorizontal: 4,
+    paddingVertical: 1,
     borderRadius: 6,
-    backgroundColor: 'rgba(239, 68, 68, 0.12)',
+    backgroundColor: 'transparent',
   },
   statBadgeOutActive: {
-    backgroundColor: 'rgba(239, 68, 68, 0.25)',
-    borderWidth: 1,
-    borderColor: 'rgba(248, 113, 113, 0.4)',
+    backgroundColor: '#ffe4e6',
+    paddingHorizontal: 6,
   },
   statTextOut: {
     fontSize: 12,
     fontWeight: '800',
-    color: '#f87171',
+    color: '#a8a29e',
   },
   statTextOutActive: {
-    color: '#ef4444',
+    color: '#e11d48',
     fontWeight: '900',
   },
 
-  // ── PHẦN BÁO CÁO VÀ LỊCH SỬ ĐỢT CUỐI TRANG ──
+  // ── PHẦN BÁO CÁO VÀ LỊCH SỬ ĐỢT CUỐI TRANG (LIGHT THEME) ──
   footerReportWrapper: {
-    marginTop: 18,
+    marginTop: 14,
     marginBottom: 40,
   },
   viewModeNoticeRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    backgroundColor: '#1e293b',
+    backgroundColor: '#fffbeb',
     paddingHorizontal: 12,
     paddingVertical: 8,
-    borderRadius: 10,
+    borderRadius: 12,
     marginBottom: 10,
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: '#fde68a',
   },
   viewModeNoticeLeft: {
     flexDirection: 'row',
@@ -4582,31 +4741,33 @@ const styles = StyleSheet.create({
   viewModeNoticeText: {
     fontSize: 11,
     fontWeight: '700',
-    color: '#f59e0b',
+    color: '#b45309',
   },
   viewModeToggleBtn: {
     paddingHorizontal: 10,
     paddingVertical: 4,
-    borderRadius: 6,
-    backgroundColor: '#334155',
+    borderRadius: 8,
+    backgroundColor: '#ffffff',
+    borderWidth: 1,
+    borderColor: '#fcd34d',
   },
   viewModeToggleBtnText: {
     fontSize: 11,
     fontWeight: '800',
-    color: '#f8fafc',
+    color: '#b45309',
   },
   reportCard: {
-    backgroundColor: '#1e293b',
+    backgroundColor: '#ffffff',
     borderRadius: 16,
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: '#e7e5e4',
     overflow: 'hidden',
   },
   reportTabHeader: {
     flexDirection: 'row',
     borderBottomWidth: 1,
-    borderBottomColor: '#334155',
-    backgroundColor: '#0f172a',
+    borderBottomColor: '#e7e5e4',
+    backgroundColor: '#fafaf9',
   },
   reportTabBtn: {
     flex: 1,
@@ -4619,16 +4780,16 @@ const styles = StyleSheet.create({
     borderBottomColor: 'transparent',
   },
   reportTabBtnActive: {
-    borderBottomColor: '#6366f1',
-    backgroundColor: '#1e293b',
+    borderBottomColor: '#4f46e5',
+    backgroundColor: '#ffffff',
   },
   reportTabBtnText: {
     fontSize: 12,
     fontWeight: '700',
-    color: '#94a3b8',
+    color: '#78716c',
   },
   reportTabBtnTextActive: {
-    color: '#f8fafc',
+    color: '#4f46e5',
     fontWeight: '800',
   },
   feedTabContainer: {
@@ -4636,7 +4797,7 @@ const styles = StyleSheet.create({
   },
   filterPillsRow: {
     flexDirection: 'row',
-    backgroundColor: '#0f172a',
+    backgroundColor: '#f5f5f4',
     borderRadius: 10,
     padding: 4,
     gap: 4,
@@ -4652,7 +4813,7 @@ const styles = StyleSheet.create({
     borderRadius: 8,
   },
   filterPillAllActive: {
-    backgroundColor: '#334155',
+    backgroundColor: '#4f46e5',
   },
   filterPillInActive: {
     backgroundColor: '#16a34a',
@@ -4663,7 +4824,7 @@ const styles = StyleSheet.create({
   filterPillText: {
     fontSize: 11,
     fontWeight: '800',
-    color: '#94a3b8',
+    color: '#57534e',
   },
   filterPillTextWhite: {
     color: '#fff',
@@ -4679,7 +4840,7 @@ const styles = StyleSheet.create({
   },
   emptyFeedText: {
     fontSize: 12,
-    color: '#64748b',
+    color: '#78716c',
     marginTop: 8,
   },
   journalListContainer: {
@@ -4689,11 +4850,11 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'flex-start',
     gap: 10,
-    backgroundColor: '#0f172a',
+    backgroundColor: '#fafaf9',
     borderRadius: 12,
     padding: 10,
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: '#e7e5e4',
   },
   arrowCircle: {
     width: 28,
@@ -4704,10 +4865,10 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   arrowCircleIn: {
-    backgroundColor: 'rgba(34, 197, 94, 0.15)',
+    backgroundColor: '#dcfce7',
   },
   arrowCircleOut: {
-    backgroundColor: 'rgba(239, 68, 68, 0.15)',
+    backgroundColor: '#ffe4e6',
   },
   arrowCircleText: {
     fontSize: 14,
@@ -4715,10 +4876,10 @@ const styles = StyleSheet.create({
     lineHeight: 16,
   },
   arrowCircleTextIn: {
-    color: '#22c55e',
+    color: '#059669',
   },
   arrowCircleTextOut: {
-    color: '#ef4444',
+    color: '#e11d48',
   },
   journalRowTop: {
     flexDirection: 'row',
@@ -4730,7 +4891,7 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 13,
     fontWeight: '700',
-    color: '#f8fafc',
+    color: '#1c1917',
     lineHeight: 18,
   },
   rowActions: {
@@ -4742,7 +4903,7 @@ const styles = StyleSheet.create({
     width: 26,
     height: 26,
     borderRadius: 6,
-    backgroundColor: '#1e293b',
+    backgroundColor: '#f5f5f4',
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -4750,7 +4911,7 @@ const styles = StyleSheet.create({
     width: 26,
     height: 26,
     borderRadius: 6,
-    backgroundColor: '#1e293b',
+    backgroundColor: '#fff1f2',
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -4765,35 +4926,35 @@ const styles = StyleSheet.create({
     borderRadius: 6,
   },
   qtyBadgeIn: {
-    backgroundColor: 'rgba(34, 197, 94, 0.15)',
+    backgroundColor: '#dcfce7',
     borderWidth: 1,
-    borderColor: 'rgba(74, 222, 128, 0.3)',
+    borderColor: '#86efac',
   },
   qtyBadgeOut: {
-    backgroundColor: 'rgba(239, 68, 68, 0.15)',
+    backgroundColor: '#ffe4e6',
     borderWidth: 1,
-    borderColor: 'rgba(248, 113, 113, 0.3)',
+    borderColor: '#fda4af',
   },
   qtyBadgeText: {
     fontSize: 12,
     fontWeight: '900',
   },
   qtyBadgeTextIn: {
-    color: '#4ade80',
+    color: '#047857',
   },
   qtyBadgeTextOut: {
-    color: '#f87171',
+    color: '#be123c',
   },
   journalMetaText: {
     fontSize: 10,
-    color: '#94a3b8',
+    color: '#78716c',
     marginTop: 2,
   },
   subShiftCard: {
-    backgroundColor: '#0f172a',
+    backgroundColor: '#ffffff',
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: '#78350f',
+    borderColor: '#fde68a',
     overflow: 'hidden',
     marginBottom: 4,
   },
@@ -4801,16 +4962,16 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    backgroundColor: 'rgba(245, 158, 11, 0.12)',
+    backgroundColor: '#fffbeb',
     padding: 10,
   },
   subShiftCardTitle: {
     fontSize: 12,
     fontWeight: '800',
-    color: '#f59e0b',
+    color: '#b45309',
   },
   subShiftCountBadge: {
-    backgroundColor: 'rgba(245, 158, 11, 0.25)',
+    backgroundColor: '#fef3c7',
     paddingHorizontal: 6,
     paddingVertical: 1,
     borderRadius: 4,
@@ -4818,37 +4979,37 @@ const styles = StyleSheet.create({
   subShiftCountBadgeText: {
     fontSize: 10,
     fontWeight: '800',
-    color: '#fde68a',
+    color: '#92400e',
   },
   subShiftRangeText: {
     fontSize: 10,
-    color: '#94a3b8',
+    color: '#78716c',
     marginTop: 2,
   },
   subShiftSumBadge: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    backgroundColor: '#1e293b',
+    backgroundColor: '#ffffff',
     paddingHorizontal: 8,
     paddingVertical: 3,
     borderRadius: 6,
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: '#e7e5e4',
   },
   subShiftSumIn: {
     fontSize: 11,
     fontWeight: '800',
-    color: '#4ade80',
+    color: '#059669',
   },
   subShiftSumDivider: {
     fontSize: 10,
-    color: '#475569',
+    color: '#d6d3d1',
   },
   subShiftSumOut: {
     fontSize: 11,
     fontWeight: '800',
-    color: '#f87171',
+    color: '#e11d48',
   },
   subShiftDetails: {
     borderTopWidth: 1,
