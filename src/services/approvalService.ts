@@ -66,10 +66,52 @@ export async function reconcileHiddenIds(
   return hidden;
 }
 
+export type ApprovalActionType = 'delete_shift' | 'delete_image' | 'delete_journal' | 'update_journal';
+
+const ACTION_COLUMN_MAP: Record<ApprovalActionType, string> = {
+  update_journal: 'allow_update_journal',
+  delete_journal: 'allow_delete_journal',
+  delete_image: 'allow_delete_image',
+  delete_shift: 'allow_delete_shift',
+};
+
+/**
+ * Kiểm tra xem nhân viên hiện tại có được cài đặt miễn duyệt cho thao tác này
+ * trong phân hệ kho tương ứng không (bảng operation_approval_settings).
+ */
+export async function canBypassOperationApproval(
+  actionType: ApprovalActionType,
+  systemCode: string,
+  userId?: string | null
+): Promise<boolean> {
+  try {
+    const supabase = await getSupabaseClient();
+    let uid = userId || null;
+    if (!uid) {
+      const { data: authData } = await supabase.auth.getUser();
+      uid = authData?.user?.id || null;
+    }
+    if (!uid || !systemCode) return false;
+
+    const cleanSys = systemCode.endsWith('__solieu') ? systemCode.slice(0, -8) : systemCode;
+    const col = ACTION_COLUMN_MAP[actionType];
+    const { data, error } = await supabase
+      .from('operation_approval_settings')
+      .select('allow_update_journal, allow_delete_journal, allow_delete_image, allow_delete_shift')
+      .eq('user_id', uid)
+      .in('system_code', [cleanSys, `${cleanSys}__solieu`]);
+
+    if (error || !Array.isArray(data) || data.length === 0) return false;
+    return data.some((row: any) => Boolean(row?.[col]));
+  } catch {
+    return false;
+  }
+}
+
 export async function submitMobileApprovalRequest(params: {
   systemCode: string;
   companyId?: string | null;
-  actionType: 'delete_shift' | 'delete_image' | 'delete_journal' | 'update_journal';
+  actionType: 'delete_shift' | 'delete_image' | 'delete_journal' | 'update_journal' | 'reopen_shift';
   targetTable: 'delivery_shifts' | 'operation_images' | 'delivery_journal';
   targetId: string;
   shiftId?: string | null;

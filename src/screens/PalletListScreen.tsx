@@ -6,6 +6,7 @@ import {
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
+import { useThemedStyles } from '../contexts/ThemeContext';
 import * as Haptics from 'expo-haptics';
 import { Pallet, BoxLabel, CloudPallet, CloudFilterCriteria } from '../types';
 import {
@@ -135,6 +136,7 @@ export default function PalletListScreen({
   isActive?: boolean;
   scannerMode?: 'stamp_scanner' | 'scanner';
 }) {
+  const styles = useThemedStyles(baseStyles);
   // 4 Tabs: 'pending' (Chờ đẩy) vs 'stamp_pending' (Chờ giải mã) vs 'stamp_decoded' (Đã giải mã) vs 'cloud' (Đã duyệt)
   const [activeTab, setActiveTab] = useState<'pending' | 'stamp_pending' | 'stamp_decoded' | 'cloud'>('pending');
 
@@ -3673,7 +3675,7 @@ export default function PalletListScreen({
   );
 }
 
-const styles = StyleSheet.create({
+const baseStyles = {
   container: {
     flex: 1,
     backgroundColor: '#0f172a',
@@ -4835,4 +4837,5 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
     paddingHorizontal: 4,
   },
-});
+};
+const styles = StyleSheet.create(baseStyles as any);

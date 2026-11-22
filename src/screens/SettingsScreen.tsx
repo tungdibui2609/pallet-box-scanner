@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
   View, Text, StyleSheet, TextInput, TouchableOpacity,
-  Alert, ActivityIndicator, ScrollView, Switch
+  Alert, ActivityIndicator, ScrollView, Switch, Modal
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
@@ -13,6 +13,7 @@ import {
 } from '../services/supabase';
 import { getStampDictionariesCount } from '../services/database';
 import { useAuth } from '../contexts/AuthContext';
+import { useTheme, useThemedStyles, THEME_TAB_META } from '../contexts/ThemeContext';
 import { isAutoSyncEnabled, setAutoSyncEnabled, syncAllWarehouseDataMaster } from '../services/autoSync';
 import {
   syncOfflineAdjustmentProposals,
@@ -28,6 +29,9 @@ import {
 
 export default function SettingsScreen({ onBack }: { onBack: () => void }) {
   const { user, logout } = useAuth();
+  const { colors, tabThemes, setTabTheme, setAllTabsTheme } = useTheme();
+  const [isThemeModalOpen, setIsThemeModalOpen] = useState(false);
+  const styles = useThemedStyles(baseStyles);
   const [url, setUrl] = useState(DEFAULT_SUPABASE_URL);
   const [anonKey, setAnonKey] = useState(DEFAULT_ANON_KEY);
   const [systemCode, setSystemCode] = useState('KHO_DONG_LANH');
@@ -281,11 +285,239 @@ export default function SettingsScreen({ onBack }: { onBack: () => void }) {
     <ScrollView style={styles.container}>
       <View style={styles.header}>
         <TouchableOpacity onPress={onBack} style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-          <Ionicons name="arrow-back" size={22} color="#fff" />
-          <Text style={{ color: '#fff', fontWeight: '700' }}>Quay lại</Text>
+          <Ionicons name="arrow-back" size={22} color={colors.text} />
+          <Text style={{ color: colors.text, fontWeight: '700' }}>Quay lại</Text>
         </TouchableOpacity>
         <Text style={styles.title}>CÀI ĐẶT HỆ THỐNG</Text>
       </View>
+
+      {/* ── NÚT MỞ CÀI ĐẶT GIAO DIỆN (THEME) RIÊNG CHO TỪNG MENU ────── */}
+      <TouchableOpacity
+        onPress={() => setIsThemeModalOpen(true)}
+        activeOpacity={0.8}
+        style={{
+          marginHorizontal: 16,
+          marginTop: 14,
+          backgroundColor: colors.surface,
+          borderRadius: 16,
+          padding: 14,
+          borderWidth: 1,
+          borderColor: colors.border,
+          flexDirection: 'row',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 12,
+        }}
+      >
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, flex: 1 }}>
+          <View
+            style={{
+              width: 42,
+              height: 42,
+              borderRadius: 12,
+              backgroundColor: colors.primarySoftBg,
+              borderWidth: 1,
+              borderColor: colors.primarySoftBorder,
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            <Ionicons name="color-palette" size={22} color={colors.primary} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={{ fontSize: 13, fontWeight: '800', color: colors.text }}>
+              Cài Đặt Giao Diện (Theme) Từng Menu
+            </Text>
+            <Text style={{ fontSize: 11, color: colors.textMuted, marginTop: 2 }}>
+              Tùy chỉnh Sáng / Tối riêng biệt cho từng tab chức năng ({THEME_TAB_META.filter(t => tabThemes[t.key] === 'light').length} Sáng · {THEME_TAB_META.filter(t => tabThemes[t.key] === 'dark').length} Tối)
+            </Text>
+          </View>
+        </View>
+        <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+      </TouchableOpacity>
+
+      {/* Modal Tùy Chỉnh Theme Sáng / Tối Cho Từng Menu */}
+      <Modal
+        visible={isThemeModalOpen}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setIsThemeModalOpen(false)}
+      >
+        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.55)', justifyContent: 'flex-end' }}>
+          <View
+            style={{
+              backgroundColor: colors.surface,
+              borderTopLeftRadius: 24,
+              borderTopRightRadius: 24,
+              maxHeight: '86%',
+              paddingHorizontal: 16,
+              paddingTop: 14,
+              paddingBottom: 24,
+              borderTopWidth: 1,
+              borderTopColor: colors.border,
+            }}
+          >
+            <View
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                paddingBottom: 12,
+                borderBottomWidth: 1,
+                borderBottomColor: colors.border,
+              }}
+            >
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <Ionicons name="color-palette" size={20} color={colors.primary} />
+                <Text style={{ fontSize: 15, fontWeight: '800', color: colors.text }}>
+                  Giao Diện Sáng / Tối Theo Từng Menu
+                </Text>
+              </View>
+              <TouchableOpacity onPress={() => setIsThemeModalOpen(false)} style={{ padding: 4 }}>
+                <Ionicons name="close" size={22} color={colors.textMuted} />
+              </TouchableOpacity>
+            </View>
+
+            {/* 2 Nút đặt nhanh tất cả */}
+            <View style={{ flexDirection: 'row', gap: 8, marginTop: 12, marginBottom: 10 }}>
+              <TouchableOpacity
+                onPress={() => setAllTabsTheme('light')}
+                style={{
+                  flex: 1,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 6,
+                  paddingVertical: 9,
+                  borderRadius: 10,
+                  backgroundColor: colors.amberSoftBg,
+                  borderWidth: 1,
+                  borderColor: colors.amberSoftBorder,
+                }}
+              >
+                <Ionicons name="sunny" size={15} color="#d97706" />
+                <Text style={{ fontSize: 11, fontWeight: '800', color: colors.amberSoftText }}>
+                  Đặt tất cả Sáng
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={() => setAllTabsTheme('dark')}
+                style={{
+                  flex: 1,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 6,
+                  paddingVertical: 9,
+                  borderRadius: 10,
+                  backgroundColor: colors.primarySoftBg,
+                  borderWidth: 1,
+                  borderColor: colors.primarySoftBorder,
+                }}
+              >
+                <Ionicons name="moon" size={15} color={colors.primary} />
+                <Text style={{ fontSize: 11, fontWeight: '800', color: colors.primarySoftText }}>
+                  Đặt tất cả Tối
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingVertical: 4 }}>
+              {THEME_TAB_META.map(item => {
+                const curMode = tabThemes[item.key] || 'light';
+                const itemIsDark = curMode === 'dark';
+                return (
+                  <View
+                    key={item.key}
+                    style={{
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      padding: 11,
+                      borderRadius: 14,
+                      backgroundColor: colors.surfaceAlt,
+                      borderWidth: 1,
+                      borderColor: colors.border,
+                      gap: 10,
+                    }}
+                  >
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 }}>
+                      <View
+                        style={{
+                          width: 34,
+                          height: 34,
+                          borderRadius: 10,
+                          backgroundColor: `${item.color}20`,
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                        }}
+                      >
+                        <Ionicons name={item.icon as any} size={18} color={item.color} />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={{ fontSize: 13, fontWeight: '800', color: colors.text }}>
+                          {item.label}
+                        </Text>
+                        <Text style={{ fontSize: 10, color: colors.textMuted }} numberOfLines={1}>
+                          {item.desc}
+                        </Text>
+                      </View>
+                    </View>
+
+                    {/* Công tắc Sáng / Tối riêng cho Menu này */}
+                    <View
+                      style={{
+                        flexDirection: 'row',
+                        backgroundColor: colors.surface,
+                        borderRadius: 10,
+                        borderWidth: 1,
+                        borderColor: colors.border,
+                        padding: 3,
+                        gap: 3,
+                      }}
+                    >
+                      <TouchableOpacity
+                        onPress={() => setTabTheme(item.key, 'light')}
+                        style={{
+                          flexDirection: 'row',
+                          alignItems: 'center',
+                          gap: 4,
+                          paddingHorizontal: 9,
+                          paddingVertical: 6,
+                          borderRadius: 7,
+                          backgroundColor: !itemIsDark ? '#f59e0b' : 'transparent',
+                        }}
+                      >
+                        <Ionicons name="sunny" size={13} color={!itemIsDark ? '#fff' : colors.textMuted} />
+                        <Text style={{ fontSize: 11, fontWeight: '800', color: !itemIsDark ? '#fff' : colors.textMuted }}>
+                          Sáng
+                        </Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        onPress={() => setTabTheme(item.key, 'dark')}
+                        style={{
+                          flexDirection: 'row',
+                          alignItems: 'center',
+                          gap: 4,
+                          paddingHorizontal: 9,
+                          paddingVertical: 6,
+                          borderRadius: 7,
+                          backgroundColor: itemIsDark ? '#312e81' : 'transparent',
+                        }}
+                      >
+                        <Ionicons name="moon" size={13} color={itemIsDark ? '#fff' : colors.textMuted} />
+                        <Text style={{ fontSize: 11, fontWeight: '800', color: itemIsDark ? '#fff' : colors.textMuted }}>
+                          Tối
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                );
+              })}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
 
       {/* ── THÔNG TIN TÀI KHOẢN ĐĂNG NHẬP ────── */}
       {user && (
@@ -752,7 +984,7 @@ export default function SettingsScreen({ onBack }: { onBack: () => void }) {
   );
 }
 
-const styles = StyleSheet.create({
+const baseStyles = {
   container: { flex: 1, backgroundColor: '#0f172a' },
   header: {
     flexDirection: 'row',
@@ -944,4 +1176,5 @@ const styles = StyleSheet.create({
     marginTop: 4,
     fontWeight: '500',
   }
-});
+};
+const styles = StyleSheet.create(baseStyles as any);

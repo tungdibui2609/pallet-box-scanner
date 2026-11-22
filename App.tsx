@@ -11,15 +11,26 @@ import OperationsDataScreen from './src/screens/OperationsDataScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
 import LoginScreen from './src/screens/LoginScreen';
 import { AuthProvider, useAuth } from './src/contexts/AuthContext';
+import { ThemeProvider, useTheme, TabThemeScope } from './src/contexts/ThemeContext';
 import { triggerBackgroundAutoSync } from './src/services/autoSync';
 import { FullMenuModal } from './src/components/navigation/FullMenuModal';
 import OperationWatermarkOverlay from './src/components/operations/OperationWatermarkOverlay';
 
 type AppTab = 'scanner' | 'stamp_scanner' | 'operations' | 'inventory' | 'warehouse_map' | 'pallets' | 'settings';
 
+// Màu nhấn của từng tab trên thanh Menu thương hiệu (nền indigo đậm ở cả 2 theme)
+const NAV_ACTIVE = {
+  menu: '#7dd3fc',
+  stamp: '#fcd34d',
+  ops: '#c4b5fd',
+  pallets: '#7dd3fc',
+  map: '#67e8f9',
+};
+
 function AppContent() {
   const insets = useSafeAreaInsets();
   const { user, isLoading } = useAuth();
+  const { colors, isDark, toggleTheme, setActiveThemeTab } = useTheme();
   const [currentTab, setCurrentTab] = useState<AppTab>('stamp_scanner');
   const [lastScannerTab, setLastScannerTab] = useState<'stamp_scanner' | 'scanner'>('stamp_scanner');
   const [isFullMenuOpen, setIsFullMenuOpen] = useState(false);
@@ -33,13 +44,14 @@ function AppContent() {
   });
 
   useEffect(() => {
+    setActiveThemeTab(currentTab);
     if (currentTab === 'scanner' || currentTab === 'stamp_scanner') {
       setLastScannerTab(currentTab);
     }
     if (!visitedTabs[currentTab]) {
       setVisitedTabs(prev => ({ ...prev, [currentTab]: true }));
     }
-  }, [currentTab]);
+  }, [currentTab, setActiveThemeTab]);
 
   // Đã bỏ cơ chế tự động tải ngầm khi mở app / chuyển app để người dùng chủ động bấm tải trước mỗi ca làm việc (0ms lag)
 
@@ -82,98 +94,174 @@ function AppContent() {
     <View style={[
       styles.root,
       {
+        backgroundColor: colors.bg,
         paddingTop: Math.max(insets.top, Platform.OS === 'android' ? (StatusBar.currentHeight || 28) : 20),
       }
     ]}>
-      <StatusBar barStyle="light-content" />
+      <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} />
 
-      {/* ── TOP USER & COMPANY HEADER ──────────────── */}
-      <View style={styles.topUserBar}>
-        <View style={styles.topCompanyTag}>
-          <Ionicons name="business" size={13} color="#10b981" />
-          <Text style={styles.topCompanyText} numberOfLines={1}>
+      {/* ── TOP USER & COMPANY HEADER (THANH THƯƠNG HIỆU INDIGO) ──────────────── */}
+      <View
+        style={[
+          styles.topUserBar,
+          {
+            backgroundColor: colors.barBg,
+            borderBottomColor: colors.barBorder,
+          },
+        ]}
+      >
+        <View
+          style={[
+            styles.topCompanyTag,
+            {
+              backgroundColor: 'rgba(16, 185, 129, 0.16)',
+              borderWidth: 1,
+              borderColor: 'rgba(110, 231, 183, 0.35)',
+            },
+          ]}
+        >
+          <Ionicons name="business" size={13} color="#6ee7b7" />
+          <Text style={[styles.topCompanyText, { color: '#a7f3d0' }]} numberOfLines={1}>
             {user.company?.code || 'CTG'} · {user.company?.name || 'Chánh Thu'}
           </Text>
         </View>
 
-        <TouchableOpacity
-          style={styles.topUserTag}
-          onPress={() => setCurrentTab('settings')}
-          activeOpacity={0.7}
-        >
-          <Ionicons name="person-circle" size={15} color="#38bdf8" />
-          <Text style={styles.topUserText} numberOfLines={1}>
-            {user.full_name}
-          </Text>
-        </TouchableOpacity>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+          <TouchableOpacity
+            onPress={toggleTheme}
+            activeOpacity={0.7}
+            accessibilityLabel={isDark ? 'Chuyển sang giao diện sáng' : 'Chuyển sang giao diện tối'}
+            style={{
+              width: 28,
+              height: 28,
+              borderRadius: 8,
+              backgroundColor: colors.barChipBg,
+              borderWidth: 1,
+              borderColor: colors.barChipBorder,
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            <Ionicons
+              name={isDark ? 'sunny' : 'moon'}
+              size={14}
+              color={isDark ? '#fcd34d' : '#e0e7ff'}
+            />
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[
+              styles.topUserTag,
+              {
+                backgroundColor: colors.barChipBg,
+                borderWidth: 1,
+                borderColor: colors.barChipBorder,
+              },
+            ]}
+            onPress={() => setCurrentTab('settings')}
+            activeOpacity={0.7}
+          >
+            <Ionicons name="person-circle" size={15} color="#7dd3fc" />
+            <Text style={[styles.topUserText, { color: colors.barText }]} numberOfLines={1}>
+              {user.full_name}
+            </Text>
+          </TouchableOpacity>
+        </View>
       </View>
       
-      {/* ── TAB CONTENT ────────────────────────────── */}
+      {/* ── TAB CONTENT (MỖI TAB CÓ THEME SÁNG/TỐI RIÊNG QUA TabThemeScope) ────── */}
       <View style={styles.body}>
         {currentTab === 'scanner' && (
-          <ScannerScreen
-            onNavigateToPallets={() => {
-              setLastScannerTab('scanner');
-              setCurrentTab('pallets');
-            }}
-          />
+          <TabThemeScope tab="scanner">
+            <ScannerScreen
+              onNavigateToPallets={() => {
+                setLastScannerTab('scanner');
+                setCurrentTab('pallets');
+              }}
+            />
+          </TabThemeScope>
         )}
         {currentTab === 'stamp_scanner' && (
-          <StampScannerScreen
-            onNavigateToPallets={() => {
-              setLastScannerTab('stamp_scanner');
-              setCurrentTab('pallets');
-            }}
-          />
+          <TabThemeScope tab="stamp_scanner">
+            <StampScannerScreen
+              onNavigateToPallets={() => {
+                setLastScannerTab('stamp_scanner');
+                setCurrentTab('pallets');
+              }}
+            />
+          </TabThemeScope>
         )}
-        {/* Keep-Alive cho Sơ Đồ Kho: Sau khi vào 1 lần, giữ trong RAM, hiển thị 0ms khi quay lại */}
+        {/* Keep-Alive cho Sơ Đồ Kho */}
         <View style={[styles.tabKeepAlive, currentTab !== 'warehouse_map' && styles.tabHidden]}>
           {visitedTabs.warehouse_map && (
-            <WarehouseMapScreen
-              onBackToScanner={() => setCurrentTab(lastScannerTab)}
-              isActive={currentTab === 'warehouse_map'}
-            />
+            <TabThemeScope tab="warehouse_map">
+              <WarehouseMapScreen
+                onBackToScanner={() => setCurrentTab(lastScannerTab)}
+                isActive={currentTab === 'warehouse_map'}
+              />
+            </TabThemeScope>
           )}
         </View>
-        {/* Keep-Alive cho Số Liệu (Công việc / Ca làm việc) */}
+        {/* Keep-Alive cho Số Liệu */}
         <View style={[styles.tabKeepAlive, currentTab !== 'operations' && styles.tabHidden]}>
           {visitedTabs.operations && (
-            <OperationsDataScreen
-              isActive={currentTab === 'operations'}
-            />
+            <TabThemeScope tab="operations">
+              <OperationsDataScreen
+                isActive={currentTab === 'operations'}
+              />
+            </TabThemeScope>
           )}
         </View>
         {/* Keep-Alive cho Kiểm Kê Kho */}
         <View style={[styles.tabKeepAlive, currentTab !== 'inventory' && styles.tabHidden]}>
           {visitedTabs.inventory && (
-            <InventoryScreen
-              isActive={currentTab === 'inventory'}
-            />
+            <TabThemeScope tab="inventory">
+              <InventoryScreen
+                isActive={currentTab === 'inventory'}
+              />
+            </TabThemeScope>
           )}
         </View>
         {/* Keep-Alive cho Pallet Kho */}
         <View style={[styles.tabKeepAlive, currentTab !== 'pallets' && styles.tabHidden]}>
           {visitedTabs.pallets && (
-            <PalletListScreen
-              onBackToScanner={() => setCurrentTab(lastScannerTab)}
-              scannerMode={lastScannerTab}
-              isActive={currentTab === 'pallets'}
-            />
+            <TabThemeScope tab="pallets">
+              <PalletListScreen
+                onBackToScanner={() => setCurrentTab(lastScannerTab)}
+                scannerMode={lastScannerTab}
+                isActive={currentTab === 'pallets'}
+              />
+            </TabThemeScope>
           )}
         </View>
         {currentTab === 'settings' && (
-          <SettingsScreen onBack={() => setCurrentTab(lastScannerTab)} />
+          <TabThemeScope tab="settings">
+            <SettingsScreen onBack={() => setCurrentTab(lastScannerTab)} />
+          </TabThemeScope>
         )}
       </View>
 
       {/* ── BOTTOM NAVIGATION BAR (TINH GỌN 5 NÚT: MENU + 4 CHỨC NĂNG CHÍNH) ─────────────────── */}
-      <View style={[
-        styles.bottomNav,
-        {
-          paddingBottom: Math.max(insets.bottom, 10),
-          height: 58 + Math.max(insets.bottom, 10),
-        }
-      ]}>
+      <View
+        style={{
+          backgroundColor: colors.bg,
+          paddingBottom: insets.bottom,
+        }}
+      >
+        <View
+          style={[
+            styles.bottomNav,
+            {
+              backgroundColor: colors.barBg,
+              borderTopWidth: 1,
+              borderTopColor: colors.barBorder,
+              borderBottomWidth: insets.bottom > 0 ? 1 : 0,
+              borderBottomColor: colors.barBorder,
+              paddingBottom: 6,
+              height: 58,
+            },
+          ]}
+        >
         {/* Nút 1: Menu Hamburger (Mở toàn bộ danh mục chức năng) */}
         {(() => {
           const isDrawerActive = !['stamp_scanner', 'operations', 'pallets', 'warehouse_map'].includes(currentTab);
@@ -187,11 +275,11 @@ function AppContent() {
                 <Ionicons
                   name="menu"
                   size={24}
-                  color={isDrawerActive ? '#38bdf8' : '#cbd5e1'}
+                  color={isDrawerActive ? NAV_ACTIVE.menu : colors.barMuted}
                 />
-                {isDrawerActive && <View style={styles.menuActiveDot} />}
+                {isDrawerActive && <View style={[styles.menuActiveDot, { borderColor: colors.barBg }]} />}
               </View>
-              <Text style={[styles.navText, isDrawerActive && { color: '#38bdf8', fontWeight: '800' }]}>
+              <Text style={[styles.navText, { color: isDrawerActive ? NAV_ACTIVE.menu : colors.barMuted, fontWeight: isDrawerActive ? '800' : '700' }]}>
                 Menu
               </Text>
             </TouchableOpacity>
@@ -207,9 +295,9 @@ function AppContent() {
           <Ionicons
             name={currentTab === 'stamp_scanner' ? 'finger-print' : 'finger-print-outline'}
             size={22}
-            color={currentTab === 'stamp_scanner' ? '#fbbf24' : '#94a3b8'}
+            color={currentTab === 'stamp_scanner' ? NAV_ACTIVE.stamp : colors.barMuted}
           />
-          <Text style={[styles.navText, currentTab === 'stamp_scanner' && { color: '#fbbf24', fontWeight: '800' }]}>
+          <Text style={[styles.navText, { color: currentTab === 'stamp_scanner' ? NAV_ACTIVE.stamp : colors.barMuted, fontWeight: currentTab === 'stamp_scanner' ? '800' : '700' }]}>
             Dấu Đóng
           </Text>
         </TouchableOpacity>
@@ -223,9 +311,9 @@ function AppContent() {
           <Ionicons
             name={currentTab === 'operations' ? 'calculator' : 'calculator-outline'}
             size={22}
-            color={currentTab === 'operations' ? '#818cf8' : '#94a3b8'}
+            color={currentTab === 'operations' ? NAV_ACTIVE.ops : colors.barMuted}
           />
-          <Text style={[styles.navText, currentTab === 'operations' && { color: '#818cf8', fontWeight: '800' }]}>
+          <Text style={[styles.navText, { color: currentTab === 'operations' ? NAV_ACTIVE.ops : colors.barMuted, fontWeight: currentTab === 'operations' ? '800' : '700' }]}>
             Số Liệu
           </Text>
         </TouchableOpacity>
@@ -239,9 +327,9 @@ function AppContent() {
           <Ionicons
             name={currentTab === 'pallets' ? 'cube' : 'cube-outline'}
             size={22}
-            color={currentTab === 'pallets' ? '#38bdf8' : '#94a3b8'}
+            color={currentTab === 'pallets' ? NAV_ACTIVE.pallets : colors.barMuted}
           />
-          <Text style={[styles.navText, currentTab === 'pallets' && { color: '#38bdf8', fontWeight: '800' }]}>
+          <Text style={[styles.navText, { color: currentTab === 'pallets' ? NAV_ACTIVE.pallets : colors.barMuted, fontWeight: currentTab === 'pallets' ? '800' : '700' }]}>
             Pallet Kho
           </Text>
         </TouchableOpacity>
@@ -255,12 +343,13 @@ function AppContent() {
           <Ionicons
             name={currentTab === 'warehouse_map' ? 'map' : 'map-outline'}
             size={22}
-            color={currentTab === 'warehouse_map' ? '#06b6d4' : '#94a3b8'}
+            color={currentTab === 'warehouse_map' ? NAV_ACTIVE.map : colors.barMuted}
           />
-          <Text style={[styles.navText, currentTab === 'warehouse_map' && { color: '#06b6d4', fontWeight: '800' }]}>
+          <Text style={[styles.navText, { color: currentTab === 'warehouse_map' ? NAV_ACTIVE.map : colors.barMuted, fontWeight: currentTab === 'warehouse_map' ? '800' : '700' }]}>
             Sơ Đồ Kho
           </Text>
         </TouchableOpacity>
+        </View>
       </View>
 
       {/* ── MODAL FULL MENU (HIỂN THỊ TOÀN BỘ TẤT CẢ CHỨC NĂNG) ─────────────────── */}
@@ -277,10 +366,12 @@ function AppContent() {
 export default function App() {
   return (
     <SafeAreaProvider>
-      <AuthProvider>
-        <AppContent />
-        <OperationWatermarkOverlay />
-      </AuthProvider>
+      <ThemeProvider>
+        <AuthProvider>
+          <AppContent />
+          <OperationWatermarkOverlay />
+        </AuthProvider>
+      </ThemeProvider>
     </SafeAreaProvider>
   );
 }

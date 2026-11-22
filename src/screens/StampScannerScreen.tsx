@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, ScrollView,
   Alert, Modal, TextInput, ActivityIndicator, Vibration, Animated, Platform, AppState, NativeModules, Image,
@@ -11,6 +11,7 @@ import * as ImagePicker from 'expo-image-picker';
 import TextRecognition from '@react-native-ml-kit/text-recognition';
 import * as Haptics from 'expo-haptics';
 import { Ionicons } from '@expo/vector-icons';
+import { useTheme } from '../contexts/ThemeContext';
 
 import { Pallet, BoxLabel, ParsedStampData, StampFormat } from '../types';
 import {
@@ -47,6 +48,8 @@ if (NativeModules && NativeModules.VolumeManager) {
 }
 
 export default function StampScannerScreen({ onNavigateToPallets }: { onNavigateToPallets: () => void }) {
+  const { isDark } = useTheme();
+  const styles = useMemo(() => getStampStyles(isDark), [isDark]);
   const [permission, requestPermission] = useCameraPermissions();
   const cameraRef = useRef<any>(null);
   const cameraBoxSizeRef = useRef<{ width: number; height: number }>({ width: 340, height: 220 });
@@ -1316,7 +1319,7 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
             onPress={() => openNewPalletModal(activePallet)}
             activeOpacity={0.8}
           >
-            <Ionicons name="finger-print" size={16} color="#fbbf24" />
+            <Ionicons name="finger-print" size={16} color={isDark ? "#fbbf24" : "#059669"} />
             <Text style={styles.palletBadgeLabel}>DẤU MỰC</Text>
             <Text style={styles.palletCodeText}>
               {activePallet ? `STT: ${activePallet.code}` : 'Chưa chọn Pallet'}
@@ -1331,26 +1334,26 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
                 <Text style={{ color: '#fff', fontSize: 10, fontWeight: '800' }}>📝 Ghi chú</Text>
               </View>
             ) : null}
-            <Ionicons name="chevron-down" size={14} color="#94a3b8" style={{ marginLeft: 2 }} />
+            <Ionicons name="chevron-down" size={14} color={isDark ? "#94a3b8" : "#059669"} style={{ marginLeft: 2 }} />
           </TouchableOpacity>
 
           <View style={styles.topActionBtns}>
             <TouchableOpacity
-              style={[styles.iconButton, { borderColor: '#818cf855', borderWidth: 1 }]}
+              style={[styles.iconButton, { borderColor: isDark ? '#818cf855' : '#bbf7d0', borderWidth: 1 }]}
               onPress={handleOpenQueueHistory}
             >
-              <Ionicons name="time-outline" size={18} color="#a5b4fc" />
+              <Ionicons name="time-outline" size={18} color={isDark ? "#a5b4fc" : "#059669"} />
             </TouchableOpacity>
 
             <TouchableOpacity
-              style={[styles.iconButton, { borderColor: '#10b98155', borderWidth: 1 }]}
+              style={[styles.iconButton, { borderColor: isDark ? '#10b98155' : '#86efac', borderWidth: 1 }]}
               onPress={handleSyncStampRules}
               disabled={syncingRules}
             >
               {syncingRules ? (
-                <ActivityIndicator size="small" color="#34d399" />
+                <ActivityIndicator size="small" color={isDark ? "#34d399" : "#059669"} />
               ) : (
-                <Ionicons name="cloud-download-outline" size={18} color="#34d399" />
+                <Ionicons name="cloud-download-outline" size={18} color={isDark ? "#34d399" : "#059669"} />
               )}
             </TouchableOpacity>
           </View>
@@ -1389,7 +1392,7 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
           </View>
         ) : (
           <View style={styles.noPalletTipBar}>
-            <Ionicons name="information-circle-outline" size={16} color="#38bdf8" />
+            <Ionicons name="information-circle-outline" size={16} color={isDark ? "#38bdf8" : "#059669"} />
             <Text style={styles.noPalletTipText}>Bạn chưa chọn Pallet. Hãy bấm chọn Pallet để bắt đầu.</Text>
           </View>
         )}
@@ -1398,7 +1401,7 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
       {/* ── HARDWARE VOLUME KEY HINT & TORCH ─────────────── */}
       <View style={styles.volumeBar}>
         <View style={styles.volumeKeyHintBadge}>
-          <Ionicons name="volume-low" size={15} color="#38bdf8" />
+          <Ionicons name="volume-low" size={15} color={isDark ? "#38bdf8" : "#047857"} />
           <Text style={styles.volumeKeyHintText}>Bấm [Giảm âm lượng] để chụp</Text>
         </View>
 
@@ -1413,7 +1416,7 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
           <Ionicons
             name={torch && isCameraRunning ? 'flash' : 'flash-outline'}
             size={18}
-            color={torch && isCameraRunning ? '#facc15' : '#94a3b8'}
+            color={torch && isCameraRunning ? '#facc15' : (isDark ? '#94a3b8' : '#059669')}
           />
         </TouchableOpacity>
       </View>
@@ -1430,7 +1433,7 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
       >
         {!activePallet ? (
           <View style={styles.noPalletOverlay}>
-            <Ionicons name="cube-outline" size={36} color="#38bdf8" />
+            <Ionicons name="cube-outline" size={36} color={isDark ? "#38bdf8" : "#059669"} />
             <Text style={styles.noPalletOverlayTitle}>Chưa chọn Pallet</Text>
             <Text style={styles.noPalletOverlaySub}>
               Để tránh quét nhầm hàng, vui lòng chọn hoặc nhập số Pallet trước.
@@ -1490,7 +1493,9 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
           </>
         ) : (
           <View style={styles.cameraPausedContainer}>
-            <Ionicons name="videocam-off-outline" size={34} color="#94a3b8" />
+            <View style={styles.cameraPausedIconCircle}>
+              <Ionicons name="videocam-off-outline" size={34} color={isDark ? "#94a3b8" : "#059669"} />
+            </View>
             <Text style={styles.cameraPausedTitle}>Camera đang tắt</Text>
             <Text style={styles.cameraPausedSub}>
               Tạm tắt để tiết kiệm pin. Bạn vẫn có thể Nhập Số bên dưới.
@@ -1500,7 +1505,7 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
               onPress={toggleCamera}
               activeOpacity={0.85}
             >
-              <Ionicons name="videocam" size={16} color="#0f172a" />
+              <Ionicons name="videocam" size={16} color={isDark ? "#0f172a" : "#ffffff"} />
               <Text style={styles.cameraEnableBtnText}>Bật Camera</Text>
             </TouchableOpacity>
           </View>
@@ -1516,7 +1521,7 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
         {/* Scanning Spinner */}
         {isScanning && (
           <View style={styles.scanningOverlay}>
-            <ActivityIndicator size="large" color="#fbbf24" />
+            <ActivityIndicator size="large" color={isDark ? "#fbbf24" : "#059669"} />
             <Text style={styles.scanningText}>Đang đọc dãy số con dấu...</Text>
           </View>
         )}
@@ -1547,7 +1552,7 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
           disabled={isScanning || isCapturingForWeb}
           onPress={handlePickStampImage}
         >
-          <Ionicons name="image-outline" size={14} color="#c084fc" />
+          <Ionicons name="image-outline" size={14} color={isDark ? "#c084fc" : "#ffffff"} />
           <Text numberOfLines={1} style={styles.uploadActionText}>Tải ảnh</Text>
         </TouchableOpacity>
 
@@ -1560,7 +1565,7 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
             <ActivityIndicator color="#ffffff" size="small" />
           ) : (
             <>
-              <Ionicons name="cloud-upload-outline" size={14} color="#fbbf24" />
+              <Ionicons name="cloud-upload-outline" size={14} color={isDark ? "#fbbf24" : "#ffffff"} />
               <Text numberOfLines={1} style={styles.aiSendActionText}>Gửi AI</Text>
             </>
           )}
@@ -1580,7 +1585,7 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
             setIsManualModal(true);
           }}
         >
-          <Ionicons name="keypad-outline" size={14} color="#38bdf8" />
+          <Ionicons name="keypad-outline" size={14} color={isDark ? "#38bdf8" : "#ffffff"} />
           <Text numberOfLines={1} style={styles.manualActionText}>Nhập số</Text>
         </TouchableOpacity>
 
@@ -1608,15 +1613,15 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
       <ScrollView style={styles.boxList}>
         {!activePallet ? (
           <View style={styles.emptyBox}>
-            <Ionicons name="cube-outline" size={32} color="#64748b" />
+            <Ionicons name="cube-outline" size={32} color={isDark ? "#64748b" : "#059669"} />
             <Text style={styles.emptyText}>Chưa có Pallet nào đang chọn</Text>
             <TouchableOpacity onPress={() => openNewPalletModal()} style={{ marginTop: 8 }}>
-              <Text style={{ color: '#10b981', fontWeight: '700' }}>+ Bấm để chọn hoặc nhập Pallet mới</Text>
+              <Text style={{ color: isDark ? '#10b981' : '#059669', fontWeight: '800' }}>+ Bấm để chọn hoặc nhập Pallet mới</Text>
             </TouchableOpacity>
           </View>
         ) : boxes.length === 0 ? (
           <View style={styles.emptyBox}>
-            <Ionicons name="finger-print-outline" size={32} color="#64748b" />
+            <Ionicons name="finger-print-outline" size={32} color={isDark ? "#64748b" : "#059669"} />
             <Text style={styles.emptyText}>Chưa có thùng nào trong Pallet {activePallet.code}</Text>
             <Text style={styles.emptySubText}>
               Bấm nút [Chụp Dấu Mực] hoặc bấm phím [Giảm âm lượng] để quét
@@ -1630,11 +1635,11 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
                 onPress={() => handleOpenCloneModal(boxes[boxes.length - 1])}
                 activeOpacity={0.8}
               >
-                <Ionicons name="copy" size={15} color="#fbbf24" />
+                <Ionicons name="copy" size={15} color={isDark ? "#fbbf24" : "#047857"} />
                 <Text style={styles.quickStampCloneText}>
                   ⚡ Nhân bản thùng #{boxes[boxes.length - 1].box_index} cho {activePallet.target_qty - boxes.length} thùng còn lại
                 </Text>
-                <Ionicons name="chevron-forward" size={15} color="#fbbf24" />
+                <Ionicons name="chevron-forward" size={15} color={isDark ? "#fbbf24" : "#047857"} />
               </TouchableOpacity>
             )}
             {boxes.map((b) => (
@@ -1653,7 +1658,7 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
                     onPress={() => handleOpenCloneModal(b)}
                     style={{ padding: 4 }}
                   >
-                    <Ionicons name="copy-outline" size={16} color="#38bdf8" />
+                    <Ionicons name="copy-outline" size={16} color={isDark ? "#38bdf8" : "#059669"} />
                   </TouchableOpacity>
                   <TouchableOpacity
                     onPress={() => handleDeleteBox(b)}
@@ -1726,9 +1731,9 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
               {(() => {
                 const dec = decodeStamp(pendingStamp.stamp_line1, pendingStamp.stamp_line2, dictMap, activeFormat);
                 return (
-                  <View style={{ backgroundColor: '#1e1b4b', padding: 12, borderRadius: 14, borderWidth: 1, borderColor: '#4338ca', marginBottom: 12 }}>
+                  <View style={{ backgroundColor: isDark ? '#1e1b4b' : '#f0fdf4', padding: 12, borderRadius: 14, borderWidth: 1, borderColor: isDark ? '#4338ca' : '#86efac', marginBottom: 12 }}>
                     <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
-                      <Text style={{ color: '#a5b4fc', fontSize: 10, fontWeight: '800', letterSpacing: 0.5 }}>
+                      <Text style={{ color: isDark ? '#a5b4fc' : '#15803d', fontSize: 10, fontWeight: '800', letterSpacing: 0.5 }}>
                         🔍 GIẢI MÃ TỨC THÌ (OFFLINE):
                       </Text>
                       {dec.is_special_12 && (
@@ -1738,16 +1743,16 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
                       )}
                     </View>
                     {dec.product_name_full ? (
-                      <Text style={{ color: '#f8fafc', fontSize: 13, fontWeight: '700', marginBottom: 3 }}>
+                      <Text style={{ color: isDark ? '#f8fafc' : '#0f172a', fontSize: 13, fontWeight: '700', marginBottom: 3 }}>
                         {dec.product_name_full} {dec.package_spec_name && !dec.is_special_12 ? `• ${dec.package_spec_name}` : ''}
                       </Text>
                     ) : (
-                      <Text style={{ color: '#94a3b8', fontSize: 11, fontStyle: 'italic' }}>
+                      <Text style={{ color: isDark ? '#94a3b8' : '#64748b', fontSize: 11, fontStyle: 'italic' }}>
                         Dòng 1 chưa đủ 12 ký tự để nhận diện sản phẩm
                       </Text>
                     )}
                     {dec.traceability_full && (
-                      <Text style={{ color: '#cbd5e1', fontSize: 11, lineHeight: 16 }}>
+                      <Text style={{ color: isDark ? '#cbd5e1' : '#475569', fontSize: 11, lineHeight: 16 }}>
                         {dec.traceability_full}
                       </Text>
                     )}
@@ -1943,9 +1948,9 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
                 const dec = decodeStamp(manualLine1, manualLine2, dictMap, activeFormat);
                 if (!dec.product_name_full && !dec.traceability_full) return null;
                 return (
-                  <View style={{ backgroundColor: '#1e1b4b', padding: 10, borderRadius: 12, borderWidth: 1, borderColor: '#4338ca', marginVertical: 8 }}>
+                  <View style={{ backgroundColor: isDark ? '#1e1b4b' : '#f0fdf4', padding: 10, borderRadius: 12, borderWidth: 1, borderColor: isDark ? '#4338ca' : '#86efac', marginVertical: 8 }}>
                     <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 3 }}>
-                      <Text style={{ color: '#a5b4fc', fontSize: 9, fontWeight: '800' }}>XEM TRƯỚC GIẢI MÃ:</Text>
+                      <Text style={{ color: isDark ? '#a5b4fc' : '#15803d', fontSize: 9, fontWeight: '800' }}>XEM TRƯỚC GIẢI MÃ:</Text>
                       {dec.is_special_12 && (
                         <View style={{ backgroundColor: '#065f46', paddingHorizontal: 5, paddingVertical: 1, borderRadius: 4, borderWidth: 1, borderColor: '#34d399' }}>
                           <Text style={{ color: '#6ee7b7', fontSize: 8, fontWeight: '800' }}>⭐ NGOẠI LỆ 12 SỐ</Text>
@@ -1953,12 +1958,12 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
                       )}
                     </View>
                     {dec.product_name_full && (
-                      <Text style={{ color: '#f8fafc', fontSize: 12, fontWeight: '700', marginBottom: 2 }}>
+                      <Text style={{ color: isDark ? '#f8fafc' : '#0f172a', fontSize: 12, fontWeight: '700', marginBottom: 2 }}>
                         {dec.product_name_full}
                       </Text>
                     )}
                     {dec.traceability_full && (
-                      <Text style={{ color: '#cbd5e1', fontSize: 10 }}>
+                      <Text style={{ color: isDark ? '#cbd5e1' : '#475569', fontSize: 10 }}>
                         {dec.traceability_full}
                       </Text>
                     )}
@@ -2113,9 +2118,11 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
                   paddingVertical: 7,
                   paddingHorizontal: 10,
                   borderRadius: 8,
-                  backgroundColor: autoCompleteOnFull ? 'rgba(16, 185, 129, 0.14)' : '#0f172a',
+                  backgroundColor: autoCompleteOnFull
+                    ? (isDark ? 'rgba(16, 185, 129, 0.14)' : '#ecfdf5')
+                    : (isDark ? '#0f172a' : '#ffffff'),
                   borderWidth: 1,
-                  borderColor: autoCompleteOnFull ? '#10b981' : '#334155',
+                  borderColor: autoCompleteOnFull ? '#10b981' : (isDark ? '#334155' : '#cbd5e1'),
                 }}
                 onPress={handleToggleAutoComplete}
                 activeOpacity={0.7}
@@ -2123,10 +2130,10 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
                 <Ionicons
                   name={autoCompleteOnFull ? "checkbox" : "square-outline"}
                   size={20}
-                  color={autoCompleteOnFull ? "#10b981" : "#94a3b8"}
+                  color={autoCompleteOnFull ? "#10b981" : (isDark ? "#94a3b8" : "#64748b")}
                 />
                 <View style={{ flex: 1 }}>
-                  <Text style={{ color: autoCompleteOnFull ? '#34d399' : '#e2e8f0', fontSize: 12, fontWeight: '700' }}>
+                  <Text style={{ color: autoCompleteOnFull ? (isDark ? '#34d399' : '#047857') : (isDark ? '#e2e8f0' : '#0f172a'), fontSize: 12, fontWeight: '700' }}>
                     Tự động chốt khi quét đủ {newTargetQty || defaultTargetQty} thùng
                   </Text>
                 </View>
@@ -2304,7 +2311,7 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
             <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
               {/* Khung ảnh con dấu vừa chụp (Thay thế phần giải mã offline) */}
               {sendPhotoUri && (
-                <View style={{ backgroundColor: '#0f172a', padding: 10, borderRadius: 14, borderWidth: 1, borderColor: '#334155', marginBottom: 10 }}>
+                <View style={{ backgroundColor: isDark ? '#0f172a' : '#f8fafc', padding: 10, borderRadius: 14, borderWidth: 1, borderColor: isDark ? '#334155' : '#e2e8f0', marginBottom: 10 }}>
                   <View style={[styles.sendPreviewContainer, { marginBottom: 8, height: 155 }]}>
                     <Image
                       source={{ uri: sendPhotoCropUri || sendPhotoUri }}
@@ -2313,10 +2320,10 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
                     />
                   </View>
                   <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <Text style={{ color: '#a5b4fc', fontSize: 11, fontWeight: '700' }}>
+                    <Text style={{ color: isDark ? '#a5b4fc' : '#059669', fontSize: 11, fontWeight: '700' }}>
                       📦 Lưu vào Pallet {activePallet?.code} ({boxes.length}/{activePallet?.target_qty || 30} thùng)
                     </Text>
-                    <Text style={{ color: '#94a3b8', fontSize: 10 }}>
+                    <Text style={{ color: isDark ? '#94a3b8' : '#64748b', fontSize: 10 }}>
                       Đủ {activePallet?.target_qty || 30} thùng sẽ gửi giải mã
                     </Text>
                   </View>
@@ -2570,14 +2577,14 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
   );
 }
 
-const styles = StyleSheet.create({
+const getStampStyles = (isDark: boolean) => StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0f172a',
+    backgroundColor: isDark ? '#0f172a' : '#ffffff',
   },
   centerContainer: {
     flex: 1,
-    backgroundColor: '#0f172a',
+    backgroundColor: isDark ? '#0f172a' : '#ffffff',
     justifyContent: 'center',
     alignItems: 'center',
     padding: 24,
@@ -2585,35 +2592,42 @@ const styles = StyleSheet.create({
   permissionTitle: {
     fontSize: 18,
     fontWeight: '700',
-    color: '#f8fafc',
+    color: isDark ? '#f8fafc' : '#0f172a',
     marginTop: 16,
     marginBottom: 8,
   },
   permissionText: {
     fontSize: 14,
-    color: '#94a3b8',
+    color: isDark ? '#94a3b8' : '#64748b',
     textAlign: 'center',
     marginBottom: 20,
   },
   primaryBtn: {
-    backgroundColor: '#38bdf8',
+    backgroundColor: '#059669',
     paddingHorizontal: 20,
     paddingVertical: 12,
     borderRadius: 12,
   },
   primaryBtnText: {
-    color: '#0f172a',
+    color: '#ffffff',
     fontWeight: '700',
     fontSize: 14,
   },
 
   // Top Bar
   topBar: {
-    backgroundColor: 'rgba(15, 23, 42, 0.95)',
+    backgroundColor: isDark ? 'rgba(15, 23, 42, 0.95)' : '#ffffff',
     paddingHorizontal: 16,
     paddingVertical: 10,
     borderBottomWidth: 1,
-    borderBottomColor: '#1e293b',
+    borderBottomColor: isDark ? '#1e293b' : '#e2e8f0',
+    ...(isDark ? {} : {
+      shadowColor: '#059669',
+      shadowOffset: { width: 0, height: 2 },
+      shadowOpacity: 0.06,
+      shadowRadius: 4,
+      elevation: 2,
+    }),
   },
   palletInfoRow: {
     flexDirection: 'row',
@@ -2623,24 +2637,24 @@ const styles = StyleSheet.create({
   palletBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#1e293b',
+    backgroundColor: isDark ? '#1e293b' : '#f0fdf4',
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 10,
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: isDark ? '#334155' : '#a7f3d0',
   },
   palletBadgeLabel: {
     fontSize: 10,
     fontWeight: '800',
-    color: '#fbbf24',
+    color: isDark ? '#fbbf24' : '#15803d',
     marginLeft: 4,
     marginRight: 6,
   },
   palletCodeText: {
     fontSize: 13,
     fontWeight: '700',
-    color: '#f8fafc',
+    color: isDark ? '#f8fafc' : '#0f172a',
   },
   topActionBtns: {
     flexDirection: 'row',
@@ -2651,15 +2665,15 @@ const styles = StyleSheet.create({
     width: 36,
     height: 36,
     borderRadius: 10,
-    backgroundColor: '#1e293b',
+    backgroundColor: isDark ? '#1e293b' : '#f0fdf4',
     justifyContent: 'center',
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: isDark ? '#334155' : '#bbf7d0',
   },
   iconButtonActive: {
-    backgroundColor: '#854d0e',
-    borderColor: '#fbbf24',
+    backgroundColor: isDark ? '#854d0e' : '#dcfce7',
+    borderColor: isDark ? '#fbbf24' : '#10b981',
   },
 
   // Progress Bar
@@ -2675,9 +2689,9 @@ const styles = StyleSheet.create({
   resetButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(239, 68, 68, 0.15)',
+    backgroundColor: isDark ? 'rgba(239, 68, 68, 0.15)' : '#fee2e2',
     borderWidth: 1,
-    borderColor: '#ef4444',
+    borderColor: isDark ? '#ef4444' : '#fca5a5',
     paddingHorizontal: 6,
     paddingVertical: 1,
     borderRadius: 6,
@@ -2691,28 +2705,28 @@ const styles = StyleSheet.create({
   },
   progressText: {
     fontSize: 12,
-    color: '#94a3b8',
+    color: isDark ? '#94a3b8' : '#475569',
   },
   progressHighlight: {
-    color: '#fbbf24',
+    color: isDark ? '#fbbf24' : '#059669',
     fontWeight: '700',
   },
   weightText: {
     fontSize: 12,
-    color: '#94a3b8',
+    color: isDark ? '#94a3b8' : '#475569',
   },
   progressBarBg: {
     height: 6,
-    backgroundColor: '#1e293b',
+    backgroundColor: isDark ? '#1e293b' : '#e2e8f0',
     borderRadius: 3,
     overflow: 'hidden',
   },
   progressBarFill: {
     height: '100%',
-    backgroundColor: '#fbbf24',
+    backgroundColor: isDark ? '#fbbf24' : '#10b981',
   },
   progressBarFull: {
-    backgroundColor: '#10b981',
+    backgroundColor: '#059669',
   },
 
   // Camera Wrapper & Reticle
@@ -2734,16 +2748,16 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    backgroundColor: 'rgba(15, 23, 42, 0.85)',
+    backgroundColor: isDark ? 'rgba(15, 23, 42, 0.85)' : 'rgba(255, 255, 255, 0.92)',
     paddingHorizontal: 14,
     paddingVertical: 6,
     borderRadius: 20,
     marginBottom: 16,
     borderWidth: 1,
-    borderColor: 'rgba(251, 191, 36, 0.4)',
+    borderColor: isDark ? 'rgba(251, 191, 36, 0.4)' : '#86efac',
   },
   reticleGuideText: {
-    color: '#f8fafc',
+    color: isDark ? '#f8fafc' : '#065f46',
     fontSize: 12,
     fontWeight: '700',
   },
@@ -2752,21 +2766,21 @@ const styles = StyleSheet.create({
     height: 140,
     borderRadius: 16,
     borderWidth: 1.5,
-    borderColor: 'rgba(251, 191, 36, 0.6)',
-    backgroundColor: 'rgba(251, 191, 36, 0.04)',
+    borderColor: isDark ? 'rgba(251, 191, 36, 0.6)' : '#10b981',
+    backgroundColor: isDark ? 'rgba(251, 191, 36, 0.04)' : 'rgba(16, 185, 129, 0.05)',
     justifyContent: 'center',
     paddingHorizontal: 16,
     position: 'relative',
   },
   stampTargetFrameScanning: {
     borderColor: '#10b981',
-    backgroundColor: 'rgba(16, 185, 129, 0.1)',
+    backgroundColor: 'rgba(16, 185, 129, 0.12)',
   },
   corner: {
     position: 'absolute',
     width: 20,
     height: 20,
-    borderColor: '#fbbf24',
+    borderColor: isDark ? '#fbbf24' : '#10b981',
   },
   tl: { top: -2, left: -2, borderTopWidth: 4, borderLeftWidth: 4, borderTopLeftRadius: 12 },
   tr: { top: -2, right: -2, borderTopWidth: 4, borderRightWidth: 4, borderTopRightRadius: 12 },
@@ -2780,8 +2794,8 @@ const styles = StyleSheet.create({
   lineGuideTag: {
     fontSize: 10,
     fontWeight: '800',
-    color: '#fbbf24',
-    backgroundColor: 'rgba(15, 23, 42, 0.8)',
+    color: isDark ? '#fbbf24' : '#059669',
+    backgroundColor: isDark ? 'rgba(15, 23, 42, 0.8)' : '#ffffff',
     paddingHorizontal: 6,
     paddingVertical: 2,
     borderRadius: 4,
@@ -2790,20 +2804,23 @@ const styles = StyleSheet.create({
   lineGuideDash: {
     flex: 1,
     height: 1,
-    backgroundColor: 'rgba(251, 191, 36, 0.3)',
+    backgroundColor: isDark ? 'rgba(251, 191, 36, 0.3)' : 'rgba(16, 185, 129, 0.4)',
     marginRight: 8,
   },
   lineGuideExample: {
     fontSize: 11,
     fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
-    color: '#e2e8f0',
+    color: '#ffffff',
     fontWeight: '600',
+    textShadowColor: 'rgba(0, 0, 0, 0.75)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 2,
   },
   reticleHintSub: {
-    color: '#cbd5e1',
+    color: '#ffffff',
     fontSize: 11,
     marginTop: 14,
-    backgroundColor: 'rgba(15, 23, 42, 0.75)',
+    backgroundColor: isDark ? 'rgba(15, 23, 42, 0.75)' : 'rgba(5, 150, 105, 0.85)',
     paddingHorizontal: 12,
     paddingVertical: 4,
     borderRadius: 12,
@@ -2822,12 +2839,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
+    shadowOpacity: 0.25,
     shadowRadius: 6,
     elevation: 6,
   },
   bannerText: {
-    color: '#fff',
+    color: '#ffffff',
     fontWeight: '700',
     fontSize: 13,
   },
@@ -2839,12 +2856,12 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
-    backgroundColor: 'rgba(15, 23, 42, 0.7)',
+    backgroundColor: isDark ? 'rgba(15, 23, 42, 0.7)' : 'rgba(255, 255, 255, 0.85)',
     justifyContent: 'center',
     alignItems: 'center',
   },
   scanningText: {
-    color: '#fbbf24',
+    color: isDark ? '#fbbf24' : '#059669',
     fontSize: 14,
     fontWeight: '700',
     marginTop: 12,
@@ -2852,11 +2869,11 @@ const styles = StyleSheet.create({
 
   // Bottom Controls
   bottomControls: {
-    backgroundColor: 'rgba(15, 23, 42, 0.95)',
+    backgroundColor: isDark ? 'rgba(15, 23, 42, 0.95)' : '#ffffff',
     paddingVertical: 16,
     paddingHorizontal: 24,
     borderTopWidth: 1,
-    borderTopColor: '#1e293b',
+    borderTopColor: isDark ? '#1e293b' : '#e2e8f0',
   },
   triggerRow: {
     flexDirection: 'row',
@@ -2876,18 +2893,18 @@ const styles = StyleSheet.create({
   btnManualText: {
     fontSize: 11,
     fontWeight: '600',
-    color: '#94a3b8',
+    color: isDark ? '#94a3b8' : '#059669',
     marginTop: 4,
   },
   shutterBtn: {
     width: 72,
     height: 72,
     borderRadius: 36,
-    backgroundColor: 'rgba(251, 191, 36, 0.3)',
+    backgroundColor: isDark ? 'rgba(251, 191, 36, 0.3)' : 'rgba(16, 185, 129, 0.2)',
     justifyContent: 'center',
     alignItems: 'center',
     borderWidth: 2,
-    borderColor: '#fbbf24',
+    borderColor: isDark ? '#fbbf24' : '#10b981',
   },
   shutterBtnDisabled: {
     opacity: 0.5,
@@ -2896,7 +2913,7 @@ const styles = StyleSheet.create({
     width: 58,
     height: 58,
     borderRadius: 29,
-    backgroundColor: '#fbbf24',
+    backgroundColor: isDark ? '#fbbf24' : '#059669',
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -2904,18 +2921,18 @@ const styles = StyleSheet.create({
   // Modals
   modalBackdrop: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.75)',
+    backgroundColor: 'rgba(0, 0, 0, 0.65)',
     justifyContent: 'center',
     alignItems: 'center',
     padding: 20,
   },
   confirmStampCard: {
     width: '100%',
-    backgroundColor: '#1e293b',
+    backgroundColor: isDark ? '#1e293b' : '#ffffff',
     borderRadius: 20,
     padding: 20,
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: isDark ? '#334155' : '#e2e8f0',
   },
   confirmHeader: {
     flexDirection: 'row',
@@ -2923,7 +2940,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingBottom: 12,
     borderBottomWidth: 1,
-    borderBottomColor: '#334155',
+    borderBottomColor: isDark ? '#334155' : '#e2e8f0',
   },
   confirmTitleRow: {
     flexDirection: 'row',
@@ -2931,29 +2948,29 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   confirmTitle: {
-    color: '#10b981',
+    color: '#059669',
     fontWeight: '800',
     fontSize: 14,
     letterSpacing: 0.5,
   },
   stampResultBox: {
     marginVertical: 14,
-    backgroundColor: '#0f172a',
+    backgroundColor: isDark ? '#0f172a' : '#f8fafc',
     padding: 14,
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: isDark ? '#334155' : '#e2e8f0',
   },
   stampResultLine: {},
   stampLineLabel: {
-    color: '#94a3b8',
+    color: isDark ? '#94a3b8' : '#475569',
     fontSize: 10,
     fontWeight: '800',
     marginBottom: 4,
   },
   stampLineInput: {
-    backgroundColor: '#1e293b',
-    color: '#fbbf24',
+    backgroundColor: isDark ? '#1e293b' : '#ffffff',
+    color: isDark ? '#fbbf24' : '#047857',
     fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
     fontSize: 16,
     fontWeight: '800',
@@ -2961,7 +2978,7 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: '#475569',
+    borderColor: isDark ? '#475569' : '#cbd5e1',
   },
   stampCharCount: {
     color: '#64748b',
@@ -2974,19 +2991,21 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     marginBottom: 16,
-    backgroundColor: '#0f172a',
+    backgroundColor: isDark ? '#0f172a' : '#f8fafc',
     paddingHorizontal: 14,
     paddingVertical: 10,
     borderRadius: 12,
+    borderWidth: 1,
+    borderColor: isDark ? '#334155' : '#e2e8f0',
   },
   weightLabel: {
-    color: '#e2e8f0',
+    color: isDark ? '#e2e8f0' : '#334155',
     fontSize: 13,
     fontWeight: '600',
   },
   weightInput: {
-    backgroundColor: '#1e293b',
-    color: '#f8fafc',
+    backgroundColor: isDark ? '#1e293b' : '#ffffff',
+    color: isDark ? '#f8fafc' : '#0f172a',
     fontSize: 15,
     fontWeight: '700',
     paddingHorizontal: 14,
@@ -2995,7 +3014,7 @@ const styles = StyleSheet.create({
     width: 80,
     textAlign: 'center',
     borderWidth: 1,
-    borderColor: '#475569',
+    borderColor: isDark ? '#475569' : '#cbd5e1',
   },
   confirmActionRow: {
     flexDirection: 'row',
@@ -3010,10 +3029,12 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: 6,
     borderRadius: 12,
-    backgroundColor: '#334155',
+    backgroundColor: isDark ? '#334155' : '#f1f5f9',
+    borderWidth: 1,
+    borderColor: isDark ? '#334155' : '#cbd5e1',
   },
   btnRescanText: {
-    color: '#e2e8f0',
+    color: isDark ? '#e2e8f0' : '#475569',
     fontWeight: '700',
     fontSize: 13,
   },
@@ -3027,21 +3048,28 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     paddingHorizontal: 12,
     borderRadius: 12,
-    backgroundColor: '#10b981',
+    backgroundColor: '#059669',
   },
   btnConfirmSaveText: {
-    color: '#fff',
+    color: '#ffffff',
     fontWeight: '800',
     fontSize: 13,
   },
 
   modalCard: {
     width: '100%',
-    backgroundColor: '#1e293b',
+    backgroundColor: isDark ? '#1e293b' : '#ffffff',
     borderRadius: 18,
     padding: 16,
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: isDark ? '#334155' : '#e2e8f0',
+    ...(isDark ? {} : {
+      shadowColor: '#000',
+      shadowOffset: { width: 0, height: 4 },
+      shadowOpacity: 0.12,
+      shadowRadius: 12,
+      elevation: 5,
+    }),
   },
   modalHeader: {
     flexDirection: 'row',
@@ -3050,27 +3078,27 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   modalTitle: {
-    color: '#f8fafc',
+    color: isDark ? '#f8fafc' : '#0f172a',
     fontWeight: '800',
     fontSize: 16,
   },
   inputLabel: {
-    color: '#94a3b8',
+    color: isDark ? '#94a3b8' : '#334155',
     fontSize: 11,
     fontWeight: '600',
     marginBottom: 3,
     marginTop: 4,
   },
   textInput: {
-    backgroundColor: '#0f172a',
-    color: '#f8fafc',
+    backgroundColor: isDark ? '#0f172a' : '#ffffff',
+    color: isDark ? '#f8fafc' : '#0f172a',
     fontSize: 14,
     fontWeight: '600',
     paddingHorizontal: 12,
     paddingVertical: 10,
     borderRadius: 10,
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: isDark ? '#334155' : '#cbd5e1',
   },
   modalActions: {
     flexDirection: 'row',
@@ -3082,10 +3110,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 10,
     borderRadius: 10,
-    backgroundColor: '#334155',
+    backgroundColor: isDark ? '#334155' : '#f1f5f9',
+    borderWidth: 1,
+    borderColor: isDark ? '#334155' : '#cbd5e1',
   },
   modalCancelText: {
-    color: '#94a3b8',
+    color: isDark ? '#94a3b8' : '#475569',
     fontWeight: '600',
     fontSize: 13,
   },
@@ -3093,10 +3123,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingVertical: 10,
     borderRadius: 10,
-    backgroundColor: '#fbbf24',
+    backgroundColor: isDark ? '#fbbf24' : '#059669',
   },
   modalSaveText: {
-    color: '#0f172a',
+    color: isDark ? '#0f172a' : '#ffffff',
     fontWeight: '800',
     fontSize: 13,
   },
@@ -3105,9 +3135,9 @@ const styles = StyleSheet.create({
   quickStampCloneBanner: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(251, 191, 36, 0.15)',
+    backgroundColor: isDark ? 'rgba(251, 191, 36, 0.15)' : '#f0fdf4',
     borderWidth: 1,
-    borderColor: 'rgba(251, 191, 36, 0.5)',
+    borderColor: isDark ? 'rgba(251, 191, 36, 0.5)' : '#86efac',
     borderRadius: 10,
     marginHorizontal: 16,
     marginBottom: 8,
@@ -3117,7 +3147,7 @@ const styles = StyleSheet.create({
   },
   quickStampCloneText: {
     flex: 1,
-    color: '#fbbf24',
+    color: isDark ? '#fbbf24' : '#047857',
     fontSize: 12,
     fontWeight: '700',
   },
@@ -3125,23 +3155,23 @@ const styles = StyleSheet.create({
     marginBottom: 14,
   },
   countInput: {
-    backgroundColor: '#0f172a',
-    color: '#f8fafc',
+    backgroundColor: isDark ? '#0f172a' : '#ffffff',
+    color: isDark ? '#f8fafc' : '#0f172a',
     fontSize: 16,
     fontWeight: '700',
     paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 10,
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: isDark ? '#334155' : '#cbd5e1',
   },
   countInputBulk: {
-    borderColor: '#fbbf24',
-    color: '#fbbf24',
+    borderColor: isDark ? '#fbbf24' : '#059669',
+    color: isDark ? '#fbbf24' : '#059669',
   },
   bulkNoticeTag: {
     fontSize: 11,
-    color: '#fbbf24',
+    color: isDark ? '#fbbf24' : '#059669',
     fontWeight: '700',
   },
   quickChipsRow: {
@@ -3151,46 +3181,48 @@ const styles = StyleSheet.create({
     marginTop: 8,
   },
   quickChip: {
-    backgroundColor: '#1e293b',
+    backgroundColor: isDark ? '#1e293b' : '#f8fafc',
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: isDark ? '#334155' : '#e2e8f0',
     paddingHorizontal: 10,
     paddingVertical: 5,
     borderRadius: 8,
   },
   quickChipActive: {
-    backgroundColor: '#854d0e',
-    borderColor: '#fbbf24',
+    backgroundColor: isDark ? '#854d0e' : '#dcfce7',
+    borderColor: isDark ? '#fbbf24' : '#10b981',
   },
   quickChipText: {
-    color: '#94a3b8',
+    color: isDark ? '#94a3b8' : '#64748b',
     fontSize: 11,
     fontWeight: '700',
   },
   quickChipActiveText: {
-    color: '#fbbf24',
+    color: isDark ? '#fbbf24' : '#047857',
     fontWeight: '800',
   },
   sampleBoxCard: {
-    backgroundColor: '#0f172a',
+    backgroundColor: isDark ? '#0f172a' : '#f8fafc',
     borderRadius: 10,
     padding: 10,
     marginBottom: 12,
     borderLeftWidth: 3,
-    borderLeftColor: '#fbbf24',
+    borderLeftColor: isDark ? '#fbbf24' : '#059669',
+    borderWidth: 1,
+    borderColor: isDark ? '#1e293b' : '#e2e8f0',
   },
   sampleBoxTitle: {
-    color: '#f8fafc',
+    color: isDark ? '#f8fafc' : '#0f172a',
     fontSize: 13,
     fontWeight: '700',
   },
   sampleBoxSub: {
-    color: '#94a3b8',
+    color: isDark ? '#94a3b8' : '#64748b',
     fontSize: 11,
     marginTop: 2,
   },
   sampleBoxMeta: {
-    color: '#cbd5e1',
+    color: isDark ? '#cbd5e1' : '#475569',
     fontSize: 10,
     marginTop: 4,
   },
@@ -3201,21 +3233,21 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 5,
-    backgroundColor: 'rgba(15, 23, 42, 0.85)',
+    backgroundColor: isDark ? 'rgba(15, 23, 42, 0.85)' : '#ffffff',
     borderWidth: 1,
-    borderColor: 'rgba(248, 113, 113, 0.45)',
+    borderColor: isDark ? 'rgba(248, 113, 113, 0.45)' : '#fca5a5',
     paddingHorizontal: 10,
     paddingVertical: 6,
     borderRadius: 999,
   },
   cameraTogglePillText: {
-    color: '#fecaca',
+    color: isDark ? '#fecaca' : '#dc2626',
     fontSize: 11,
     fontWeight: '700',
   },
   cameraPausedContainer: {
     flex: 1,
-    backgroundColor: '#0b1220',
+    backgroundColor: isDark ? '#0b1220' : '#ffffff',
     justifyContent: 'center',
     alignItems: 'center',
     paddingHorizontal: 28,
@@ -3224,21 +3256,21 @@ const styles = StyleSheet.create({
     width: 72,
     height: 72,
     borderRadius: 36,
-    backgroundColor: '#1e293b',
+    backgroundColor: isDark ? '#1e293b' : '#f0fdf4',
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: isDark ? '#334155' : '#bbf7d0',
     justifyContent: 'center',
     alignItems: 'center',
     marginBottom: 14,
   },
   cameraPausedTitle: {
-    color: '#f8fafc',
+    color: isDark ? '#f8fafc' : '#0f172a',
     fontSize: 16,
     fontWeight: '800',
     marginBottom: 6,
   },
   cameraPausedSub: {
-    color: '#94a3b8',
+    color: isDark ? '#94a3b8' : '#64748b',
     fontSize: 12,
     textAlign: 'center',
     lineHeight: 18,
@@ -3248,13 +3280,13 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    backgroundColor: '#fbbf24',
+    backgroundColor: isDark ? '#fbbf24' : '#059669',
     paddingHorizontal: 20,
     paddingVertical: 11,
     borderRadius: 12,
   },
   cameraEnableBtnText: {
-    color: '#0f172a',
+    color: isDark ? '#0f172a' : '#ffffff',
     fontSize: 14,
     fontWeight: '800',
   },
@@ -3262,17 +3294,18 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    backgroundColor: 'rgba(56, 189, 248, 0.1)',
+    backgroundColor: isDark ? 'rgba(56, 189, 248, 0.1)' : '#f0fdf4',
     marginTop: 8,
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: 'rgba(56, 189, 248, 0.25)',
+    borderColor: isDark ? 'rgba(56, 189, 248, 0.25)' : '#86efac',
   },
   noPalletTipText: {
-    color: '#38bdf8',
+    color: isDark ? '#38bdf8' : '#166534',
     fontSize: 12,
+    fontWeight: '600',
     flex: 1,
   },
   volumeBar: {
@@ -3289,25 +3322,25 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(56, 189, 248, 0.12)',
+    backgroundColor: isDark ? 'rgba(56, 189, 248, 0.12)' : '#ecfdf5',
     paddingHorizontal: 10,
     paddingVertical: 6,
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: 'rgba(56, 189, 248, 0.3)',
+    borderColor: isDark ? 'rgba(56, 189, 248, 0.3)' : '#a7f3d0',
     gap: 6,
   },
   volumeKeyHintText: {
-    color: '#38bdf8',
+    color: isDark ? '#38bdf8' : '#047857',
     fontSize: 11,
     fontWeight: '700',
   },
   torchBtn: {
     padding: 7,
     borderRadius: 8,
-    backgroundColor: '#1e293b',
+    backgroundColor: isDark ? '#1e293b' : '#ffffff',
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: isDark ? '#334155' : '#a7f3d0',
   },
   compactCameraBox: {
     height: 220,
@@ -3317,23 +3350,30 @@ const styles = StyleSheet.create({
     backgroundColor: '#000',
     position: 'relative',
     borderWidth: 1.5,
-    borderColor: '#334155',
+    borderColor: isDark ? '#334155' : '#86efac',
+    ...(isDark ? {} : {
+      shadowColor: '#059669',
+      shadowOffset: { width: 0, height: 2 },
+      shadowOpacity: 0.1,
+      shadowRadius: 6,
+      elevation: 3,
+    }),
   },
   noPalletOverlay: {
     ...StyleSheet.absoluteFill,
-    backgroundColor: 'rgba(9, 13, 22, 0.92)',
+    backgroundColor: isDark ? 'rgba(9, 13, 22, 0.92)' : '#ffffff',
     justifyContent: 'center',
     alignItems: 'center',
     padding: 20,
   },
   noPalletOverlayTitle: {
-    color: '#ffffff',
+    color: isDark ? '#ffffff' : '#0f172a',
     fontSize: 16,
     fontWeight: '800',
     marginTop: 8,
   },
   noPalletOverlaySub: {
-    color: '#94a3b8',
+    color: isDark ? '#94a3b8' : '#64748b',
     fontSize: 12,
     textAlign: 'center',
     marginTop: 4,
@@ -3344,10 +3384,15 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    backgroundColor: '#10b981',
+    backgroundColor: isDark ? '#10b981' : '#059669',
     paddingHorizontal: 18,
     paddingVertical: 9,
     borderRadius: 8,
+    shadowColor: '#059669',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    elevation: 3,
   },
   selectPalletOverlayBtnText: {
     color: '#ffffff',
@@ -3363,7 +3408,7 @@ const styles = StyleSheet.create({
   compactStampFrame: {
     width: '92%',
     height: 110,
-    backgroundColor: 'rgba(15, 23, 42, 0.35)',
+    backgroundColor: isDark ? 'rgba(15, 23, 42, 0.35)' : 'rgba(255, 255, 255, 0.25)',
     borderRadius: 10,
     justifyContent: 'center',
     paddingHorizontal: 14,
@@ -3371,18 +3416,18 @@ const styles = StyleSheet.create({
   },
   compactHintText: {
     marginTop: 8,
-    color: '#e2e8f0',
+    color: '#ffffff',
     fontSize: 11,
-    fontWeight: '600',
-    backgroundColor: 'rgba(15, 23, 42, 0.72)',
+    fontWeight: '700',
+    backgroundColor: isDark ? 'rgba(15, 23, 42, 0.75)' : 'rgba(5, 150, 105, 0.85)',
     paddingHorizontal: 10,
     paddingVertical: 4,
     borderRadius: 8,
   },
   actionRow: {
     flexDirection: 'row',
-    gap: 4,
-    paddingHorizontal: 8,
+    gap: 6,
+    paddingHorizontal: 12,
     marginTop: 8,
     marginBottom: 8,
   },
@@ -3392,10 +3437,15 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 3,
+    gap: 4,
     paddingVertical: 10,
-    paddingHorizontal: 2,
+    paddingHorizontal: 4,
     borderRadius: 8,
+    shadowColor: '#059669',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 3,
+    elevation: 2,
   },
   captureActionText: {
     color: '#ffffff',
@@ -3404,25 +3454,25 @@ const styles = StyleSheet.create({
   },
   manualActionBtn: {
     flex: 1,
-    backgroundColor: '#0f2942',
-    borderWidth: 1,
-    borderColor: '#0284c7',
+    backgroundColor: isDark ? '#0f2942' : '#059669',
+    borderWidth: isDark ? 1.5 : 0,
+    borderColor: isDark ? '#0284c7' : '#059669',
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 2,
+    gap: 3,
     paddingVertical: 10,
-    paddingHorizontal: 2,
+    paddingHorizontal: 3,
     borderRadius: 8,
   },
   manualActionText: {
-    color: '#38bdf8',
+    color: isDark ? '#38bdf8' : '#ffffff',
     fontWeight: '700',
     fontSize: 11,
   },
   completeActionBtn: {
     flex: 1,
-    backgroundColor: '#7c3aed',
+    backgroundColor: isDark ? '#7c3aed' : '#047857',
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
@@ -3444,43 +3494,51 @@ const styles = StyleSheet.create({
     marginBottom: 6,
   },
   listHeaderTitle: {
-    color: '#94a3b8',
+    color: isDark ? '#94a3b8' : '#065f46',
     fontSize: 12,
-    fontWeight: '700',
+    fontWeight: '800',
     textTransform: 'uppercase',
   },
   seeAllText: {
-    color: '#38bdf8',
+    color: isDark ? '#38bdf8' : '#059669',
     fontSize: 12,
-    fontWeight: '600',
+    fontWeight: '700',
   },
   boxList: {
     flex: 1,
     paddingHorizontal: 16,
+    backgroundColor: isDark ? 'transparent' : '#ffffff',
   },
   emptyBox: {
     alignItems: 'center',
-    paddingVertical: 22,
+    paddingVertical: 24,
   },
   emptyText: {
-    color: '#e2e8f0',
+    color: isDark ? '#e2e8f0' : '#0f172a',
     fontSize: 14,
     fontWeight: '700',
     marginTop: 8,
   },
   emptySubText: {
-    color: '#64748b',
+    color: isDark ? '#64748b' : '#64748b',
     fontSize: 12,
     marginTop: 4,
     textAlign: 'center',
   },
   stampBoxCard: {
-    backgroundColor: '#131b2e',
+    backgroundColor: isDark ? '#131b2e' : '#ffffff',
     borderRadius: 10,
     padding: 10,
     marginBottom: 8,
     borderWidth: 1,
-    borderColor: '#1e293b',
+    borderColor: isDark ? '#1e293b' : '#e2e8f0',
+    ...(isDark ? {} : {
+      shadowColor: '#059669',
+      shadowOffset: { width: 0, height: 1 },
+      shadowOpacity: 0.05,
+      shadowRadius: 3,
+      elevation: 1,
+    }),
   },
   stampBoxHeader: {
     flexDirection: 'row',
@@ -3488,73 +3546,75 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   stampBoxIndexBadge: {
-    backgroundColor: '#854d0e',
+    backgroundColor: isDark ? '#854d0e' : '#dcfce7',
     paddingHorizontal: 7,
     paddingVertical: 2,
     borderRadius: 6,
   },
   stampBoxIndexText: {
-    color: '#fbbf24',
+    color: isDark ? '#fbbf24' : '#15803d',
     fontSize: 11,
     fontWeight: '800',
   },
   stampBoxCodeText: {
     flex: 1,
-    color: '#e2e8f0',
+    color: isDark ? '#e2e8f0' : '#0f172a',
     fontSize: 12,
     fontWeight: '700',
   },
   stampBoxWeightBadge: {
-    backgroundColor: '#064e3b',
+    backgroundColor: isDark ? '#064e3b' : '#ecfdf5',
+    borderWidth: 1,
+    borderColor: isDark ? '#064e3b' : '#a7f3d0',
     paddingHorizontal: 7,
     paddingVertical: 2,
     borderRadius: 6,
   },
   stampBoxWeightText: {
-    color: '#34d399',
+    color: isDark ? '#34d399' : '#047857',
     fontSize: 11,
     fontWeight: '700',
   },
   stampBoxTitle: {
-    color: '#f8fafc',
+    color: isDark ? '#f8fafc' : '#0f172a',
     fontSize: 13,
     fontWeight: '600',
     marginTop: 5,
   },
   stampBoxSub: {
-    color: '#94a3b8',
+    color: isDark ? '#94a3b8' : '#64748b',
     fontSize: 11,
     marginTop: 2,
   },
   uploadActionBtn: {
     flex: 1,
-    backgroundColor: '#3b0764',
-    borderWidth: 1,
-    borderColor: '#9333ea',
+    backgroundColor: isDark ? '#3b0764' : '#059669',
+    borderWidth: isDark ? 1.5 : 0,
+    borderColor: isDark ? '#9333ea' : '#059669',
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 2,
+    gap: 3,
     paddingVertical: 10,
-    paddingHorizontal: 2,
+    paddingHorizontal: 3,
     borderRadius: 8,
   },
   uploadActionText: {
-    color: '#f3e8ff',
+    color: isDark ? '#f3e8ff' : '#ffffff',
     fontWeight: '700',
     fontSize: 11,
   },
   aiSendActionBtn: {
     flex: 1,
-    backgroundColor: '#4338ca',
-    borderWidth: 1,
-    borderColor: '#6366f1',
+    backgroundColor: isDark ? '#4338ca' : '#059669',
+    borderWidth: isDark ? 1.5 : 0,
+    borderColor: isDark ? '#6366f1' : '#059669',
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 2,
+    gap: 3,
     paddingVertical: 10,
-    paddingHorizontal: 2,
+    paddingHorizontal: 3,
     borderRadius: 8,
   },
   aiSendActionText: {
@@ -3565,13 +3625,13 @@ const styles = StyleSheet.create({
   sendPreviewContainer: {
     width: '100%',
     height: 180,
-    backgroundColor: '#020617',
+    backgroundColor: isDark ? '#020617' : '#f8fafc',
     borderRadius: 12,
     overflow: 'hidden',
     position: 'relative',
     marginBottom: 12,
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: isDark ? '#334155' : '#e2e8f0',
   },
   sendPreviewImage: {
     width: '100%',
@@ -3584,7 +3644,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    backgroundColor: 'rgba(37, 99, 235, 0.85)',
+    backgroundColor: 'rgba(5, 150, 105, 0.9)',
     paddingHorizontal: 8,
     paddingVertical: 4,
     borderRadius: 6,
@@ -3595,25 +3655,26 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   sendPalletInfoBox: {
-    backgroundColor: '#1e293b',
+    backgroundColor: isDark ? '#1e293b' : '#f0fdf4',
     padding: 10,
     borderRadius: 10,
     marginBottom: 10,
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: isDark ? '#334155' : '#bbf7d0',
   },
   sendPalletLabel: {
-    color: '#94a3b8',
+    color: isDark ? '#94a3b8' : '#15803d',
     fontSize: 11,
+    fontWeight: '600',
   },
   sendPalletCode: {
-    color: '#38bdf8',
+    color: isDark ? '#38bdf8' : '#059669',
     fontSize: 16,
     fontWeight: '900',
     marginTop: 2,
   },
   sendPalletSub: {
-    color: '#fbbf24',
+    color: isDark ? '#fbbf24' : '#047857',
     fontSize: 11,
     marginTop: 2,
     fontWeight: '700',
@@ -3622,16 +3683,16 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'flex-start',
     gap: 6,
-    backgroundColor: 'rgba(56, 189, 248, 0.1)',
+    backgroundColor: isDark ? 'rgba(56, 189, 248, 0.1)' : '#ecfdf5',
     padding: 10,
     borderRadius: 10,
     marginTop: 10,
     borderWidth: 1,
-    borderColor: 'rgba(56, 189, 248, 0.25)',
+    borderColor: isDark ? 'rgba(56, 189, 248, 0.25)' : '#a7f3d0',
   },
   sendExplainText: {
     flex: 1,
-    color: '#bae6fd',
+    color: isDark ? '#bae6fd' : '#065f46',
     fontSize: 11,
     lineHeight: 16,
   },
@@ -3639,7 +3700,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 18,
     paddingVertical: 10,
     borderRadius: 10,
-    backgroundColor: '#4f46e5',
+    backgroundColor: '#059669',
   },
   modalSendWebText: {
     color: '#ffffff',
@@ -3647,15 +3708,15 @@ const styles = StyleSheet.create({
     fontSize: 13,
   },
   queueItemCard: {
-    backgroundColor: '#1e293b',
+    backgroundColor: isDark ? '#1e293b' : '#ffffff',
     padding: 10,
     borderRadius: 10,
     marginBottom: 8,
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: isDark ? '#334155' : '#e2e8f0',
   },
   queueItemStt: {
-    color: '#f8fafc',
+    color: isDark ? '#f8fafc' : '#0f172a',
     fontSize: 13,
     fontWeight: '800',
   },
@@ -3671,7 +3732,7 @@ const styles = StyleSheet.create({
     fontWeight: '800',
   },
   queueItemProd: {
-    color: '#cbd5e1',
+    color: isDark ? '#cbd5e1' : '#334155',
     fontSize: 11,
     marginTop: 2,
     fontWeight: '600',
@@ -3689,3 +3750,5 @@ const styles = StyleSheet.create({
     fontWeight: '800',
   },
 });
+const baseStyles = getStampStyles(true);
+const styles = StyleSheet.create(baseStyles as any);

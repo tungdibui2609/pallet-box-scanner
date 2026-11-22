@@ -288,24 +288,26 @@ export default function PastShiftDetailModal({
   const orderType = shift.summary_data?.order_type_name;
   const orderCode = shift.summary_data?.order_type_code;
 
-  // Xử lý mở lại ca
+  // Xử lý gửi yêu cầu mở lại ca đã hoàn thành (bắt buộc duyệt)
   const handleReopen = () => {
     Alert.alert(
-      'Mở lại công việc',
-      `Bạn có chắc chắn muốn mở lại công việc "${jobName}" để tiếp tục ghi nhận số liệu không?`,
+      'Yêu cầu mở lại công việc',
+      `Công việc "${jobName}" đã hoàn thành và bị khóa.\n\nBạn muốn gửi yêu cầu Mở lại công việc lên quản lý duyệt để có thể thêm/sửa số liệu và hình ảnh không?`,
       [
         { text: 'Hủy', style: 'cancel' },
         {
-          text: 'Mở Lại',
+          text: 'Gửi Yêu Cầu Duyệt',
           onPress: async () => {
             setActionLoading(true);
             try {
               await reopenShift(shift.id);
-              await onRefreshAll();
               onClose();
-              Alert.alert('Thành công', `Đã mở lại công việc "${jobName}".`);
+              Alert.alert(
+                'Đã gửi yêu cầu duyệt',
+                `Đã gửi yêu cầu mở lại công việc "${jobName}".\n\nSau khi quản lý duyệt tại mục Duyệt thao tác, công việc sẽ tự động chuyển về tab Đang làm để bạn chỉnh sửa.`
+              );
             } catch (e: any) {
-              Alert.alert('Lỗi', e?.message || 'Không thể mở lại công việc.');
+              Alert.alert('Thông báo', e?.message || 'Không thể gửi yêu cầu mở lại công việc.');
             } finally {
               setActionLoading(false);
             }

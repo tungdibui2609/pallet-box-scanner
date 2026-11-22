@@ -16,6 +16,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { useAuth } from '../contexts/AuthContext';
+import { useTheme, AppThemeColors } from '../contexts/ThemeContext';
 import {
   DeliveryShift,
   ShiftProductItem,
@@ -63,6 +64,7 @@ import {
   OperationImageRecord,
   uploadOperationImages,
   getShiftOperationImages,
+  syncOfflineOperationImages,
 } from '../services/operationImagesService';
 import {
   QuickSnapItem,
@@ -153,6 +155,8 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
   const [albumSystemCode, setAlbumSystemCode] = useState<string>('');
 
   // Quản lý ca công việc
+  const { colors, isDark } = useTheme();
+  const styles = useMemo(() => createStyles(colors, isDark), [colors, isDark]);
   const [openShifts, setOpenShifts] = useState<DeliveryShift[]>([]);
   const [selectedShift, setSelectedShift] = useState<DeliveryShift | null>(null);
   const [pastShifts, setPastShifts] = useState<DeliveryShift[]>([]);
@@ -553,6 +557,82 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
   }, [selectedShift, selectShift]);
 
   const [downloadingOpsOffline, setDownloadingOpsOffline] = useState(false);
+  const [syncingShift, setSyncingShift] = useState(false);
+
+  // Đồng bộ 2 chiều phiên làm việc hiện tại (Đẩy offline lên + Tải bản mới đầy đủ nhất từ Server về để 2 người làm offline khớp 100%)
+  const handleSyncCurrentShift = useCallback(async () => {
+    if (syncingShift) return;
+    setSyncingShift(true);
+    try {
+      // 1. Đẩy dữ liệu offline cục bộ của máy này lên Server trước (nếu có)
+      const pushRes = await syncOperationsOfflineQueue().catch(() => ({
+        success: false,
+        syncedCount: 0,
+      }));
+      const pushedImages = await syncOfflineOperationImages().catch(() => 0);
+      await refreshPendingCount();
+
+      // 2. Tải mới nhất danh sách ca đang mở + danh mục sản phẩm từ Server
+      const [shifts, prods] = await Promise.all([
+        getOpenShifts(),
+        getWarehouseProducts(),
+      ]);
+      setOpenShifts(shifts);
+      setAllProducts(prods);
+
+      const targetShiftId = selectedShift?.id;
+      const freshShift = targetShiftId
+        ? shifts.find(s => s.id === targetShiftId)
+        : shifts[0];
+
+      if (freshShift) {
+        await selectShift(freshShift, prods);
+        const serverReconcile = (freshShift as any)?.summary_data?.reconciliations;
+        if (serverReconcile && typeof serverReconcile === 'object') {
+          setReconcileMap(serverReconcile);
+        }
+        const [jList, sList] = await Promise.all([
+          getShiftJournals(freshShift.id),
+          getSubShifts(freshShift.id),
+        ]);
+        const pinnedCount = (freshShift.summary_data?.pinned_products || []).length;
+        const pushedPart =
+          pushRes.syncedCount > 0 || pushedImages > 0
+            ? `Đã gửi lên: ${pushRes.syncedCount} lượt số liệu${pushedImages > 0 ? `, ${pushedImages} ảnh` : ''}.\n`
+            : '';
+        Alert.alert(
+          'Đã đồng bộ phiên làm việc',
+          `${pushedPart}Đã tải mới nhất cho "${freshShift.summary_data?.job_name || freshShift.notes || 'Công việc'}":\n• ${jList.length} lượt nhập/xuất\n• ${pinnedCount} sản phẩm ghim\n• ${sList.length} đợt chốt ca tạm`
+        );
+      } else if (targetShiftId) {
+        // Ca đang mở trước đó đã được đồng nghiệp chốt hoàn thành
+        if (shifts.length > 0) {
+          await selectShift(shifts[0], prods);
+        } else {
+          setSelectedShift(null);
+          setPinnedProducts([]);
+          setAllJournals([]);
+          setSubShifts([]);
+        }
+        Alert.alert(
+          'Ca làm việc đã cập nhật',
+          'Phiên làm việc trước đó đã được hoàn thành trên máy chủ. Đã tải lại danh sách công việc mới nhất.'
+        );
+      } else {
+        Alert.alert(
+          'Đã tải dữ liệu mới nhất',
+          'Hiện chưa có công việc nào đang mở trên hệ thống.'
+        );
+      }
+    } catch (e: any) {
+      Alert.alert(
+        'Chưa thể đồng bộ',
+        e?.message || 'Không có kết nối mạng. Dữ liệu offline trên máy vẫn được giữ an toàn.'
+      );
+    } finally {
+      setSyncingShift(false);
+    }
+  }, [syncingShift, selectedShift, selectShift, refreshPendingCount]);
 
   const handleSyncOperationsOffline = useCallback(async () => {
     if (downloadingOpsOffline) return;
@@ -964,7 +1044,17 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
               const freshShifts = await getOpenShifts();
               setOpenShifts(freshShifts);
               const fresh = freshShifts.find(s => s.id === shiftId);
-              if (fresh) setSelectedShift(fresh);
+              if (fresh) {
+                setSelectedShift(fresh);
+                const freshPinned = fresh.summary_data?.pinned_products;
+                if (Array.isArray(freshPinned)) {
+                  setPinnedProducts(enrichProducts(freshPinned, allProductsRef.current));
+                }
+                const freshReconcile = (fresh as any)?.summary_data?.reconciliations;
+                if (freshReconcile && typeof freshReconcile === 'object' && !Array.isArray(freshReconcile)) {
+                  setReconcileMap(freshReconcile);
+                }
+              }
             }
           )
           .on(
@@ -1529,6 +1619,24 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
                 </TouchableOpacity>
               )}
 
+              {/* Nút tròn Đồng bộ / Tải đầy đủ dữ liệu phiên làm việc (nằm giữa Công việc và Menu ⋯) */}
+              <TouchableOpacity
+                onPress={handleSyncCurrentShift}
+                disabled={syncingShift}
+                style={styles.syncShiftBtn}
+                activeOpacity={0.75}
+                accessibilityLabel="Đồng bộ dữ liệu phiên làm việc"
+              >
+                {syncingShift ? (
+                  <ActivityIndicator size="small" color={isDark ? '#34d399' : '#059669'} />
+                ) : (
+                  <Ionicons name="sync-outline" size={20} color={isDark ? '#34d399' : '#059669'} />
+                )}
+                {pendingSyncCount > 0 && !syncingShift && (
+                  <View style={styles.moreActionDot} />
+                )}
+              </TouchableOpacity>
+
               {/* Nút tròn ⋯ gọn gàng gom toàn bộ thao tác */}
               <TouchableOpacity
                 onPress={() => setIsActionMenuOpen(true)}
@@ -1536,7 +1644,7 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
                 activeOpacity={0.75}
                 accessibilityLabel="Thao tác công việc"
               >
-                <Ionicons name="ellipsis-horizontal" size={20} color="#57534e" />
+                <Ionicons name="ellipsis-horizontal" size={20} color={isDark ? '#cbd5e1' : '#57534e'} />
                 {(selectedShift?.summary_data?.pending_interim_close || pendingSyncCount > 0) && (
                   <View style={styles.moreActionDot} />
                 )}
@@ -2336,21 +2444,21 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
                                     <View style={styles.summaryTable}>
                                       <View style={styles.summaryTableHeader}>
                                         <Text style={[styles.summaryTh, { flex: 3 }]}>Sản phẩm / ĐVT</Text>
-                                        <Text style={[styles.summaryTh, { flex: 1, textAlign: 'right', color: '#4ade80' }]}>Nhập (+)</Text>
-                                        <Text style={[styles.summaryTh, { flex: 1, textAlign: 'right', color: '#f87171' }]}>Xuất (-)</Text>
+                                        <Text style={[styles.summaryTh, { flex: 1, textAlign: 'right', color: colors.success }]}>Nhập (+)</Text>
+                                        <Text style={[styles.summaryTh, { flex: 1, textAlign: 'right', color: colors.danger }]}>Xuất (-)</Text>
                                       </View>
                                       {list.map(row => (
                                         <View key={`${row.name}_${row.unit}`} style={styles.summaryTableRow}>
                                           <View style={{ flex: 3 }}>
-                                            <Text style={[styles.summaryTd, { fontWeight: '700', color: '#f8fafc' }]} numberOfLines={2}>
+                                            <Text style={[styles.summaryTd, { fontWeight: '700', color: colors.text }]} numberOfLines={2}>
                                               {row.name}
                                             </Text>
-                                            <Text style={{ fontSize: 10, color: '#a5b4fc', fontWeight: '800' }}>
+                                            <Text style={{ fontSize: 10, color: colors.primarySoftText, fontWeight: '800' }}>
                                               {row.unit}
                                             </Text>
                                           </View>
-                                          <Text style={[styles.summaryTd, { flex: 1, textAlign: 'right', color: '#4ade80', fontWeight: '800' }]}>+{row.inQty}</Text>
-                                          <Text style={[styles.summaryTd, { flex: 1, textAlign: 'right', color: '#f87171', fontWeight: '800' }]}>-{row.outQty}</Text>
+                                          <Text style={[styles.summaryTd, { flex: 1, textAlign: 'right', color: colors.success, fontWeight: '800' }]}>+{row.inQty}</Text>
+                                          <Text style={[styles.summaryTd, { flex: 1, textAlign: 'right', color: colors.danger, fontWeight: '800' }]}>-{row.outQty}</Text>
                                         </View>
                                       ))}
                                     </View>
@@ -2404,16 +2512,16 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
                                     <View style={styles.summaryTable}>
                                       <View style={styles.summaryTableHeader}>
                                         <Text style={[styles.summaryTh, { flex: 2 }]}>Đơn vị</Text>
-                                        <Text style={[styles.summaryTh, { flex: 1, textAlign: 'right', color: '#4ade80' }]}>Nhập (+)</Text>
-                                        <Text style={[styles.summaryTh, { flex: 1, textAlign: 'right', color: '#f87171' }]}>Xuất (-)</Text>
-                                        <Text style={[styles.summaryTh, { flex: 1, textAlign: 'right', color: '#818cf8' }]}>Tồn ca</Text>
+                                        <Text style={[styles.summaryTh, { flex: 1, textAlign: 'right', color: colors.success }]}>Nhập (+)</Text>
+                                        <Text style={[styles.summaryTh, { flex: 1, textAlign: 'right', color: colors.danger }]}>Xuất (-)</Text>
+                                        <Text style={[styles.summaryTh, { flex: 1, textAlign: 'right', color: colors.primary }]}>Tồn ca</Text>
                                       </View>
                                       {list.map(row => (
                                         <View key={row.unit} style={styles.summaryTableRow}>
-                                          <Text style={[styles.summaryTd, { flex: 2, fontWeight: '700', color: '#f8fafc' }]}>{row.unit}</Text>
-                                          <Text style={[styles.summaryTd, { flex: 1, textAlign: 'right', color: '#4ade80', fontWeight: '800' }]}>+{row.inQty}</Text>
-                                          <Text style={[styles.summaryTd, { flex: 1, textAlign: 'right', color: '#f87171', fontWeight: '800' }]}>-{row.outQty}</Text>
-                                          <Text style={[styles.summaryTd, { flex: 1, textAlign: 'right', color: '#818cf8', fontWeight: '800' }]}>{row.inQty - row.outQty}</Text>
+                                          <Text style={[styles.summaryTd, { flex: 2, fontWeight: '700', color: colors.text }]}>{row.unit}</Text>
+                                          <Text style={[styles.summaryTd, { flex: 1, textAlign: 'right', color: colors.success, fontWeight: '800' }]}>+{row.inQty}</Text>
+                                          <Text style={[styles.summaryTd, { flex: 1, textAlign: 'right', color: colors.danger, fontWeight: '800' }]}>-{row.outQty}</Text>
+                                          <Text style={[styles.summaryTd, { flex: 1, textAlign: 'right', color: colors.primary, fontWeight: '800' }]}>{row.inQty - row.outQty}</Text>
                                         </View>
                                       ))}
                                     </View>
@@ -2434,8 +2542,8 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
                             <View style={styles.accordionHeaderLeft}>
                               <Ionicons name="time-outline" size={16} color="#f59e0b" />
                               <Text style={styles.accordionTitle}>3. Các Lần Chốt Ca Tạm</Text>
-                              <View style={[styles.accordionBadge, { backgroundColor: 'rgba(245, 158, 11, 0.2)' }]}>
-                                <Text style={[styles.accordionBadgeText, { color: '#fbbf24' }]}>{subShifts.length} Đợt</Text>
+                              <View style={[styles.accordionBadge, { backgroundColor: colors.amberSoftBg }]}>
+                                <Text style={[styles.accordionBadgeText, { color: colors.amberSoftText }]}>{subShifts.length} Đợt</Text>
                               </View>
                             </View>
                             <Ionicons
@@ -3658,18 +3766,18 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
               paddingRight: 8,
               borderTopLeftRadius: 21,
               borderBottomLeftRadius: 21,
-              backgroundColor: 'rgba(15, 23, 42, 0.94)',
+              backgroundColor: isDark ? 'rgba(15, 23, 42, 0.94)' : '#ffffff',
               borderWidth: 1,
               borderRightWidth: 0,
-              borderColor: quickSnaps.length > 0 ? '#f59e0b' : '#38bdf8',
+              borderColor: quickSnaps.length > 0 ? '#f59e0b' : (isDark ? '#38bdf8' : '#0284c7'),
               flexDirection: 'row',
               alignItems: 'center',
               gap: 5,
               elevation: 8,
             }}
           >
-            <Ionicons name="chevron-back" size={16} color="#94a3b8" />
-            <Ionicons name="camera" size={17} color="#38bdf8" />
+            <Ionicons name="chevron-back" size={16} color={isDark ? '#94a3b8' : '#64748b'} />
+            <Ionicons name="camera" size={17} color={isDark ? '#38bdf8' : '#0284c7'} />
             {quickSnaps.length > 0 && (
               <View
                 style={{
@@ -3758,15 +3866,15 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
                 width: 34,
                 height: 44,
                 borderRadius: 17,
-                backgroundColor: 'rgba(15, 23, 42, 0.92)',
+                backgroundColor: isDark ? 'rgba(15, 23, 42, 0.92)' : '#ffffff',
                 borderWidth: 1,
-                borderColor: '#475569',
+                borderColor: isDark ? '#475569' : '#cbd5e1',
                 alignItems: 'center',
                 justifyContent: 'center',
                 elevation: 6,
               }}
             >
-              <Ionicons name="chevron-forward" size={18} color="#cbd5e1" />
+              <Ionicons name="chevron-forward" size={18} color={isDark ? '#cbd5e1' : '#475569'} />
             </TouchableOpacity>
           </View>
         )
@@ -3980,7 +4088,7 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
         >
           <View
             style={{
-              backgroundColor: '#ffffff',
+              backgroundColor: colors.surface,
               borderTopLeftRadius: 24,
               borderTopRightRadius: 24,
               paddingHorizontal: 16,
@@ -3993,17 +4101,17 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
                 width: 40,
                 height: 4,
                 borderRadius: 2,
-                backgroundColor: '#d6d3d1',
+                backgroundColor: colors.border,
                 alignSelf: 'center',
                 marginBottom: 12,
               }}
             />
             {selectedShift && (
               <View style={{ marginBottom: 10, paddingHorizontal: 4 }}>
-                <Text style={{ fontSize: 13, fontWeight: '800', color: '#1c1917' }} numberOfLines={1}>
+                <Text style={{ fontSize: 13, fontWeight: '800', color: colors.text }} numberOfLines={1}>
                   {currentJobName}
                 </Text>
-                <Text style={{ fontSize: 11, color: '#78716c', marginTop: 2 }}>
+                <Text style={{ fontSize: 11, color: colors.textMuted, marginTop: 2 }}>
                   {subShifts.length > 0 ? `${subShifts.length} lần chốt tạm • ` : ''}
                   {pinnedProducts.length} SP đã ghim
                 </Text>
@@ -4123,15 +4231,15 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
   );
 }
 
-const styles = StyleSheet.create({
+const createStyles = (c: AppThemeColors, isDark: boolean) => StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f8fafc',
+    backgroundColor: c.bg,
   },
   lightHeaderWrapper: {
-    backgroundColor: '#ffffff',
+    backgroundColor: c.surface,
     borderBottomWidth: 1,
-    borderBottomColor: '#e7e5e4',
+    borderBottomColor: c.border,
     paddingHorizontal: 12,
     paddingTop: 8,
     paddingBottom: 10,
@@ -4140,7 +4248,7 @@ const styles = StyleSheet.create({
   topTabBar: {
     flexDirection: 'row',
     padding: 4,
-    backgroundColor: '#f5f5f4',
+    backgroundColor: c.pillBg,
     borderRadius: 999,
     gap: 4,
   },
@@ -4155,27 +4263,27 @@ const styles = StyleSheet.create({
     backgroundColor: 'transparent',
   },
   tabBtnActive: {
-    backgroundColor: '#ffffff',
+    backgroundColor: isDark ? '#334155' : '#ffffff',
     shadowColor: '#000',
-    shadowOpacity: 0.06,
+    shadowOpacity: isDark ? 0 : 0.06,
     shadowRadius: 4,
     shadowOffset: { width: 0, height: 1 },
-    elevation: 2,
+    elevation: isDark ? 0 : 2,
   },
   tabBtnText: {
     fontSize: 12,
     fontWeight: '700',
-    color: '#78716c',
+    color: c.textMuted,
   },
   tabBtnTextActive: {
-    color: '#4f46e5',
+    color: isDark ? '#ffffff' : c.primary,
     fontWeight: '800',
   },
   pulseDot: {
     width: 7,
     height: 7,
     borderRadius: 4,
-    backgroundColor: '#d6d3d1',
+    backgroundColor: c.border,
   },
   pulseDotActive: {
     backgroundColor: '#10b981',
@@ -4188,13 +4296,13 @@ const styles = StyleSheet.create({
   jobDropdownBtn: {
     flex: 1,
     height: 44,
-    backgroundColor: '#4f46e5',
+    backgroundColor: c.primary,
     borderRadius: 999,
     paddingHorizontal: 14,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    shadowColor: '#4f46e5',
+    shadowColor: c.primary,
     shadowOpacity: 0.18,
     shadowRadius: 6,
     shadowOffset: { width: 0, height: 2 },
@@ -4210,13 +4318,24 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: '#ffffff',
   },
+  syncShiftBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 999,
+    backgroundColor: isDark ? 'rgba(16, 185, 129, 0.14)' : '#ecfdf5',
+    borderWidth: 1,
+    borderColor: isDark ? '#059669' : '#6ee7b7',
+    alignItems: 'center',
+    justifyContent: 'center',
+    position: 'relative',
+  },
   moreActionBtn: {
     width: 44,
     height: 44,
     borderRadius: 999,
-    backgroundColor: '#ffffff',
+    backgroundColor: c.surface,
     borderWidth: 1,
-    borderColor: '#e7e5e4',
+    borderColor: c.border,
     alignItems: 'center',
     justifyContent: 'center',
     position: 'relative',
@@ -4230,7 +4349,7 @@ const styles = StyleSheet.create({
     borderRadius: 5,
     backgroundColor: '#f59e0b',
     borderWidth: 2,
-    borderColor: '#ffffff',
+    borderColor: c.surface,
   },
   actionMenuRow: {
     flexDirection: 'row',
@@ -4239,12 +4358,12 @@ const styles = StyleSheet.create({
     paddingVertical: 13,
     paddingHorizontal: 4,
     borderBottomWidth: 1,
-    borderBottomColor: '#f5f5f4',
+    borderBottomColor: c.borderSubtle,
   },
   actionMenuText: {
     fontSize: 13,
     fontWeight: '700',
-    color: '#1c1917',
+    color: c.text,
   },
   actionIconBtnDanger: {
     width: 42,
@@ -4266,21 +4385,21 @@ const styles = StyleSheet.create({
     width: 42,
     height: 42,
     borderRadius: 10,
-    backgroundColor: '#4f46e5',
+    backgroundColor: c.primary,
     alignItems: 'center',
     justifyContent: 'center',
   },
   dropdownSheet: {
-    backgroundColor: '#fafaf9',
+    backgroundColor: c.surfaceAlt,
     paddingHorizontal: 10,
     paddingVertical: 8,
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: '#e7e5e4',
+    borderColor: c.border,
   },
   dropdownHeader: {
     fontSize: 11,
-    color: '#78716c',
+    color: c.textMuted,
     fontWeight: '700',
   },
   dropdownItem: {
@@ -4289,16 +4408,16 @@ const styles = StyleSheet.create({
     paddingVertical: 9,
     paddingHorizontal: 10,
     borderRadius: 10,
-    backgroundColor: '#ffffff',
+    backgroundColor: c.surface,
     borderWidth: 1,
-    borderColor: '#e7e5e4',
+    borderColor: c.border,
     marginBottom: 5,
     gap: 8,
   },
   dropdownItemActive: {
     borderWidth: 1,
-    borderColor: '#a5b4fc',
-    backgroundColor: '#eef2ff',
+    borderColor: c.primarySoftBorder,
+    backgroundColor: c.primarySoftBg,
   },
   dot: {
     width: 8,
@@ -4308,17 +4427,17 @@ const styles = StyleSheet.create({
   dropdownItemText: {
     flex: 1,
     fontSize: 13,
-    color: '#1c1917',
+    color: c.text,
     fontWeight: '600',
   },
   searchBarWrapper: {
     flexDirection: 'row',
     alignItems: 'center',
     height: 40,
-    backgroundColor: '#ffffff',
+    backgroundColor: c.inputBg,
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: '#a5b4fc',
+    borderColor: c.primarySoftBorder,
     paddingHorizontal: 5,
   },
   modeToggleBtn: {
@@ -4331,12 +4450,12 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   modeFilter: {
-    backgroundColor: '#eef2ff',
-    borderColor: '#c7d2fe',
+    backgroundColor: c.primarySoftBg,
+    borderColor: c.primarySoftBorder,
   },
   modePin: {
-    backgroundColor: '#fffbeb',
-    borderColor: '#fcd34d',
+    backgroundColor: c.amberSoftBg,
+    borderColor: c.amberSoftBorder,
   },
   modeToggleText: {
     fontSize: 11,
@@ -4345,7 +4464,7 @@ const styles = StyleSheet.create({
   searchInput: {
     flex: 1,
     height: 38,
-    color: '#1c1917',
+    color: c.text,
     fontSize: 12,
     paddingHorizontal: 8,
   },
@@ -4360,14 +4479,14 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     marginHorizontal: 10,
     marginBottom: 6,
-    backgroundColor: '#fffbeb',
+    backgroundColor: c.amberSoftBg,
     borderRadius: 10,
     borderWidth: 1,
-    borderColor: '#fde68a',
+    borderColor: c.amberSoftBorder,
   },
   pinnedCountText: {
     fontSize: 11,
-    color: '#57534e',
+    color: c.textSecondary,
   },
   trashBtn: {
     padding: 4,
@@ -4379,7 +4498,7 @@ const styles = StyleSheet.create({
     padding: 30,
   },
   loadingText: {
-    color: '#78716c',
+    color: c.textMuted,
     fontSize: 13,
     marginTop: 10,
   },
@@ -4392,12 +4511,12 @@ const styles = StyleSheet.create({
   emptyShiftTitle: {
     fontSize: 16,
     fontWeight: '800',
-    color: '#1c1917',
+    color: c.text,
     marginTop: 12,
   },
   emptyShiftDesc: {
     fontSize: 12,
-    color: '#78716c',
+    color: c.textMuted,
     textAlign: 'center',
     marginTop: 6,
     lineHeight: 18,
@@ -4406,7 +4525,7 @@ const styles = StyleSheet.create({
     marginTop: 20,
     height: 44,
     paddingHorizontal: 20,
-    backgroundColor: '#4f46e5',
+    backgroundColor: c.primary,
     borderRadius: 999,
     flexDirection: 'row',
     alignItems: 'center',
@@ -4422,7 +4541,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   emptyListText: {
-    color: '#78716c',
+    color: c.textMuted,
     fontSize: 12,
     textAlign: 'center',
     lineHeight: 18,
@@ -4433,14 +4552,14 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     paddingHorizontal: 12,
     borderBottomWidth: 1,
-    borderBottomColor: '#1e293b',
-    backgroundColor: '#0f172a',
+    borderBottomColor: c.borderSubtle,
+    backgroundColor: c.surface,
   },
   sttBox: {
     width: 22,
     height: 22,
     borderRadius: 6,
-    backgroundColor: '#1e293b',
+    backgroundColor: c.surfaceAlt,
     alignItems: 'center',
     justifyContent: 'center',
     marginRight: 8,
@@ -4448,7 +4567,7 @@ const styles = StyleSheet.create({
   sttText: {
     fontSize: 10,
     fontWeight: '800',
-    color: '#94a3b8',
+    color: c.textMuted,
   },
   productInfoCol: {
     flex: 1,
@@ -4457,16 +4576,16 @@ const styles = StyleSheet.create({
   rowProductName: {
     fontSize: 13,
     fontWeight: '700',
-    color: '#f8fafc',
+    color: c.text,
     lineHeight: 17,
   },
   rowProductSku: {
     fontSize: 10,
-    color: '#64748b',
+    color: c.textMuted,
   },
   rowProductUnit: {
     fontSize: 10,
-    color: '#818cf8',
+    color: c.primary,
     fontWeight: '600',
   },
   statsCol: {
@@ -4477,24 +4596,24 @@ const styles = StyleSheet.create({
   statInText: {
     fontSize: 12,
     fontWeight: '800',
-    color: '#22c55e',
+    color: c.success,
   },
   statOutText: {
     fontSize: 12,
     fontWeight: '800',
-    color: '#f43f5e',
+    color: c.danger,
   },
   eyeBtn: {
     padding: 6,
     marginRight: 6,
-    backgroundColor: '#1e293b',
+    backgroundColor: c.surfaceAlt,
     borderRadius: 8,
   },
   pinToggleBtn: {
     width: 34,
     height: 34,
     borderRadius: 8,
-    backgroundColor: '#1e293b',
+    backgroundColor: c.surfaceAlt,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -4510,21 +4629,21 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   doneCard: {
-    backgroundColor: '#1e293b',
+    backgroundColor: c.surface,
     borderRadius: 12,
     padding: 12,
     marginBottom: 8,
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: c.border,
   },
   doneJobName: {
     fontSize: 14,
     fontWeight: '700',
-    color: '#f8fafc',
+    color: c.text,
     flex: 1,
   },
   doneBadge: {
-    backgroundColor: '#14532d',
+    backgroundColor: c.successSoftBg,
     paddingHorizontal: 8,
     paddingVertical: 3,
     borderRadius: 6,
@@ -4532,7 +4651,7 @@ const styles = StyleSheet.create({
   doneBadgeText: {
     fontSize: 10,
     fontWeight: '800',
-    color: '#4ade80',
+    color: c.successSoftText,
   },
   doneDetailText: {
     fontSize: 11,
@@ -4548,39 +4667,39 @@ const styles = StyleSheet.create({
   },
   subHeaderHintLeft: {
     fontSize: 11,
-    color: '#78716c',
+    color: c.textMuted,
     fontWeight: '500',
   },
   hintIn: {
     fontSize: 11,
     fontWeight: '800',
-    color: '#059669',
+    color: c.success,
   },
   hintOut: {
     fontSize: 11,
     fontWeight: '800',
-    color: '#e11d48',
+    color: c.danger,
   },
   productCard: {
-    backgroundColor: '#ffffff',
+    backgroundColor: c.surface,
     borderRadius: 16,
     padding: 12,
     marginBottom: 8,
     borderWidth: 1,
-    borderColor: '#e7e5e4',
+    borderColor: c.border,
     shadowColor: '#000',
-    shadowOpacity: 0.03,
+    shadowOpacity: isDark ? 0 : 0.03,
     shadowRadius: 4,
     shadowOffset: { width: 0, height: 1 },
-    elevation: 1,
+    elevation: isDark ? 0 : 1,
   },
   cardIndigo: {
-    backgroundColor: '#ffffff',
+    backgroundColor: c.surface,
     borderLeftWidth: 4,
-    borderLeftColor: '#4f46e5',
+    borderLeftColor: c.primary,
   },
   cardAmber: {
-    backgroundColor: '#fffdf7',
+    backgroundColor: c.cardAltBg,
     borderLeftWidth: 4,
     borderLeftColor: '#f59e0b',
   },
@@ -4603,18 +4722,18 @@ const styles = StyleSheet.create({
     fontWeight: '900',
   },
   sttIndigo: {
-    backgroundColor: '#eef2ff',
-    borderColor: '#c7d2fe',
+    backgroundColor: c.primarySoftBg,
+    borderColor: c.primarySoftBorder,
   },
   sttIndigoText: {
-    color: '#3730a3',
+    color: c.primarySoftText,
   },
   sttAmber: {
-    backgroundColor: '#fef3c7',
-    borderColor: '#fcd34d',
+    backgroundColor: c.amberSoftBg,
+    borderColor: c.amberSoftBorder,
   },
   sttAmberText: {
-    color: '#92400e',
+    color: c.amberSoftText,
   },
   cardTitleCol: {
     flex: 1,
@@ -4622,18 +4741,18 @@ const styles = StyleSheet.create({
   cardProductName: {
     fontSize: 13,
     fontWeight: '700',
-    color: '#1c1917',
+    color: c.text,
     lineHeight: 18,
   },
   cardProductSku: {
     fontSize: 10,
-    color: '#a8a29e',
+    color: c.textMuted,
     marginTop: 2,
   },
   cardEyeBtn: {
     width: 30,
     height: 30,
-    backgroundColor: '#f5f5f4',
+    backgroundColor: c.pillBg,
     borderRadius: 999,
     alignItems: 'center',
     justifyContent: 'center',
@@ -4646,24 +4765,24 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    backgroundColor: '#fafaf9',
+    backgroundColor: c.surfaceAlt,
     paddingHorizontal: 12,
     paddingVertical: 7,
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: '#e7e5e4',
+    borderColor: c.border,
   },
   unitRowPillActive: {
-    borderColor: '#a5b4fc',
-    backgroundColor: '#eef2ff',
+    borderColor: c.primarySoftBorder,
+    backgroundColor: c.primarySoftBg,
   },
   unitRowName: {
     fontSize: 12,
     fontWeight: '700',
-    color: '#44403c',
+    color: c.textSecondary,
   },
   unitRowNameActive: {
-    color: '#4338ca',
+    color: c.primarySoftText,
     fontWeight: '800',
   },
   statsWrapper: {
@@ -4678,20 +4797,20 @@ const styles = StyleSheet.create({
     backgroundColor: 'transparent',
   },
   statBadgeInActive: {
-    backgroundColor: '#dcfce7',
+    backgroundColor: c.successSoftBg,
     paddingHorizontal: 6,
   },
   statTextIn: {
     fontSize: 12,
     fontWeight: '800',
-    color: '#a8a29e',
+    color: c.textMuted,
   },
   statTextInActive: {
-    color: '#059669',
+    color: c.success,
     fontWeight: '900',
   },
   statDivider: {
-    color: '#d6d3d1',
+    color: c.divider,
     fontSize: 11,
     fontWeight: '600',
   },
@@ -4702,20 +4821,20 @@ const styles = StyleSheet.create({
     backgroundColor: 'transparent',
   },
   statBadgeOutActive: {
-    backgroundColor: '#ffe4e6',
+    backgroundColor: c.dangerSoftBg,
     paddingHorizontal: 6,
   },
   statTextOut: {
     fontSize: 12,
     fontWeight: '800',
-    color: '#a8a29e',
+    color: c.textMuted,
   },
   statTextOutActive: {
-    color: '#e11d48',
+    color: c.danger,
     fontWeight: '900',
   },
 
-  // ── PHẦN BÁO CÁO VÀ LỊCH SỬ ĐỢT CUỐI TRANG (LIGHT THEME) ──
+  // ── PHẦN BÁO CÁO VÀ LỊCH SỬ ĐỢT CUỐI TRANG (DYNAMIC LIGHT/DARK) ──
   footerReportWrapper: {
     marginTop: 14,
     marginBottom: 40,
@@ -4724,13 +4843,13 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    backgroundColor: '#fffbeb',
+    backgroundColor: c.amberSoftBg,
     paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 12,
     marginBottom: 10,
     borderWidth: 1,
-    borderColor: '#fde68a',
+    borderColor: c.amberSoftBorder,
   },
   viewModeNoticeLeft: {
     flexDirection: 'row',
@@ -4741,33 +4860,33 @@ const styles = StyleSheet.create({
   viewModeNoticeText: {
     fontSize: 11,
     fontWeight: '700',
-    color: '#b45309',
+    color: c.amberSoftText,
   },
   viewModeToggleBtn: {
     paddingHorizontal: 10,
     paddingVertical: 4,
     borderRadius: 8,
-    backgroundColor: '#ffffff',
+    backgroundColor: c.surface,
     borderWidth: 1,
-    borderColor: '#fcd34d',
+    borderColor: c.amberSoftBorder,
   },
   viewModeToggleBtnText: {
     fontSize: 11,
     fontWeight: '800',
-    color: '#b45309',
+    color: c.amberSoftText,
   },
   reportCard: {
-    backgroundColor: '#ffffff',
+    backgroundColor: c.surface,
     borderRadius: 16,
     borderWidth: 1,
-    borderColor: '#e7e5e4',
+    borderColor: c.border,
     overflow: 'hidden',
   },
   reportTabHeader: {
     flexDirection: 'row',
     borderBottomWidth: 1,
-    borderBottomColor: '#e7e5e4',
-    backgroundColor: '#fafaf9',
+    borderBottomColor: c.border,
+    backgroundColor: c.surfaceAlt,
   },
   reportTabBtn: {
     flex: 1,
@@ -4780,16 +4899,16 @@ const styles = StyleSheet.create({
     borderBottomColor: 'transparent',
   },
   reportTabBtnActive: {
-    borderBottomColor: '#4f46e5',
-    backgroundColor: '#ffffff',
+    borderBottomColor: c.primary,
+    backgroundColor: c.surface,
   },
   reportTabBtnText: {
     fontSize: 12,
     fontWeight: '700',
-    color: '#78716c',
+    color: c.textMuted,
   },
   reportTabBtnTextActive: {
-    color: '#4f46e5',
+    color: isDark ? '#ffffff' : c.primary,
     fontWeight: '800',
   },
   feedTabContainer: {
@@ -4797,7 +4916,7 @@ const styles = StyleSheet.create({
   },
   filterPillsRow: {
     flexDirection: 'row',
-    backgroundColor: '#f5f5f4',
+    backgroundColor: c.pillBg,
     borderRadius: 10,
     padding: 4,
     gap: 4,
@@ -4813,7 +4932,7 @@ const styles = StyleSheet.create({
     borderRadius: 8,
   },
   filterPillAllActive: {
-    backgroundColor: '#4f46e5',
+    backgroundColor: c.primary,
   },
   filterPillInActive: {
     backgroundColor: '#16a34a',
@@ -4824,7 +4943,7 @@ const styles = StyleSheet.create({
   filterPillText: {
     fontSize: 11,
     fontWeight: '800',
-    color: '#57534e',
+    color: c.textSecondary,
   },
   filterPillTextWhite: {
     color: '#fff',
@@ -4840,7 +4959,7 @@ const styles = StyleSheet.create({
   },
   emptyFeedText: {
     fontSize: 12,
-    color: '#78716c',
+    color: c.textMuted,
     marginTop: 8,
   },
   journalListContainer: {
@@ -4850,11 +4969,11 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'flex-start',
     gap: 10,
-    backgroundColor: '#fafaf9',
+    backgroundColor: c.surfaceAlt,
     borderRadius: 12,
     padding: 10,
     borderWidth: 1,
-    borderColor: '#e7e5e4',
+    borderColor: c.border,
   },
   arrowCircle: {
     width: 28,
@@ -4865,10 +4984,10 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   arrowCircleIn: {
-    backgroundColor: '#dcfce7',
+    backgroundColor: c.successSoftBg,
   },
   arrowCircleOut: {
-    backgroundColor: '#ffe4e6',
+    backgroundColor: c.dangerSoftBg,
   },
   arrowCircleText: {
     fontSize: 14,
@@ -4876,10 +4995,10 @@ const styles = StyleSheet.create({
     lineHeight: 16,
   },
   arrowCircleTextIn: {
-    color: '#059669',
+    color: c.success,
   },
   arrowCircleTextOut: {
-    color: '#e11d48',
+    color: c.danger,
   },
   journalRowTop: {
     flexDirection: 'row',
@@ -4891,7 +5010,7 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 13,
     fontWeight: '700',
-    color: '#1c1917',
+    color: c.text,
     lineHeight: 18,
   },
   rowActions: {
@@ -4903,7 +5022,7 @@ const styles = StyleSheet.create({
     width: 26,
     height: 26,
     borderRadius: 6,
-    backgroundColor: '#f5f5f4',
+    backgroundColor: c.pillBg,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -4911,7 +5030,7 @@ const styles = StyleSheet.create({
     width: 26,
     height: 26,
     borderRadius: 6,
-    backgroundColor: '#fff1f2',
+    backgroundColor: c.dangerSoftBg,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -4926,35 +5045,35 @@ const styles = StyleSheet.create({
     borderRadius: 6,
   },
   qtyBadgeIn: {
-    backgroundColor: '#dcfce7',
+    backgroundColor: c.successSoftBg,
     borderWidth: 1,
-    borderColor: '#86efac',
+    borderColor: c.successSoftBorder,
   },
   qtyBadgeOut: {
-    backgroundColor: '#ffe4e6',
+    backgroundColor: c.dangerSoftBg,
     borderWidth: 1,
-    borderColor: '#fda4af',
+    borderColor: c.dangerSoftBorder,
   },
   qtyBadgeText: {
     fontSize: 12,
     fontWeight: '900',
   },
   qtyBadgeTextIn: {
-    color: '#047857',
+    color: c.successSoftText,
   },
   qtyBadgeTextOut: {
-    color: '#be123c',
+    color: c.dangerSoftText,
   },
   journalMetaText: {
     fontSize: 10,
-    color: '#78716c',
+    color: c.textMuted,
     marginTop: 2,
   },
   subShiftCard: {
-    backgroundColor: '#ffffff',
+    backgroundColor: c.surface,
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: '#fde68a',
+    borderColor: c.amberSoftBorder,
     overflow: 'hidden',
     marginBottom: 4,
   },
@@ -4962,16 +5081,16 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    backgroundColor: '#fffbeb',
+    backgroundColor: c.amberSoftBg,
     padding: 10,
   },
   subShiftCardTitle: {
     fontSize: 12,
     fontWeight: '800',
-    color: '#b45309',
+    color: c.amberSoftText,
   },
   subShiftCountBadge: {
-    backgroundColor: '#fef3c7',
+    backgroundColor: isDark ? 'rgba(245, 158, 11, 0.25)' : '#fef3c7',
     paddingHorizontal: 6,
     paddingVertical: 1,
     borderRadius: 4,
@@ -4979,47 +5098,47 @@ const styles = StyleSheet.create({
   subShiftCountBadgeText: {
     fontSize: 10,
     fontWeight: '800',
-    color: '#92400e',
+    color: c.amberSoftText,
   },
   subShiftRangeText: {
     fontSize: 10,
-    color: '#78716c',
+    color: c.textMuted,
     marginTop: 2,
   },
   subShiftSumBadge: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    backgroundColor: '#ffffff',
+    backgroundColor: c.surface,
     paddingHorizontal: 8,
     paddingVertical: 3,
     borderRadius: 6,
     borderWidth: 1,
-    borderColor: '#e7e5e4',
+    borderColor: c.border,
   },
   subShiftSumIn: {
     fontSize: 11,
     fontWeight: '800',
-    color: '#059669',
+    color: c.success,
   },
   subShiftSumDivider: {
     fontSize: 10,
-    color: '#d6d3d1',
+    color: c.divider,
   },
   subShiftSumOut: {
     fontSize: 11,
     fontWeight: '800',
-    color: '#e11d48',
+    color: c.danger,
   },
   subShiftDetails: {
     borderTopWidth: 1,
-    borderTopColor: '#334155',
+    borderTopColor: c.border,
     padding: 8,
     gap: 6,
   },
   emptySubRecordsText: {
     fontSize: 11,
-    color: '#64748b',
+    color: c.textMuted,
     textAlign: 'center',
     paddingVertical: 8,
     fontStyle: 'italic',
@@ -5027,23 +5146,23 @@ const styles = StyleSheet.create({
   subShiftFooterInfo: {
     paddingTop: 6,
     borderTopWidth: 1,
-    borderTopColor: '#1e293b',
+    borderTopColor: c.borderSubtle,
   },
   subShiftFooterText: {
     fontSize: 10,
-    color: '#94a3b8',
+    color: c.textMuted,
   },
   currentBatchEmptyBox: {
     padding: 12,
-    backgroundColor: '#0f172a',
+    backgroundColor: c.surfaceAlt,
     borderRadius: 10,
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: c.border,
     alignItems: 'center',
   },
   currentBatchEmptyText: {
     fontSize: 11,
-    color: '#94a3b8',
+    color: c.textMuted,
     textAlign: 'center',
   },
   summaryTabContainer: {
@@ -5051,17 +5170,17 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   accordionCard: {
-    backgroundColor: '#0f172a',
+    backgroundColor: c.surface,
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: c.border,
     overflow: 'hidden',
   },
   accordionHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    backgroundColor: '#1e293b',
+    backgroundColor: isDark ? '#1e293b' : '#f8fafc',
     paddingHorizontal: 12,
     paddingVertical: 10,
   },
@@ -5074,11 +5193,11 @@ const styles = StyleSheet.create({
   accordionTitle: {
     fontSize: 12,
     fontWeight: '800',
-    color: '#f8fafc',
+    color: c.text,
     letterSpacing: 0.3,
   },
   accordionBadge: {
-    backgroundColor: 'rgba(99, 102, 241, 0.2)',
+    backgroundColor: c.primarySoftBg,
     paddingHorizontal: 7,
     paddingVertical: 2,
     borderRadius: 6,
@@ -5086,39 +5205,39 @@ const styles = StyleSheet.create({
   accordionBadgeText: {
     fontSize: 10,
     fontWeight: '800',
-    color: '#a5b4fc',
+    color: c.primarySoftText,
   },
   accordionBody: {
     padding: 10,
     borderTopWidth: 1,
-    borderTopColor: '#334155',
+    borderTopColor: c.border,
   },
   summaryEmptyText: {
     fontSize: 11,
-    color: '#64748b',
+    color: c.textMuted,
     fontStyle: 'italic',
     paddingVertical: 6,
   },
   summaryTable: {
-    backgroundColor: '#0f172a',
+    backgroundColor: c.surface,
     borderRadius: 10,
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: c.border,
     overflow: 'hidden',
   },
   summaryTableHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#1e293b',
+    backgroundColor: isDark ? '#1e293b' : '#f1f5f9',
     paddingHorizontal: 10,
     paddingVertical: 8,
     borderBottomWidth: 1,
-    borderBottomColor: '#334155',
+    borderBottomColor: c.border,
   },
   summaryTh: {
     fontSize: 11,
     fontWeight: '800',
-    color: '#94a3b8',
+    color: c.textMuted,
   },
   summaryTableRow: {
     flexDirection: 'row',
@@ -5126,17 +5245,17 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 8,
     borderBottomWidth: 1,
-    borderBottomColor: '#1e293b',
+    borderBottomColor: c.borderSubtle,
   },
   summaryTd: {
     fontSize: 11,
-    color: '#cbd5e1',
+    color: c.textSecondary,
   },
   subShiftSummaryBox: {
-    backgroundColor: '#0f172a',
+    backgroundColor: c.surfaceAlt,
     borderRadius: 10,
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: c.border,
     padding: 10,
     gap: 8,
   },
@@ -5144,17 +5263,17 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     borderBottomWidth: 1,
-    borderBottomColor: '#1e293b',
+    borderBottomColor: c.borderSubtle,
     paddingBottom: 6,
   },
   subShiftSummaryTitle: {
     fontSize: 11,
     fontWeight: '700',
-    color: '#f59e0b',
+    color: c.amber,
   },
   subShiftSummaryTime: {
     fontSize: 10,
-    color: '#94a3b8',
+    color: c.textMuted,
     marginTop: 2,
   },
 
@@ -5163,9 +5282,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     paddingHorizontal: 12,
     paddingVertical: 8,
-    backgroundColor: '#1e293b',
+    backgroundColor: c.surface,
     borderBottomWidth: 1,
-    borderBottomColor: '#334155',
+    borderBottomColor: c.border,
     gap: 8,
   },
   doneModeBtn: {
@@ -5176,21 +5295,21 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: 6,
-    backgroundColor: '#0f172a',
+    backgroundColor: c.surfaceAlt,
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: c.border,
   },
   doneModeBtnActive: {
-    backgroundColor: 'rgba(99, 102, 241, 0.25)',
-    borderColor: '#6366f1',
+    backgroundColor: c.primarySoftBg,
+    borderColor: c.primary,
   },
   doneModeBtnText: {
     fontSize: 11,
     fontWeight: '700',
-    color: '#94a3b8',
+    color: c.textMuted,
   },
   doneModeBtnTextActive: {
-    color: '#a5b4fc',
+    color: c.primarySoftText,
     fontWeight: '800',
   },
 
@@ -5199,9 +5318,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    backgroundColor: '#1e293b',
+    backgroundColor: c.inputBg,
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: c.border,
     borderRadius: 10,
     marginHorizontal: 12,
     marginTop: 8,
@@ -5211,7 +5330,7 @@ const styles = StyleSheet.create({
   },
   customSearchInput: {
     flex: 1,
-    color: '#f8fafc',
+    color: c.text,
     fontSize: 12,
     fontWeight: '600',
     paddingVertical: 0,
@@ -5225,9 +5344,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     paddingHorizontal: 12,
     paddingVertical: 6,
-    backgroundColor: '#0f172a',
+    backgroundColor: c.surfaceAlt,
     borderBottomWidth: 1,
-    borderBottomColor: '#1e293b',
+    borderBottomColor: c.borderSubtle,
     gap: 8,
   },
   dailySubModeBtn: {
@@ -5238,20 +5357,22 @@ const styles = StyleSheet.create({
     gap: 6,
     paddingVertical: 7,
     borderRadius: 8,
-    backgroundColor: '#1e293b',
+    backgroundColor: c.surface,
+    borderWidth: 1,
+    borderColor: c.borderSubtle,
   },
   dailySubModeBtnActive: {
-    backgroundColor: 'rgba(99, 102, 241, 0.2)',
+    backgroundColor: c.primarySoftBg,
     borderWidth: 1,
-    borderColor: '#6366f1',
+    borderColor: c.primary,
   },
   dailySubModeBtnText: {
     fontSize: 11,
     fontWeight: '700',
-    color: '#94a3b8',
+    color: c.textMuted,
   },
   dailySubModeBtnTextActive: {
-    color: '#818cf8',
+    color: c.primarySoftText,
     fontWeight: '800',
   },
   dailyQuickActionsRow: {
@@ -5264,27 +5385,27 @@ const styles = StyleSheet.create({
   dailyQuickLabel: {
     fontSize: 11,
     fontWeight: '600',
-    color: '#94a3b8',
+    color: c.textMuted,
   },
   dailyQuickBtn: {
     paddingHorizontal: 8,
     paddingVertical: 3,
     borderRadius: 6,
-    backgroundColor: '#1e293b',
+    backgroundColor: c.surface,
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: c.border,
   },
   dailyQuickBtnText: {
     fontSize: 10,
     fontWeight: '700',
-    color: '#cbd5e1',
+    color: c.textSecondary,
   },
   dailyRangeBar: {
     padding: 10,
     paddingHorizontal: 12,
-    backgroundColor: '#0f172a',
+    backgroundColor: c.surfaceAlt,
     borderBottomWidth: 1,
-    borderBottomColor: '#1e293b',
+    borderBottomColor: c.borderSubtle,
     gap: 8,
   },
   dailyRangeInputsRow: {
@@ -5298,17 +5419,17 @@ const styles = StyleSheet.create({
   dailyRangeLabel: {
     fontSize: 10,
     fontWeight: '700',
-    color: '#94a3b8',
+    color: c.textMuted,
     marginBottom: 4,
   },
   dailyRangeInput: {
-    backgroundColor: '#1e293b',
+    backgroundColor: c.inputBg,
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: c.border,
     borderRadius: 8,
     paddingHorizontal: 10,
     height: 34,
-    color: '#f8fafc',
+    color: c.text,
     fontSize: 12,
     fontWeight: '700',
   },
@@ -5316,9 +5437,9 @@ const styles = StyleSheet.create({
     width: 34,
     height: 34,
     borderRadius: 8,
-    backgroundColor: '#1e293b',
+    backgroundColor: c.surface,
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: c.border,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -5326,9 +5447,9 @@ const styles = StyleSheet.create({
   // Thanh chọn ngày
   dailyDateBar: {
     paddingVertical: 10,
-    backgroundColor: '#0f172a',
+    backgroundColor: c.surfaceAlt,
     borderBottomWidth: 1,
-    borderBottomColor: '#1e293b',
+    borderBottomColor: c.borderSubtle,
   },
   datePill: {
     flexDirection: 'row',
@@ -5337,18 +5458,18 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 6,
     borderRadius: 20,
-    backgroundColor: '#1e293b',
+    backgroundColor: c.surface,
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: c.border,
   },
   datePillActive: {
-    backgroundColor: '#6366f1',
-    borderColor: '#818cf8',
+    backgroundColor: c.primary,
+    borderColor: c.primary,
   },
   datePillText: {
     fontSize: 12,
     fontWeight: '700',
-    color: '#cbd5e1',
+    color: c.textSecondary,
   },
   datePillTextActive: {
     color: '#fff',
@@ -5358,7 +5479,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 5,
     paddingVertical: 1,
     borderRadius: 8,
-    backgroundColor: '#0f172a',
+    backgroundColor: c.primarySoftBg,
   },
   datePillBadgeActive: {
     backgroundColor: 'rgba(255, 255, 255, 0.25)',
@@ -5366,7 +5487,7 @@ const styles = StyleSheet.create({
   datePillBadgeText: {
     fontSize: 9,
     fontWeight: '800',
-    color: '#a5b4fc',
+    color: c.primarySoftText,
   },
   datePillBadgeTextActive: {
     color: '#fff',
@@ -5380,23 +5501,23 @@ const styles = StyleSheet.create({
     paddingHorizontal: 6,
     paddingVertical: 2,
     borderRadius: 6,
-    backgroundColor: 'rgba(245, 158, 11, 0.15)',
+    backgroundColor: c.amberSoftBg,
     borderWidth: 1,
-    borderColor: 'rgba(245, 158, 11, 0.35)',
+    borderColor: c.amberSoftBorder,
     marginTop: 2,
   },
   overnightBadgeText: {
     fontSize: 10,
     fontWeight: '700',
-    color: '#fbbf24',
+    color: c.amberSoftText,
   },
 
   // Card Header tổng hợp ngày
   reportSummaryHeaderCard: {
-    backgroundColor: '#1e293b',
+    backgroundColor: c.surface,
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: c.border,
     padding: 12,
     marginBottom: 10,
   },
@@ -5404,27 +5525,27 @@ const styles = StyleSheet.create({
     width: 32,
     height: 32,
     borderRadius: 8,
-    backgroundColor: 'rgba(99, 102, 241, 0.2)',
+    backgroundColor: c.primarySoftBg,
     alignItems: 'center',
     justifyContent: 'center',
   },
   reportHeaderTitle: {
     fontSize: 14,
     fontWeight: '800',
-    color: '#f8fafc',
+    color: c.text,
   },
   reportHeaderSub: {
     fontSize: 11,
-    color: '#94a3b8',
+    color: c.textMuted,
     marginTop: 2,
   },
 
   // Card báo cáo (Khối Accordion)
   dailyCard: {
-    backgroundColor: '#1e293b',
+    backgroundColor: c.surface,
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: c.border,
     marginBottom: 10,
     overflow: 'hidden',
   },
@@ -5434,7 +5555,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingHorizontal: 12,
     paddingVertical: 10,
-    backgroundColor: '#1e293b',
+    backgroundColor: isDark ? '#1e293b' : '#f8fafc',
   },
   dailyCardHeaderLeft: {
     flexDirection: 'row',
@@ -5444,26 +5565,26 @@ const styles = StyleSheet.create({
   dailyCardTitle: {
     fontSize: 13,
     fontWeight: '800',
-    color: '#f1f5f9',
+    color: c.text,
   },
   reportBadge: {
     paddingHorizontal: 7,
     paddingVertical: 2,
     borderRadius: 8,
-    backgroundColor: 'rgba(99, 102, 241, 0.2)',
+    backgroundColor: c.primarySoftBg,
   },
   reportBadgeText: {
     fontSize: 10,
     fontWeight: '800',
-    color: '#818cf8',
+    color: c.primarySoftText,
   },
   dailyCardBody: {
     padding: 8,
     borderTopWidth: 1,
-    borderTopColor: '#334155',
+    borderTopColor: c.border,
   },
   reportEmptyText: {
-    color: '#64748b',
+    color: c.textMuted,
     fontSize: 12,
     textAlign: 'center',
     paddingVertical: 12,
@@ -5480,14 +5601,14 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingVertical: 7,
     paddingHorizontal: 6,
-    backgroundColor: 'rgba(51, 65, 85, 0.6)',
+    backgroundColor: isDark ? 'rgba(51, 65, 85, 0.6)' : '#f1f5f9',
     borderBottomWidth: 1,
-    borderBottomColor: '#475569',
+    borderBottomColor: c.border,
   },
   reportTh: {
     fontSize: 10,
     fontWeight: '800',
-    color: '#94a3b8',
+    color: c.textMuted,
     textTransform: 'uppercase',
   },
   reportTableRow: {
@@ -5496,28 +5617,28 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     paddingHorizontal: 6,
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(51, 65, 85, 0.4)',
+    borderBottomColor: c.borderSubtle,
   },
   reportTd: {
     fontSize: 11,
-    color: '#e2e8f0',
+    color: c.textSecondary,
   },
   reportProdName: {
     fontSize: 12,
     fontWeight: '700',
-    color: '#f8fafc',
+    color: c.text,
     lineHeight: 16,
   },
   reportUnitBadge: {
     paddingHorizontal: 5,
     paddingVertical: 1,
     borderRadius: 4,
-    backgroundColor: 'rgba(99, 102, 241, 0.25)',
+    backgroundColor: c.primarySoftBg,
   },
   reportUnitBadgeText: {
     fontSize: 10,
     fontWeight: '800',
-    color: '#a5b4fc',
+    color: c.primarySoftText,
   },
   reportJobsList: {
     marginTop: 4,
@@ -5530,14 +5651,14 @@ const styles = StyleSheet.create({
   },
   reportJobNameText: {
     fontSize: 10,
-    color: '#94a3b8',
+    color: c.textMuted,
     fontWeight: '600',
     flexShrink: 1,
   },
   reportJobQtyBreakdown: {
     fontSize: 9,
     fontWeight: '800',
-    color: '#cbd5e1',
+    color: c.textSecondary,
   },
 
   // Danh sách ca trong báo cáo ngày
@@ -5547,32 +5668,32 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingVertical: 8,
     paddingHorizontal: 8,
-    backgroundColor: 'rgba(15, 23, 42, 0.5)',
+    backgroundColor: isDark ? 'rgba(15, 23, 42, 0.5)' : '#f8fafc',
     borderRadius: 8,
     marginBottom: 6,
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: c.border,
   },
   reportShiftName: {
     fontSize: 12,
     fontWeight: '700',
-    color: '#f8fafc',
+    color: c.text,
     flexShrink: 1,
   },
   reportShiftBadge: {
     paddingHorizontal: 5,
     paddingVertical: 1,
     borderRadius: 4,
-    backgroundColor: 'rgba(34, 197, 94, 0.2)',
+    backgroundColor: c.successSoftBg,
   },
   reportShiftBadgeText: {
     fontSize: 9,
     fontWeight: '700',
-    color: '#4ade80',
+    color: c.successSoftText,
   },
   reportShiftMeta: {
     fontSize: 10,
-    color: '#94a3b8',
+    color: c.textMuted,
     marginTop: 2,
   },
   reportShiftDetailBtn: {
@@ -5582,14 +5703,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 4,
     borderRadius: 6,
-    backgroundColor: 'rgba(99, 102, 241, 0.15)',
+    backgroundColor: c.primarySoftBg,
     borderWidth: 1,
-    borderColor: 'rgba(99, 102, 241, 0.3)',
+    borderColor: c.primarySoftBorder,
   },
   reportShiftDetailBtnText: {
     fontSize: 10,
     fontWeight: '700',
-    color: '#a5b4fc',
+    color: c.primarySoftText,
   },
 
   // Chế độ Tùy Chọn
@@ -5599,9 +5720,9 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingHorizontal: 14,
     paddingVertical: 10,
-    backgroundColor: '#0f172a',
+    backgroundColor: c.surfaceAlt,
     borderBottomWidth: 1,
-    borderBottomColor: '#1e293b',
+    borderBottomColor: c.borderSubtle,
   },
   customToolBtn: {
     flexDirection: 'row',
@@ -5610,32 +5731,32 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 5,
     borderRadius: 8,
-    backgroundColor: '#1e293b',
+    backgroundColor: c.surface,
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: c.border,
   },
   customToolBtnText: {
     fontSize: 11,
     fontWeight: '700',
-    color: '#a5b4fc',
+    color: c.primarySoftText,
   },
   customSelectedCount: {
     fontSize: 11,
-    color: '#94a3b8',
+    color: c.textMuted,
   },
   customCard: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#1e293b',
+    backgroundColor: c.surface,
     borderRadius: 12,
     padding: 12,
     marginBottom: 8,
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: c.border,
   },
   customCardSelected: {
-    borderColor: '#6366f1',
-    backgroundColor: 'rgba(99, 102, 241, 0.1)',
+    borderColor: c.primary,
+    backgroundColor: c.primarySoftBg,
   },
   customFloatingBar: {
     position: 'absolute',
@@ -5666,8 +5787,8 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    backgroundColor: 'rgba(245, 158, 11, 0.12)',
-    borderColor: 'rgba(245, 158, 11, 0.35)',
+    backgroundColor: c.amberSoftBg,
+    borderColor: c.amberSoftBorder,
     borderWidth: 1,
     borderRadius: 10,
     paddingHorizontal: 12,
@@ -5678,12 +5799,12 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   offlineSyncTitle: {
-    color: '#fbbf24',
+    color: c.amberSoftText,
     fontSize: 12,
     fontWeight: '800',
   },
   offlineSyncSub: {
-    color: '#94a3b8',
+    color: c.textMuted,
     fontSize: 11,
     marginTop: 2,
   },
@@ -5711,16 +5832,16 @@ const styles = StyleSheet.create({
     gap: 8,
     paddingBottom: 8,
     borderBottomWidth: 1,
-    borderBottomColor: '#334155',
+    borderBottomColor: c.border,
   },
   reconcileTitle: {
     fontSize: 14,
     fontWeight: '800',
-    color: '#f8fafc',
+    color: c.text,
   },
   reconcileSub: {
     fontSize: 11,
-    color: '#94a3b8',
+    color: c.textMuted,
     marginTop: 2,
   },
   reconcileSaveBtn: {
@@ -5735,10 +5856,10 @@ const styles = StyleSheet.create({
     fontWeight: '800',
   },
   reconcileCard: {
-    backgroundColor: '#0f172a',
+    backgroundColor: c.surface,
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: c.border,
     padding: 10,
     gap: 8,
   },
@@ -5751,11 +5872,11 @@ const styles = StyleSheet.create({
   reconcileProdName: {
     fontSize: 13,
     fontWeight: '700',
-    color: '#f8fafc',
+    color: c.text,
   },
   reconcileSysStats: {
     fontSize: 11,
-    color: '#94a3b8',
+    color: c.textMuted,
     marginTop: 2,
   },
   reconcileStatusPill: {
@@ -5764,10 +5885,10 @@ const styles = StyleSheet.create({
     borderRadius: 999,
   },
   reconcileMatchPill: {
-    backgroundColor: 'rgba(16, 185, 129, 0.16)',
+    backgroundColor: c.successSoftBg,
   },
   reconcileDiffPill: {
-    backgroundColor: 'rgba(244, 63, 94, 0.18)',
+    backgroundColor: c.dangerSoftBg,
   },
   reconcileStatusText: {
     fontSize: 11,
@@ -5783,23 +5904,23 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     paddingHorizontal: 6,
     borderRadius: 8,
-    backgroundColor: '#1e293b',
+    backgroundColor: c.surfaceAlt,
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: c.border,
     alignItems: 'center',
   },
   reconcileMiniChipActive: {
-    borderColor: '#38bdf8',
-    backgroundColor: 'rgba(56, 189, 248, 0.12)',
+    borderColor: '#0284c7',
+    backgroundColor: isDark ? 'rgba(56, 189, 248, 0.12)' : '#e0f2fe',
   },
   reconcileCalcChipActive: {
     borderColor: '#f59e0b',
-    backgroundColor: 'rgba(245, 158, 11, 0.14)',
+    backgroundColor: c.amberSoftBg,
   },
   reconcileMiniChipText: {
     fontSize: 10,
     fontWeight: '700',
-    color: '#94a3b8',
+    color: c.textSecondary,
   },
   reconcileInputsRow: {
     flexDirection: 'row',
@@ -5808,23 +5929,23 @@ const styles = StyleSheet.create({
   reconcileInputLabel: {
     fontSize: 10,
     fontWeight: '700',
-    color: '#94a3b8',
+    color: c.textMuted,
     marginBottom: 3,
   },
   reconcileInput: {
     height: 38,
-    backgroundColor: '#1e293b',
+    backgroundColor: c.inputBg,
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: c.border,
     paddingHorizontal: 10,
-    color: '#f8fafc',
+    color: c.text,
     fontSize: 15,
     fontWeight: '800',
   },
   reconcileHintText: {
     fontSize: 10,
-    color: '#94a3b8',
+    color: c.textMuted,
   },
 });
 

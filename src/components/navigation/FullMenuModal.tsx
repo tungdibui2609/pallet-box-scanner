@@ -11,6 +11,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../../contexts/AuthContext';
+import { useTheme } from '../../contexts/ThemeContext';
 import { DriveImageSettingsModal } from '../operations/DriveImageSettingsModal';
 
 export type AppTab =
@@ -37,6 +38,7 @@ export const FullMenuModal: React.FC<FullMenuModalProps> = ({
 }) => {
   const insets = useSafeAreaInsets();
   const { user, logout } = useAuth();
+  const { colors, tabThemes, toggleTabTheme, setAllTabsTheme } = useTheme();
   const [isDriveSettingsOpen, setIsDriveSettingsOpen] = useState(false);
 
   const handleSelect = (tab: AppTab, action?: string) => {
@@ -159,23 +161,32 @@ export const FullMenuModal: React.FC<FullMenuModalProps> = ({
           <View style={styles.backdrop} />
         </TouchableWithoutFeedback>
 
-        <View style={[styles.sheetContainer, { paddingBottom: Math.max(insets.bottom, 12) }]}>
+        <View
+          style={[
+            styles.sheetContainer,
+            {
+              backgroundColor: colors.bg,
+              borderTopColor: colors.border,
+              paddingBottom: Math.max(insets.bottom, 12),
+            },
+          ]}
+        >
           {/* Header Thông Tin Tài Khoản */}
-          <View style={styles.header}>
+          <View style={[styles.header, { borderBottomColor: colors.border }]}>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
               <View style={styles.headerAvatar}>
-                <Ionicons name="person" size={20} color="#38bdf8" />
+                <Ionicons name="person" size={20} color="#0284c7" />
               </View>
               <View>
-                <Text style={styles.headerName}>{user?.full_name || 'Nhân viên kho'}</Text>
-                <Text style={styles.headerCompany}>
+                <Text style={[styles.headerName, { color: colors.text }]}>{user?.full_name || 'Nhân viên kho'}</Text>
+                <Text style={[styles.headerCompany, { color: colors.textMuted }]}>
                   {user?.company?.name || 'Công Ty CP Tập Đoàn XNK Trái Cây Chánh Thu'}
                 </Text>
               </View>
             </View>
 
             <TouchableOpacity onPress={onClose} style={styles.closeBtn} activeOpacity={0.7}>
-              <Ionicons name="close" size={20} color="#94a3b8" />
+              <Ionicons name="close" size={20} color={colors.textMuted} />
             </TouchableOpacity>
           </View>
 
@@ -185,10 +196,72 @@ export const FullMenuModal: React.FC<FullMenuModalProps> = ({
             contentContainerStyle={{ padding: 14, paddingBottom: 24 }}
             showsVerticalScrollIndicator={false}
           >
+            {/* Bộ chuyển đổi Giao Diện Sáng / Tối (Đặt nhanh tất cả hoặc bấm từng menu bên dưới) */}
+            <View style={styles.sectionBox}>
+              <Text style={[styles.sectionTitle, { color: colors.textMuted }]}>
+                GIAO DIỆN (CHẠM ☀️/🌙 Ở TỪNG MENU ĐỂ CHỈNH RIÊNG)
+              </Text>
+              <View
+                style={{
+                  flexDirection: 'row',
+                  backgroundColor: colors.surface,
+                  borderRadius: 14,
+                  borderWidth: 1,
+                  borderColor: colors.border,
+                  padding: 4,
+                  gap: 6,
+                }}
+              >
+                <TouchableOpacity
+                  onPress={() => setAllTabsTheme('light')}
+                  activeOpacity={0.75}
+                  style={{
+                    flex: 1,
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: 6,
+                    paddingVertical: 9,
+                    borderRadius: 10,
+                    backgroundColor: colors.amberSoftBg,
+                  }}
+                >
+                  <Ionicons name="sunny" size={16} color="#d97706" />
+                  <Text style={{ fontSize: 12, fontWeight: '800', color: colors.amberSoftText }}>
+                    Tất cả Sáng
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() => setAllTabsTheme('dark')}
+                  activeOpacity={0.75}
+                  style={{
+                    flex: 1,
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: 6,
+                    paddingVertical: 9,
+                    borderRadius: 10,
+                    backgroundColor: colors.primarySoftBg,
+                  }}
+                >
+                  <Ionicons name="moon" size={16} color={colors.primary} />
+                  <Text style={{ fontSize: 12, fontWeight: '800', color: colors.primarySoftText }}>
+                    Tất cả Tối
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+
             {menuSections.map(sec => (
               <View key={sec.title} style={styles.sectionBox}>
-                <Text style={styles.sectionTitle}>{sec.title}</Text>
-                <View style={styles.itemsCard}>
+                <Text style={[styles.sectionTitle, { color: colors.textMuted }]}>{sec.title}</Text>
+                <View
+                  style={[
+                    styles.itemsCard,
+                    { backgroundColor: colors.surface, borderColor: colors.border },
+                  ]}
+                >
                   {sec.items.map((item, idx) => {
                     const isSelected = currentTab === item.tab;
                     const isLast = idx === sec.items.length - 1;
@@ -199,7 +272,7 @@ export const FullMenuModal: React.FC<FullMenuModalProps> = ({
                         onPress={() => handleSelect(item.tab, item.action)}
                         style={[
                           styles.menuItemRow,
-                          !isLast && styles.menuItemBorder,
+                          !isLast && [styles.menuItemBorder, { borderBottomColor: colors.border }],
                           isSelected && !item.action && styles.menuItemRowActive,
                         ]}
                         activeOpacity={0.7}
@@ -213,6 +286,7 @@ export const FullMenuModal: React.FC<FullMenuModalProps> = ({
                             <Text
                               style={[
                                 styles.itemLabel,
+                                { color: colors.text },
                                 isSelected && { color: item.color, fontWeight: '800' },
                               ]}
                             >
@@ -224,15 +298,40 @@ export const FullMenuModal: React.FC<FullMenuModalProps> = ({
                               </View>
                             )}
                           </View>
-                          <Text style={styles.itemDesc} numberOfLines={1}>
+                          <Text style={[styles.itemDesc, { color: colors.textMuted }]} numberOfLines={1}>
                             {item.desc}
                           </Text>
                         </View>
 
+                        {!item.action && (
+                          <TouchableOpacity
+                            onPress={() => toggleTabTheme(item.tab)}
+                            activeOpacity={0.75}
+                            style={{
+                              width: 30,
+                              height: 30,
+                              borderRadius: 8,
+                              backgroundColor:
+                                tabThemes[item.tab] === 'dark' ? '#1e1b4b' : '#fffbeb',
+                              borderWidth: 1,
+                              borderColor:
+                                tabThemes[item.tab] === 'dark' ? '#4338ca' : '#fcd34d',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                            }}
+                          >
+                            <Ionicons
+                              name={tabThemes[item.tab] === 'dark' ? 'moon' : 'sunny'}
+                              size={15}
+                              color={tabThemes[item.tab] === 'dark' ? '#c4b5fd' : '#d97706'}
+                            />
+                          </TouchableOpacity>
+                        )}
+
                         {isSelected ? (
                           <Ionicons name="checkmark-circle" size={18} color={item.color} />
                         ) : (
-                          <Ionicons name="chevron-forward" size={16} color="#475569" />
+                          <Ionicons name="chevron-forward" size={16} color={colors.textMuted} />
                         )}
                       </TouchableOpacity>
                     );

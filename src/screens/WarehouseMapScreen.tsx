@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import { useThemedStyles } from '../contexts/ThemeContext';
 import {
   View,
   Text,
@@ -388,6 +389,7 @@ const MobileWarehouseSearchBar = React.memo(function MobileWarehouseSearchBar({
   isFilterOpen: boolean;
   onToggleFilterOpen: () => void;
 }) {
+  const styles = useThemedStyles(baseStyles);
   const [inputValue, setInputValue] = useState(searchQuery);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [showModeModal, setShowModeModal] = useState(false);
@@ -670,7 +672,7 @@ const MobileWarehouseSearchBar = React.memo(function MobileWarehouseSearchBar({
           style={styles.searchSubmitBtn}
           onPress={() => handleSubmit()}
         >
-          <Ionicons name="search" size={13} color="#0f172a" />
+          <Ionicons name="search" size={13} color="#ffffff" />
           <Text style={styles.searchSubmitBtnText}>Tìm</Text>
         </TouchableOpacity>
 
@@ -1238,6 +1240,7 @@ export default function WarehouseMapScreen({
   onBackToScanner: () => void;
   isActive?: boolean;
 }) {
+  const styles = useThemedStyles(baseStyles);
   const initialMemory = getMemoryWarehouseMapCache();
   const hasMemoryCache = Boolean(initialMemory && initialMemory.positions && initialMemory.positions.length > 0);
 
@@ -4278,7 +4281,7 @@ export default function WarehouseMapScreen({
                     style={styles.backLevelBtn}
                     onPress={() => setSelectedAisleId(null)}
                   >
-                    <Ionicons name="arrow-back" size={14} color="#38bdf8" />
+                    <Ionicons name="arrow-back" size={14} color="#059669" />
                     <Text style={styles.backLevelText}>Quay lại Dãy</Text>
                   </TouchableOpacity>
                   <Text style={{ color: '#34d399', fontSize: 11, fontWeight: '800', textTransform: 'uppercase' }}>
@@ -4344,7 +4347,7 @@ export default function WarehouseMapScreen({
                   style={styles.backLevelBtn}
                   onPress={() => setSelectedSlotId(null)}
                 >
-                  <Ionicons name="arrow-back" size={14} color="#38bdf8" />
+                  <Ionicons name="arrow-back" size={14} color="#059669" />
                   <Text style={styles.backLevelText}>Quay lại Ô kệ</Text>
                 </TouchableOpacity>
 
@@ -4985,7 +4988,7 @@ export default function WarehouseMapScreen({
   );
 }
 
-const styles = StyleSheet.create({
+const baseStyles = {
   container: {
     flex: 1,
     backgroundColor: '#0a0f1d'
@@ -5152,14 +5155,14 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    backgroundColor: '#06b6d4',
+    backgroundColor: '#059669',
     paddingHorizontal: 11,
     height: 40,
     borderRadius: 12,
     justifyContent: 'center'
   },
   searchSubmitBtnText: {
-    color: '#0f172a',
+    color: '#ffffff',
     fontSize: 12,
     fontWeight: '900'
   },
@@ -5181,8 +5184,8 @@ const styles = StyleSheet.create({
     borderColor: '#fcd34d'
   },
   filterToggleBtnActiveCyan: {
-    backgroundColor: '#083344',
-    borderColor: '#06b6d4'
+    backgroundColor: '#064e3b',
+    borderColor: '#059669'
   },
   filterToggleBtnText: {
     color: '#cbd5e1',
@@ -5913,7 +5916,7 @@ const styles = StyleSheet.create({
     gap: 4
   },
   backLevelText: {
-    color: '#38bdf8',
+    color: '#059669',
     fontSize: 12,
     fontWeight: '700'
   },
@@ -5974,7 +5977,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#1e293b'
   },
   tierTabActive: {
-    backgroundColor: '#06b6d4'
+    backgroundColor: '#059669'
   },
   tierTabText: {
     color: '#94a3b8',
@@ -5982,7 +5985,7 @@ const styles = StyleSheet.create({
     fontWeight: '700'
   },
   tierTabTextActive: {
-    color: '#0f172a'
+    color: '#ffffff'
   },
   tierShelvesContainer: {
     gap: 8
@@ -6892,7 +6895,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 5,
-    backgroundColor: '#0284c7',
+    backgroundColor: '#059669',
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 6
@@ -6930,7 +6933,7 @@ const styles = StyleSheet.create({
     marginBottom: 20
   },
   loadMoreBtnText: {
-    color: '#38bdf8',
+    color: '#059669',
     fontSize: 12,
     fontWeight: '700'
   },
@@ -6984,7 +6987,7 @@ const styles = StyleSheet.create({
     width: 8,
     height: 8,
     borderRadius: 4,
-    backgroundColor: '#fbbf24'
+    backgroundColor: '#10b981'
   },
   searchStatsQueryText: {
     fontSize: 12,
@@ -6992,15 +6995,15 @@ const styles = StyleSheet.create({
     flex: 1
   },
   matchCountPillCyan: {
-    backgroundColor: '#083344',
+    backgroundColor: '#064e3b',
     borderWidth: 1,
-    borderColor: '#155e75',
+    borderColor: '#059669',
     paddingHorizontal: 8,
     paddingVertical: 2,
     borderRadius: 6
   },
   matchCountPillCyanText: {
-    color: '#22d3ee',
+    color: '#34d399',
     fontSize: 11,
     fontWeight: '800',
     fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace'
@@ -7511,4 +7514,5 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace'
   }
-});
+};
+const styles = StyleSheet.create(baseStyles as any);

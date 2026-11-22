@@ -28,6 +28,7 @@ import {
 } from '../services/supabase';
 import HallLotInputModal, { HallOption } from '../components/HallLotInputModal';
 import { useAuth } from '../contexts/AuthContext';
+import { useThemedStyles } from '../contexts/ThemeContext';
 
 const INVENTORY_KEYS = {
   SESSIONS: 'offline_inventory_sessions_v1',
@@ -239,6 +240,7 @@ const LevelInventoryModal = ({
   updatePositionNote: (posId: string, note: string) => void;
   bulkCheckPositions: (posIds: string[], checked: boolean) => void;
 }) => {
+  const styles = useThemedStyles(baseStyles);
   const [fetchedLotItemsMap, setFetchedLotItemsMap] = useState<Record<string, any[]>>({});
   const fetchedLotItemsRef = useRef<Record<string, any[]>>({});
 
@@ -601,6 +603,7 @@ const LevelInventoryModal = ({
 
 // ── Màn Hình Chính: Kiểm Kê Kho ──────────────────────────────────────────
 export default function InventoryScreen({ isActive }: { isActive?: boolean } = {}) {
+  const styles = useThemedStyles(baseStyles);
   const insets = useSafeAreaInsets();
   const topInset = Math.max(insets.top, Platform.OS === 'android' ? (StatusBar.currentHeight || 28) : 20);
   const { user } = useAuth();
@@ -2595,7 +2598,7 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
   );
 }
 
-const styles = StyleSheet.create({
+const baseStyles = {
   container: {
     flex: 1,
     backgroundColor: '#0f172a',
@@ -3371,5 +3374,6 @@ const styles = StyleSheet.create({
     lineHeight: 16,
     marginTop: 2,
   },
-});
+};
+const styles = StyleSheet.create(baseStyles as any);
 

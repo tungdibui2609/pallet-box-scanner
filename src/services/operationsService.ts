@@ -4,6 +4,7 @@ import { getProductsFromCache } from './database';
 import { generateUuidV4, syncOfflineOperationImages } from './operationImagesService';
 import {
   addHiddenId,
+  canBypassOperationApproval,
   reconcileHiddenIds,
   submitMobileApprovalRequest,
 } from './approvalService';
@@ -863,7 +864,7 @@ export async function updateJournalEntry(params: {
     }
   }
 
-  // Gửi yêu cầu sửa lên Web Số liệu để duyệt (không tự ý sửa trực tiếp bản ghi đã đồng bộ)
+  // Kiểm tra quyền miễn duyệt sửa số liệu của nhân viên hiện tại
   const supabase = await getSupabaseClient();
   const baseSys = await getCurrentSystemCode();
   const shiftSys = getShiftSystemCode(baseSys);
@@ -873,8 +874,19 @@ export async function updateJournalEntry(params: {
     .eq('id', params.id)
     .maybeSingle();
 
+  const targetSys = beforeRow?.system_code || shiftSys;
+  const bypass = await canBypassOperationApproval('update_journal', targetSys);
+  if (bypass) {
+    const { error } = await supabase
+      .from('delivery_journal')
+      .update(payload)
+      .eq('id', params.id);
+    if (error) throw error;
+    return true;
+  }
+
   await submitMobileApprovalRequest({
-    systemCode: beforeRow?.system_code || shiftSys,
+    systemCode: targetSys,
     companyId: beforeRow?.company_id || null,
     actionType: 'update_journal',
     targetTable: 'delivery_journal',
@@ -904,7 +916,7 @@ export async function deleteJournalEntry(id: string, shiftId?: string): Promise<
     return true;
   }
 
-  // Gửi yêu cầu xóa lên Web Số liệu để duyệt & tạm ẩn trên máy này
+  // Kiểm tra quyền miễn duyệt xóa số liệu của nhân viên hiện tại
   const supabase = await getSupabaseClient();
   const baseSys = await getCurrentSystemCode();
   const shiftSys = getShiftSystemCode(baseSys);
@@ -914,8 +926,19 @@ export async function deleteJournalEntry(id: string, shiftId?: string): Promise<
     .eq('id', id)
     .maybeSingle();
 
+  const targetSys = beforeRow?.system_code || shiftSys;
+  const bypass = await canBypassOperationApproval('delete_journal', targetSys);
+  if (bypass) {
+    const { error } = await supabase
+      .from('delivery_journal')
+      .delete()
+      .eq('id', id);
+    if (error) throw error;
+    return true;
+  }
+
   await submitMobileApprovalRequest({
-    systemCode: beforeRow?.system_code || shiftSys,
+    systemCode: targetSys,
     companyId: beforeRow?.company_id || null,
     actionType: 'delete_journal',
     targetTable: 'delivery_journal',
@@ -929,18 +952,34 @@ export async function deleteJournalEntry(id: string, shiftId?: string): Promise<
   return true;
 }
 
+// Helper đọc summary_data mới nhất từ Server trước khi cập nhật để 2 người thao tác song song không ghi đè mất dữ liệu của nhau
+async function fetchFreshShiftSummary(supabase: any, shiftId: string, fallbackSummary: any): Promise<any> {
+  try {
+    const res: any = await withNetworkTimeout(
+      supabase.from('delivery_shifts').select('summary_data').eq('id', shiftId).maybeSingle(),
+      2500
+    );
+    if (!res?.error && res?.data?.summary_data && typeof res.data.summary_data === 'object') {
+      return { ...(fallbackSummary || {}), ...res.data.summary_data };
+    }
+  } catch {
+    // Mất mạng -> dùng fallbackSummary cục bộ
+  }
+  return fallbackSummary || {};
+}
+
 // 7. Đồng bộ danh sách ghim lên ca công việc
 export async function syncPinnedProducts(shiftId: string, currentSummary: any, pinned: ShiftProductItem[]): Promise<void> {
-  const nextSummary = {
+  const localNextSummary = {
     ...(currentSummary || {}),
     pinned_products: pinned,
   };
 
-  // Cập nhật cache local
+  // Cập nhật cache local trước để UI phản hồi tức thì
   const openShifts = await getCachedOpenShifts();
   const updatedOpenShifts = openShifts.map(s => {
     if (s.id === shiftId) {
-      return { ...s, summary_data: nextSummary };
+      return { ...s, summary_data: localNextSummary };
     }
     return s;
   });
@@ -952,9 +991,19 @@ export async function syncPinnedProducts(shiftId: string, currentSummary: any, p
 
   try {
     const supabase = await getSupabaseClient();
+    const freshSummary = await fetchFreshShiftSummary(supabase, shiftId, currentSummary);
+    const mergedSummary = {
+      ...freshSummary,
+      pinned_products: pinned,
+    };
     await withNetworkTimeout(
-      supabase.from('delivery_shifts').update({ summary_data: nextSummary }).eq('id', shiftId),
-      2000
+      supabase.from('delivery_shifts').update({ summary_data: mergedSummary }).eq('id', shiftId),
+      2500
+    );
+    // Cập nhật lại cache local bằng bản đã merge từ server
+    const latestCached = await getCachedOpenShifts();
+    await setCachedOpenShifts(
+      latestCached.map(s => (s.id === shiftId ? { ...s, summary_data: mergedSummary } : s))
     );
   } catch (e) {
     console.warn('[Offline Mode] Mất mạng khi lưu ghim:', e);
@@ -1795,14 +1844,59 @@ export async function createSubShift(params: {
 }
 
 // 12. Mở lại ca đã hoàn thành (Reopen)
-export async function reopenShift(shiftId: string): Promise<boolean> {
+// 12. Gửi yêu cầu Mở lại công việc đã hoàn thành (Bắt buộc chờ quản lý duyệt tại /so-lieu/duyet-thao-tac)
+export async function reopenShift(shiftId: string, reason?: string | null): Promise<boolean> {
   const supabase = await getSupabaseClient();
-  const { error } = await supabase
-    .from('delivery_shifts')
-    .update({ status: 'open', closed_at: null, closed_by: null, closed_by_name: null })
-    .eq('id', shiftId);
+  const baseSys = await getCurrentSystemCode();
+  const shiftSys = getShiftSystemCode(baseSys);
 
-  if (error) throw error;
+  // Kiểm tra tránh gửi trùng nếu đã có yêu cầu mở lại đang chờ duyệt
+  const { data: existingPending } = await supabase
+    .from('operation_approval_requests')
+    .select('id')
+    .eq('target_table', 'delivery_shifts')
+    .eq('target_id', shiftId)
+    .eq('action_type', 'reopen_shift')
+    .eq('status', 'pending')
+    .limit(1);
+  if (Array.isArray(existingPending) && existingPending.length > 0) {
+    throw new Error('Công việc này đã có yêu cầu Mở lại đang chờ quản lý duyệt.');
+  }
+
+  const { data: serverShift } = await supabase
+    .from('delivery_shifts')
+    .select('id, system_code, company_id, notes, summary_data, status, opened_at, closed_at')
+    .eq('id', shiftId)
+    .maybeSingle();
+
+  const { data: authData } = await supabase.auth.getUser();
+  let reqName = 'Nhân viên App';
+  if (authData?.user?.id) {
+    const { data: prof } = await supabase
+      .from('user_profiles')
+      .select('full_name')
+      .eq('id', authData.user.id)
+      .maybeSingle();
+    if (prof?.full_name) reqName = prof.full_name;
+  }
+
+  const shiftName = serverShift?.summary_data?.job_name || serverShift?.notes || 'Công việc';
+  await submitMobileApprovalRequest({
+    systemCode: serverShift?.system_code || shiftSys,
+    companyId: serverShift?.company_id || null,
+    actionType: 'reopen_shift',
+    targetTable: 'delivery_shifts',
+    targetId: shiftId,
+    shiftId,
+    shiftName,
+    targetLabel: shiftName,
+    beforeData: serverShift || { id: shiftId, job_name: shiftName, status: 'closed' },
+    afterData: { status: 'open' },
+    reason: reason || 'Yêu cầu mở lại công việc đã hoàn thành để chỉnh sửa / bổ sung',
+    requestedBy: authData?.user?.id || null,
+    requestedByName: reqName,
+  });
+
   return true;
 }
 
@@ -1828,18 +1922,28 @@ export async function deleteShift(shiftId: string): Promise<boolean> {
     .maybeSingle();
 
   const shiftName = serverShift?.summary_data?.job_name || serverShift?.notes || 'Công việc';
-  await submitMobileApprovalRequest({
-    systemCode: serverShift?.system_code || shiftSys,
-    companyId: serverShift?.company_id || null,
-    actionType: 'delete_shift',
-    targetTable: 'delivery_shifts',
-    targetId: shiftId,
-    shiftId,
-    shiftName,
-    targetLabel: shiftName,
-    beforeData: serverShift || { id: shiftId, job_name: shiftName },
-  });
-  await addHiddenId('shifts', shiftId);
+  const targetSys = serverShift?.system_code || shiftSys;
+  const bypass = await canBypassOperationApproval('delete_shift', targetSys);
+  if (bypass) {
+    await supabase.from('delivery_journal').delete().ilike('notes', `%[CV_ID: ${shiftId}]%`);
+    await supabase.from('delivery_sub_shifts').delete().eq('shift_id', shiftId);
+    await supabase.from('operation_images').delete().eq('shift_id', shiftId);
+    const { error } = await supabase.from('delivery_shifts').delete().eq('id', shiftId);
+    if (error) throw error;
+  } else {
+    await submitMobileApprovalRequest({
+      systemCode: targetSys,
+      companyId: serverShift?.company_id || null,
+      actionType: 'delete_shift',
+      targetTable: 'delivery_shifts',
+      targetId: shiftId,
+      shiftId,
+      shiftName,
+      targetLabel: shiftName,
+      beforeData: serverShift || { id: shiftId, job_name: shiftName },
+    });
+    await addHiddenId('shifts', shiftId);
+  }
 
   const openShifts = await getCachedOpenShifts();
   await setCachedOpenShifts(openShifts.filter(s => s.id !== shiftId));
@@ -2035,14 +2139,26 @@ export async function saveShiftReconciliations(
   } catch {
     // ignore
   }
-  const nextSummary = { ...(shift.summary_data || {}), reconciliations };
+  let nextSummary = { ...(shift.summary_data || {}), reconciliations };
   if (!String(shift.id).startsWith('offline_')) {
     const supabase = await getSupabaseClient();
+    const freshSummary = await fetchFreshShiftSummary(supabase, shift.id, shift.summary_data);
+    const serverReconcile =
+      freshSummary?.reconciliations && typeof freshSummary.reconciliations === 'object' && !Array.isArray(freshSummary.reconciliations)
+        ? freshSummary.reconciliations
+        : {};
+    const mergedReconcile = { ...serverReconcile, ...reconciliations };
+    nextSummary = { ...freshSummary, reconciliations: mergedReconcile };
     const { error } = await (supabase as any)
       .from('delivery_shifts')
       .update({ summary_data: nextSummary })
       .eq('id', shift.id);
     if (error) throw error;
+    try {
+      await AsyncStorage.setItem(`op_reconcile_${shift.id}`, JSON.stringify(mergedReconcile));
+    } catch {
+      // ignore
+    }
   }
   return nextSummary;
 }

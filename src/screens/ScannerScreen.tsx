@@ -8,6 +8,7 @@ import { CameraView, useCameraPermissions } from 'expo-camera';
 import TextRecognition from '@react-native-ml-kit/text-recognition';
 import * as Haptics from 'expo-haptics';
 import { Ionicons } from '@expo/vector-icons';
+import { useThemedStyles } from '../contexts/ThemeContext';
 import { Pallet, BoxLabel, ParsedLabelData } from '../types';
 import {
   getActivePallet, createNewPallet, completePallet,
@@ -35,6 +36,7 @@ if (NativeModules && NativeModules.VolumeManager) {
 }
 
 export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPallets: () => void }) {
+  const styles = useThemedStyles(baseStyles);
   const [permission, requestPermission] = useCameraPermissions();
   const cameraRef = useRef<any>(null);
 
@@ -1254,7 +1256,7 @@ export default function ScannerScreen({ onNavigateToPallets }: { onNavigateToPal
   );
 }
 
-const styles = StyleSheet.create({
+const baseStyles = {
   container: { flex: 1, backgroundColor: '#090d16' },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#090d16', padding: 20 },
   permissionText: { color: '#94a3b8', fontSize: 16, textAlign: 'center', marginTop: 16, marginBottom: 20 },
@@ -1717,4 +1719,5 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '800',
   },
-});
+};
+const styles = StyleSheet.create(baseStyles as any);

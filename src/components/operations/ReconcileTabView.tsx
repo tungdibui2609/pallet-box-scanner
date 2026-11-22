@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import {
   View,
   Text,
@@ -9,6 +9,7 @@ import {
   StyleSheet,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useTheme, AppThemeColors } from '../../contexts/ThemeContext';
 import { ReconcileEntry, ShiftProductItem } from '../../services/operationsService';
 import { OperationImageRecord } from '../../services/operationImagesService';
 
@@ -44,6 +45,8 @@ export default function ReconcileTabView({
   onPickReconcileImage,
   onPreviewImage,
 }: ReconcileTabViewProps) {
+  const { colors, isDark } = useTheme();
+  const styles = useMemo(() => createStyles(colors, isDark), [colors, isDark]);
   const prodMap: Record<string, { name: string; unit: string; inQty: number; outQty: number }> = {};
   allJournals.forEach(j => {
     const name = (j.item_name || '').trim();
@@ -147,7 +150,16 @@ export default function ReconcileTabView({
         const isExpanded = !!expandedReconcileKeys[k];
 
         return (
-          <View key={k} style={[styles.reconcileCard, row.isTotal && { borderColor: '#6366f1', backgroundColor: 'rgba(99,102,241,0.08)' }]}>
+          <View
+            key={k}
+            style={[
+              styles.reconcileCard,
+              row.isTotal && {
+                borderColor: colors.primary,
+                backgroundColor: isDark ? 'rgba(99,102,241,0.10)' : '#eef2ff',
+              },
+            ]}
+          >
             <TouchableOpacity
               style={styles.reconcileCardTop}
               activeOpacity={0.7}
@@ -155,19 +167,19 @@ export default function ReconcileTabView({
             >
               <View style={{ flex: 1 }}>
                 <Text style={styles.reconcileProdName}>
-                  {row.isTotal ? '🌐 ' : ''}{row.name} {!row.isTotal && <Text style={{ color: '#94a3b8' }}>({row.unit})</Text>}
+                  {row.isTotal ? '🌐 ' : ''}{row.name} {!row.isTotal && <Text style={{ color: colors.textMuted }}>({row.unit})</Text>}
                 </Text>
                 <Text style={styles.reconcileSysStats}>
-                  HT Nhập: <Text style={{ color: '#22c55e', fontWeight: '800' }}>+{row.inQty}</Text>
+                  HT Nhập: <Text style={{ color: colors.success, fontWeight: '800' }}>+{row.inQty}</Text>
                   {'  •  '}
-                  Xuất: <Text style={{ color: '#f43f5e', fontWeight: '800' }}>-{row.outQty}</Text>
+                  Xuất: <Text style={{ color: colors.danger, fontWeight: '800' }}>-{row.outQty}</Text>
                   {(entry.startStr.trim() !== '' || entry.endStr.trim() !== '') && (
-                    <Text style={{ color: '#fbbf24', fontWeight: '700' }}>
+                    <Text style={{ color: colors.amberSoftText, fontWeight: '700' }}>
                       {`  •  Đầu: ${entry.startStr || '—'} / Đuôi: ${entry.endStr || '—'}`}
                     </Text>
                   )}
                   {((reconcileImagesMap[k]?.start.length || 0) > 0 || (reconcileImagesMap[k]?.end.length || 0) > 0) && (
-                    <Text style={{ color: '#a5b4fc', fontWeight: '700' }}>
+                    <Text style={{ color: colors.primarySoftText, fontWeight: '700' }}>
                       {`  •  📷 Đầu: ${reconcileImagesMap[k]?.start.length || 0} / Cuối: ${reconcileImagesMap[k]?.end.length || 0}`}
                     </Text>
                   )}
@@ -176,7 +188,7 @@ export default function ReconcileTabView({
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
                 {hasNums && (
                   <View style={[styles.reconcileStatusPill, isMatched ? styles.reconcileMatchPill : styles.reconcileDiffPill]}>
-                    <Text style={[styles.reconcileStatusText, isMatched ? { color: '#34d399' } : { color: '#fb7185' }]}>
+                    <Text style={[styles.reconcileStatusText, isMatched ? { color: colors.successSoftText } : { color: colors.dangerSoftText }]}>
                       {isMatched ? `✓ Khớp (${calcQty})` : `⚠ Lệch ${delta > 0 ? `+${delta}` : delta}`}
                     </Text>
                   </View>
@@ -184,15 +196,15 @@ export default function ReconcileTabView({
                 <Ionicons
                   name={isExpanded ? 'chevron-up' : 'chevron-down'}
                   size={16}
-                  color="#94a3b8"
+                  color={colors.textMuted}
                 />
               </View>
             </TouchableOpacity>
 
             {isExpanded && (
-              <View style={{ marginTop: 8, paddingTop: 8, borderTopWidth: 1, borderTopColor: 'rgba(148,163,184,0.18)', gap: 8 }}>
+              <View style={{ marginTop: 8, paddingTop: 8, borderTopWidth: 1, borderTopColor: colors.borderSubtle, gap: 8 }}>
                 {row.isTotal && (
-                  <Text style={{ color: '#a5b4fc', fontSize: 10 }}>
+                  <Text style={{ color: colors.primarySoftText, fontSize: 10 }}>
                     VD: Đầu ca 3 pallet không, cuối ca 10 → 7 để so với tổng cả việc.
                   </Text>
                 )}
@@ -208,7 +220,7 @@ export default function ReconcileTabView({
                       style={[styles.reconcileMiniChip, entry.targetType === opt.key && styles.reconcileMiniChipActive]}
                       onPress={() => updateEntry(k, defaultTarget, { targetType: opt.key, isManualTarget: true })}
                     >
-                      <Text style={[styles.reconcileMiniChipText, entry.targetType === opt.key && { color: '#38bdf8' }]}>
+                      <Text style={[styles.reconcileMiniChipText, entry.targetType === opt.key && { color: isDark ? '#38bdf8' : '#0284c7' }]}>
                         {opt.label}
                       </Text>
                     </TouchableOpacity>
@@ -222,7 +234,7 @@ export default function ReconcileTabView({
                       style={styles.reconcileInput}
                       keyboardType="decimal-pad"
                       placeholder="VD: 6"
-                      placeholderTextColor="#64748b"
+                      placeholderTextColor={colors.inputPlaceholder}
                       value={entry.startStr}
                       onChangeText={txt => updateEntry(k, defaultTarget, { startStr: txt })}
                     />
@@ -233,7 +245,7 @@ export default function ReconcileTabView({
                       style={styles.reconcileInput}
                       keyboardType="decimal-pad"
                       placeholder="VD: 12"
-                      placeholderTextColor="#64748b"
+                      placeholderTextColor={colors.inputPlaceholder}
                       value={entry.endStr}
                       onChangeText={txt => updateEntry(k, defaultTarget, { endStr: txt })}
                     />
@@ -245,7 +257,7 @@ export default function ReconcileTabView({
                     style={[styles.reconcileMiniChip, entry.calcType === 'diff' && styles.reconcileCalcChipActive]}
                     onPress={() => updateEntry(k, defaultTarget, { calcType: 'diff' })}
                   >
-                    <Text style={[styles.reconcileMiniChipText, entry.calcType === 'diff' && { color: '#fbbf24' }]}>
+                    <Text style={[styles.reconcileMiniChipText, entry.calcType === 'diff' && { color: colors.amberSoftText }]}>
                       Đếm Tồn (Đuôi - Đầu)
                     </Text>
                   </TouchableOpacity>
@@ -253,7 +265,7 @@ export default function ReconcileTabView({
                     style={[styles.reconcileMiniChip, entry.calcType === 'inclusive' && styles.reconcileCalcChipActive]}
                     onPress={() => updateEntry(k, defaultTarget, { calcType: 'inclusive' })}
                   >
-                    <Text style={[styles.reconcileMiniChipText, entry.calcType === 'inclusive' && { color: '#fbbf24' }]}>
+                    <Text style={[styles.reconcileMiniChipText, entry.calcType === 'inclusive' && { color: colors.amberSoftText }]}>
                       Đếm STT (Đuôi - Đầu + 1)
                     </Text>
                   </TouchableOpacity>
@@ -267,21 +279,38 @@ export default function ReconcileTabView({
                 {/* Ảnh tham chiếu Đầu / Cuối */}
                 <View style={{ marginTop: 4, gap: 6 }}>
                   {([
-                    { phase: 'start' as const, label: 'Ảnh tham chiếu ĐẦU', borderColor: '#38bdf8', textColor: '#7dd3fc' },
-                    { phase: 'end' as const, label: 'Ảnh tham chiếu CUỐI', borderColor: '#f59e0b', textColor: '#fbbf24' },
+                    { phase: 'start' as const, label: 'Ảnh tham chiếu ĐẦU', borderColor: isDark ? '#38bdf8' : '#0284c7', textColor: isDark ? '#7dd3fc' : '#0369a1' },
+                    { phase: 'end' as const, label: 'Ảnh tham chiếu CUỐI', borderColor: isDark ? '#f59e0b' : '#d97706', textColor: isDark ? '#fbbf24' : '#b45309' },
                   ]).map(cfg => {
                     const imgs = reconcileImagesMap[k]?.[cfg.phase] || [];
                     const isUp = uploadingReconcileKey === `${k}:${cfg.phase}`;
                     return (
-                      <View key={cfg.phase} style={{ padding: 8, borderRadius: 10, backgroundColor: 'rgba(15,23,42,0.65)', borderWidth: 1, borderColor: '#334155', gap: 6 }}>
+                      <View
+                        key={cfg.phase}
+                        style={{
+                          padding: 8,
+                          borderRadius: 10,
+                          backgroundColor: isDark ? 'rgba(15,23,42,0.65)' : '#f8fafc',
+                          borderWidth: 1,
+                          borderColor: colors.border,
+                          gap: 6,
+                        }}
+                      >
                         <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-                          <Text style={{ color: '#cbd5e1', fontSize: 11, fontWeight: '700' }}>
+                          <Text style={{ color: colors.textSecondary, fontSize: 11, fontWeight: '700' }}>
                             📷 {cfg.label} ({imgs.length})
                           </Text>
                           <TouchableOpacity
                             disabled={isUp}
                             onPress={() => onPickReconcileImage(k, cfg.phase, row.name, row.unit)}
-                            style={{ paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8, backgroundColor: 'rgba(15,23,42,0.9)', borderWidth: 1, borderColor: cfg.borderColor }}
+                            style={{
+                              paddingHorizontal: 10,
+                              paddingVertical: 5,
+                              borderRadius: 8,
+                              backgroundColor: isDark ? 'rgba(15,23,42,0.9)' : '#ffffff',
+                              borderWidth: 1,
+                              borderColor: cfg.borderColor,
+                            }}
                           >
                             <Text style={{ color: cfg.textColor, fontSize: 11, fontWeight: '700' }}>
                               {isUp ? 'Đang tải...' : '+ Thêm'}
@@ -317,7 +346,7 @@ export default function ReconcileTabView({
   );
 }
 
-const styles = StyleSheet.create({
+const createStyles = (c: AppThemeColors, isDark: boolean) => StyleSheet.create({
   reconcileTabContainer: {
     gap: 10,
     paddingBottom: 20,
@@ -330,12 +359,12 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
   },
   reconcileTitle: {
-    color: '#f8fafc',
+    color: c.text,
     fontSize: 14,
     fontWeight: '800',
   },
   reconcileSub: {
-    color: '#94a3b8',
+    color: c.textMuted,
     fontSize: 11,
     marginTop: 2,
   },
@@ -351,9 +380,9 @@ const styles = StyleSheet.create({
     fontWeight: '800',
   },
   reconcileCard: {
-    backgroundColor: 'rgba(15, 23, 42, 0.72)',
+    backgroundColor: isDark ? 'rgba(15, 23, 42, 0.72)' : '#ffffff',
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: c.border,
     borderRadius: 14,
     padding: 12,
     gap: 8,
@@ -365,12 +394,12 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   reconcileProdName: {
-    color: '#f8fafc',
+    color: c.text,
     fontSize: 13,
     fontWeight: '800',
   },
   reconcileSysStats: {
-    color: '#94a3b8',
+    color: c.textMuted,
     fontSize: 11,
     marginTop: 2,
   },
@@ -380,10 +409,10 @@ const styles = StyleSheet.create({
     borderRadius: 999,
   },
   reconcileMatchPill: {
-    backgroundColor: 'rgba(16, 185, 129, 0.18)',
+    backgroundColor: c.successSoftBg,
   },
   reconcileDiffPill: {
-    backgroundColor: 'rgba(244, 63, 94, 0.18)',
+    backgroundColor: c.dangerSoftBg,
   },
   reconcileStatusText: {
     fontSize: 11,
@@ -398,20 +427,20 @@ const styles = StyleSheet.create({
     paddingHorizontal: 9,
     paddingVertical: 6,
     borderRadius: 8,
-    backgroundColor: '#1e293b',
+    backgroundColor: c.surfaceAlt,
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: c.border,
   },
   reconcileMiniChipActive: {
-    borderColor: '#38bdf8',
-    backgroundColor: 'rgba(56, 189, 248, 0.12)',
+    borderColor: isDark ? '#38bdf8' : '#0284c7',
+    backgroundColor: isDark ? 'rgba(56, 189, 248, 0.12)' : '#e0f2fe',
   },
   reconcileCalcChipActive: {
-    borderColor: '#fbbf24',
-    backgroundColor: 'rgba(251, 191, 36, 0.12)',
+    borderColor: isDark ? '#fbbf24' : '#d97706',
+    backgroundColor: c.amberSoftBg,
   },
   reconcileMiniChipText: {
-    color: '#cbd5e1',
+    color: c.textSecondary,
     fontSize: 11,
     fontWeight: '700',
   },
@@ -420,24 +449,24 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   reconcileInputLabel: {
-    color: '#94a3b8',
+    color: c.textMuted,
     fontSize: 11,
     fontWeight: '700',
     marginBottom: 4,
   },
   reconcileInput: {
-    backgroundColor: '#0f172a',
+    backgroundColor: c.inputBg,
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: c.border,
     borderRadius: 10,
     paddingHorizontal: 10,
     paddingVertical: 8,
-    color: '#f8fafc',
+    color: c.text,
     fontSize: 15,
     fontWeight: '800',
   },
   reconcileHintText: {
-    color: '#64748b',
+    color: c.textMuted,
     fontSize: 10,
     fontStyle: 'italic',
   },
