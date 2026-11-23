@@ -1,6 +1,6 @@
 {
   "name": "pallet-box-scanner",
-  "version": "1.0.83",
+  "version": "1.0.84",
   "main": "index.ts",
   "dependencies": {
     "@expo/vector-icons": "^15.0.2",
@@ -15,6 +15,7 @@
     "expo-image-manipulator": "~58.0.16",
     "expo-image-picker": "~58.0.10",
     "expo-network": "~58.0.4",
+    "expo-speech-recognition": "^58.0.1",
     "expo-sqlite": "~58.0.14",
     "expo-status-bar": "~58.0.4",
     "react": "19.3.0",

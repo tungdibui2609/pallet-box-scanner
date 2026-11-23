@@ -27,6 +27,8 @@ import {
   PositionItem,
 } from '../services/supabase';
 import HallLotInputModal, { HallOption } from '../components/HallLotInputModal';
+import { VoiceMicButton } from '../components/common/VoiceMicButton';
+import { appendWarehouseVoiceText } from '../utils/voiceTextNormalizer';
 import { useAuth } from '../contexts/AuthContext';
 import { useThemedStyles } from '../contexts/ThemeContext';
 
@@ -562,7 +564,7 @@ const LevelInventoryModal = ({
                       </TouchableOpacity>
                     </View>
 
-                    {/* Ô nhập ghi chú sai lệch */}
+                    {/* Ô nhập ghi chú sai lệch + Nút Micro nói chuyển thành text */}
                     <View style={[styles.noteInputWrap, Boolean(res.note) && styles.noteInputWrapActive]}>
                       <Feather
                         name="edit-3"
@@ -571,16 +573,24 @@ const LevelInventoryModal = ({
                       />
                       <TextInput
                         style={styles.noteInput}
-                        placeholder="Ghi chú sai lệch (nếu có)..."
+                        placeholder="Ghi chú sai lệch (gõ hoặc bấm Micro)..."
                         placeholderTextColor="#64748b"
                         value={res.note || ''}
                         onChangeText={val => updatePositionNote(posKey, val)}
                       />
                       {res.note ? (
                         <TouchableOpacity onPress={() => updatePositionNote(posKey, '')}>
-                          <Feather name="x-circle" size={14} color="#fb7185" />
+                          <Feather name="x-circle" size={15} color="#fb7185" />
                         </TouchableOpacity>
                       ) : null}
+                      <VoiceMicButton
+                        onResult={spoken =>
+                          updatePositionNote(
+                            posKey,
+                            appendWarehouseVoiceText(res.note || '', spoken)
+                          )
+                        }
+                      />
                     </View>
                   </View>
                 );
@@ -2224,13 +2234,26 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
                     </TouchableOpacity>
 
                     <View style={[styles.noteInputWrap, { marginHorizontal: 12, marginBottom: 12 }]}>
-                      <Feather name="edit-3" size={14} color="#64748b" />
+                      <Feather name="edit-3" size={14} color={item.summaryNote ? '#fb7185' : '#64748b'} />
                       <TextInput
                         style={styles.noteInput}
-                        placeholder="Ghi chú dòng tổng (VD: thực tế có 25 lot)..."
+                        placeholder="Ghi chú dòng tổng (VD: thực tế có 25 LOT)..."
                         placeholderTextColor="#64748b"
                         value={item.summaryNote || ''}
                         onChangeText={val => updatePositionNote(item.groupKey, val)}
+                      />
+                      {item.summaryNote ? (
+                        <TouchableOpacity onPress={() => updatePositionNote(item.groupKey, '')}>
+                          <Feather name="x-circle" size={15} color="#fb7185" />
+                        </TouchableOpacity>
+                      ) : null}
+                      <VoiceMicButton
+                        onResult={spoken =>
+                          updatePositionNote(
+                            item.groupKey,
+                            appendWarehouseVoiceText(item.summaryNote || '', spoken)
+                          )
+                        }
                       />
                     </View>
                   </View>

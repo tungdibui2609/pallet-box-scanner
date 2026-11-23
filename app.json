@@ -2,7 +2,7 @@
   "expo": {
     "name": "Anywarehouse",
     "slug": "bao-duy",
-    "version": "1.0.83",
+    "version": "1.0.84",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
@@ -19,7 +19,7 @@
       },
       "predictiveBackGestureEnabled": false,
       "package": "com.anywarehouse.scanner",
-      "versionCode": 84,
+      "versionCode": 85,
       "permissions": [
         "android.permission.CAMERA",
         "android.permission.RECORD_AUDIO",
@@ -45,7 +45,14 @@
         }
       ],
       "expo-font",
-      "expo-status-bar"
+      "expo-status-bar",
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "Ứng dụng cần quyền Microphone để nhân viên nói chuyển thành ghi chú kiểm kê.",
+          "speechRecognitionPermission": "Ứng dụng cần quyền nhận dạng giọng nói để chuyển lời nói thành văn bản ghi chú kiểm kê."
+        }
+      ]
     ],
     "extra": {
       "eas": {
