@@ -1,0 +1,94 @@
+name: Build Android APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      note:
+        description: 'Ghi chú phiên bản (tùy chọn)'
+        required: false
+        default: ''
+
+jobs:
+  build-apk:
+    name: Build Release APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Gradle cache
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Install dependencies
+        run: npm ci || npm install
+
+      - name: Read app version
+        id: app_meta
+        run: |
+          APP_VER=$(node -p "require('./app.json').expo.version")
+          APP_CODE=$(node -p "require('./app.json').expo.android.versionCode")
+          echo "version=$APP_VER" >> "$GITHUB_OUTPUT"
+          echo "version_code=$APP_CODE" >> "$GITHUB_OUTPUT"
+
+      - name: Expo prebuild (Android)
+        run: npx expo prebuild --platform android --clean --non-interactive
+
+      - name: Configure release signing (if secrets provided)
+        if: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > android/app/release.keystore
+          cat <<EOF >> android/gradle.properties
+          MYAPP_UPLOAD_STORE_FILE=release.keystore
+          MYAPP_UPLOAD_KEY_ALIAS=$ANDROID_KEY_ALIAS
+          MYAPP_UPLOAD_STORE_PASSWORD=$ANDROID_KEYSTORE_PASSWORD
+          MYAPP_UPLOAD_KEY_PASSWORD=$ANDROID_KEY_PASSWORD
+          EOF
+          node -e '
+            const fs = require("fs");
+            const p = "android/app/build.gradle";
+            let g = fs.readFileSync(p, "utf8");
+            const releaseSigning = `
+        release {
+            if (project.hasProperty("MYAPP_UPLOAD_STORE_FILE")) {
+                storeFile file(MYAPP_UPLOAD_STORE_FILE)
+                storePassword MYAPP_UPLOAD_STORE_PASSWORD
+                keyAlias MYAPP_UPLOAD_KEY_ALIAS
+                keyPassword MYAPP_UPLOAD_KEY_PASSWORD
+            }
+        }`;
+            g = g.replace(/signingConfigs\s*\{/, "signingConfigs {" + releaseSigning);
+            g = g.replace(/release\s*\{([\s\S]*?)signingConfig\s+signingConfigs\.debug/, "release {$1signingConfig signingConfigs.release");
+            fs.writeFileSync(p, g);
+          '
+
+      - name: Build Android Release APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon -PreactNativeArchitectures=arm64-v8a
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Anywarehouse-v${{ steps.app_meta.outputs.version }}-b${{ steps.app_meta.outputs.version_code }}-apk
+          path: android/app/build/outputs/apk/release/app-release.apk
+          retention-days: 30

@@ -8,8 +8,10 @@ import {
   Image,
   StyleSheet,
   ActivityIndicator,
-  SafeAreaView,
+  Platform,
+  StatusBar,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { Ionicons } from '@expo/vector-icons';
 import type { DeliveryShift } from '../../services/operationsService';
@@ -36,6 +38,12 @@ export default function QuickSnapCameraModal({
   onOpenQueue,
   onCaptured,
 }: Props) {
+  const insets = useSafeAreaInsets();
+  const topInset = Math.max(
+    insets.top,
+    Platform.OS === 'android' ? StatusBar.currentHeight || 28 : 16
+  );
+  const bottomInset = Math.max(insets.bottom, Platform.OS === 'android' ? 28 : 16);
   const [permission, requestPermission] = useCameraPermissions();
   const cameraRef = useRef<CameraView | null>(null);
   const [targetShiftId, setTargetShiftId] = useState<string>(initialShiftId || '');
@@ -92,10 +100,20 @@ export default function QuickSnapCameraModal({
   const previewThumb = sessionLastUri || lastThumbUri || null;
 
   return (
-    <Modal visible={visible} animationType="fade" onRequestClose={onClose}>
-      <SafeAreaView style={styles.container}>
+    <Modal
+      visible={visible}
+      animationType="fade"
+      statusBarTranslucent
+      onRequestClose={onClose}
+    >
+      <View style={styles.container}>
         {!permission?.granted ? (
-          <View style={styles.permBox}>
+          <View
+            style={[
+              styles.permBox,
+              { paddingTop: topInset + 24, paddingBottom: bottomInset + 24 },
+            ]}
+          >
             <Ionicons name="camera-outline" size={44} color="#38bdf8" />
             <Text style={styles.permTitle}>Cần quyền Camera để chụp nhanh</Text>
             <TouchableOpacity onPress={requestPermission} style={styles.permBtn}>
@@ -117,7 +135,7 @@ export default function QuickSnapCameraModal({
             {flashBlink && <View style={styles.shutterFlash} pointerEvents="none" />}
 
             {/* Thanh trên: Đóng + Flash + Dải chọn nhanh Công việc */}
-            <View style={styles.topOverlay}>
+            <View style={[styles.topOverlay, { paddingTop: topInset + 8 }]}>
               <View style={styles.topActions}>
                 <TouchableOpacity onPress={onClose} style={styles.iconCircle}>
                   <Ionicons name="close" size={22} color="#fff" />
@@ -177,7 +195,7 @@ export default function QuickSnapCameraModal({
             </View>
 
             {/* Thanh đáy: Thumbnail nhỏ góc trái + Nút chụp BỤP lớn ở giữa + Nút Xong */}
-            <View style={styles.bottomOverlay}>
+            <View style={[styles.bottomOverlay, { paddingBottom: bottomInset + 16 }]}>
               <TouchableOpacity
                 onPress={() => {
                   onClose();
@@ -221,7 +239,7 @@ export default function QuickSnapCameraModal({
             </View>
           </View>
         )}
-      </SafeAreaView>
+      </View>
     </Modal>
   );
 }

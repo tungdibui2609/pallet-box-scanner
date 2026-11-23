@@ -12,6 +12,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
+import { ModalNavBarSpacer } from '../common/ModalNavBarSpacer';
 import { DriveImageSettingsModal } from '../operations/DriveImageSettingsModal';
 
 export type AppTab =
@@ -167,7 +168,7 @@ export const FullMenuModal: React.FC<FullMenuModalProps> = ({
             {
               backgroundColor: colors.bg,
               borderTopColor: colors.border,
-              paddingBottom: Math.max(insets.bottom, 12),
+              paddingBottom: 12,
             },
           ]}
         >
@@ -354,6 +355,7 @@ export const FullMenuModal: React.FC<FullMenuModalProps> = ({
             </TouchableOpacity>
           </ScrollView>
         </View>
+        <ModalNavBarSpacer />
       </View>
 
       {/* Modal Cài Đặt Hình Ảnh & Google Drive (Có thể mở trực tiếp từ Menu) */}

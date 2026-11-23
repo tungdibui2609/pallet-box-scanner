@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity,
-  Alert, ActivityIndicator, ScrollView, Switch, Modal
+  Alert, ActivityIndicator, ScrollView, Switch, Modal, Platform
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import {
@@ -20,6 +21,7 @@ import {
   getSubmittedAdjustmentProposals,
 } from '../services/warehouseAdjustmentService';
 import { DriveImageSettingsModal } from '../components/operations/DriveImageSettingsModal';
+import { ModalNavBarSpacer } from '../components/common/ModalNavBarSpacer';
 import {
   getDefaultTargetBoxQty,
   setDefaultTargetBoxQty,
@@ -28,6 +30,8 @@ import {
 } from '../services/appSettings';
 
 export default function SettingsScreen({ onBack }: { onBack: () => void }) {
+  const insets = useSafeAreaInsets();
+  const bottomSafePad = Math.max(insets.bottom, Platform.OS === 'android' ? 32 : 16) + 24;
   const { user, logout } = useAuth();
   const { colors, isDark, tabThemes, setTabTheme, setAllTabsTheme } = useTheme();
   const [isThemeModalOpen, setIsThemeModalOpen] = useState(false);
@@ -1038,6 +1042,7 @@ export default function SettingsScreen({ onBack }: { onBack: () => void }) {
       <Modal
         visible={isThemeModalOpen}
         transparent
+        statusBarTranslucent
         animationType="slide"
         onRequestClose={() => setIsThemeModalOpen(false)}
       >
@@ -1050,7 +1055,7 @@ export default function SettingsScreen({ onBack }: { onBack: () => void }) {
               maxHeight: '86%',
               paddingHorizontal: 16,
               paddingTop: 14,
-              paddingBottom: 24,
+              paddingBottom: 16,
               borderTopWidth: 1,
               borderTopColor: colors.border,
             }}
@@ -1212,6 +1217,7 @@ export default function SettingsScreen({ onBack }: { onBack: () => void }) {
               })}
             </ScrollView>
           </View>
+          <ModalNavBarSpacer />
         </View>
       </Modal>
 

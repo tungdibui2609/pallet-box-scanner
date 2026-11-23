@@ -12,6 +12,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { ModalNavBarSpacer } from '../common/ModalNavBarSpacer';
 import { DeliveryShift, OrderTypeItem, getOrderTypes, closeShift } from '../../services/operationsService';
 import { LocalPickedImage, uploadOperationImages } from '../../services/operationImagesService';
 import OperationImagePickerBar from './OperationImagePickerBar';
@@ -99,7 +100,7 @@ export default function CloseJobModal({ visible, shift, onClose, onSuccess, user
       <TouchableWithoutFeedback onPress={onClose}>
         <View style={styles.overlay}>
           <TouchableWithoutFeedback>
-            <View style={[styles.sheetContainer, { paddingBottom: Math.max(insets.bottom, 16) + 8 }]}>
+            <View style={[styles.sheetContainer, { paddingBottom: 16 }]}>
               <View style={styles.handle} />
 
               <View style={styles.header}>
@@ -185,6 +186,7 @@ export default function CloseJobModal({ visible, shift, onClose, onSuccess, user
               </View>
             </View>
           </TouchableWithoutFeedback>
+          <ModalNavBarSpacer />
         </View>
       </TouchableWithoutFeedback>
     </Modal>

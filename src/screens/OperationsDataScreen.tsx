@@ -13,7 +13,9 @@ import {
   Image,
   Modal,
   AppState,
+  Platform,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import * as Network from 'expo-network';
@@ -62,6 +64,7 @@ import OperationImagesModal, { JournalImageTarget } from '../components/operatio
 import WarehouseAlbumModal from '../components/operations/WarehouseAlbumModal';
 import QuickSnapQueueModal from '../components/operations/QuickSnapQueueModal';
 import QuickSnapCameraModal from '../components/operations/QuickSnapCameraModal';
+import { ModalNavBarSpacer } from '../components/common/ModalNavBarSpacer';
 import {
   LocalPickedImage,
   OperationImageRecord,
@@ -151,6 +154,8 @@ function cleanUserNotes(notes?: string | null): string {
 }
 
 export default function OperationsDataScreen({ isActive = true }: OperationsDataScreenProps = {}) {
+  const insets = useSafeAreaInsets();
+  const actionMenuBottomPad = Math.max(insets.bottom, Platform.OS === 'android' ? 32 : 16) + 24;
   const { user } = useAuth();
 
   // Tab: 'active' (Đang làm) | 'done' (Đã hoàn thành)
@@ -4275,6 +4280,7 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
       <Modal
         visible={isActionMenuOpen}
         transparent
+        statusBarTranslucent
         animationType="slide"
         onRequestClose={() => setIsActionMenuOpen(false)}
       >
@@ -4284,13 +4290,14 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
           style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'flex-end' }}
         >
           <View
+            onStartShouldSetResponder={() => true}
             style={{
               backgroundColor: colors.surface,
               borderTopLeftRadius: 24,
               borderTopRightRadius: 24,
               paddingHorizontal: 16,
-              paddingTop: 10,
-              paddingBottom: 28,
+              paddingTop: 14,
+              paddingBottom: 16,
             }}
           >
             <View
@@ -4402,6 +4409,7 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
               </TouchableOpacity>
             )}
           </View>
+          <ModalNavBarSpacer />
         </TouchableOpacity>
       </Modal>
 

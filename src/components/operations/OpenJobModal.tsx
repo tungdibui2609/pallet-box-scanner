@@ -12,6 +12,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { ModalNavBarSpacer } from '../common/ModalNavBarSpacer';
 import {
   OrderTypeItem,
   JobTemplate,
@@ -126,7 +127,7 @@ export default function OpenJobModal({ visible, onClose, onSuccess, user, allPro
       <TouchableWithoutFeedback onPress={onClose}>
         <View style={styles.overlay}>
           <TouchableWithoutFeedback>
-            <View style={[styles.sheetContainer, { paddingBottom: Math.max(insets.bottom, 16) + 8 }]}>
+            <View style={[styles.sheetContainer, { paddingBottom: 16 }]}>
               <View style={styles.handle} />
 
               <View style={styles.header}>
@@ -263,6 +264,7 @@ export default function OpenJobModal({ visible, onClose, onSuccess, user, allPro
               </TouchableOpacity>
             </View>
           </TouchableWithoutFeedback>
+          <ModalNavBarSpacer />
         </View>
       </TouchableWithoutFeedback>
     </Modal>

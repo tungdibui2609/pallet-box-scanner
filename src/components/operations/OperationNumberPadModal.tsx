@@ -13,6 +13,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme, AppThemeColors } from '../../contexts/ThemeContext';
+import { ModalNavBarSpacer } from '../common/ModalNavBarSpacer';
 import { ShiftProductItem } from '../../services/operationsService';
 import { LocalPickedImage } from '../../services/operationImagesService';
 import OperationImagePickerBar from './OperationImagePickerBar';
@@ -140,7 +141,7 @@ export default function OperationNumberPadModal({ visible, product, defaultUnit,
       <TouchableWithoutFeedback onPress={onClose}>
         <View style={styles.overlay}>
           <TouchableWithoutFeedback>
-            <View style={[styles.sheetContainer, { paddingBottom: Math.max(insets.bottom, 16) + 8 }]}>
+            <View style={[styles.sheetContainer, { paddingBottom: 16 }]}>
               {/* Thanh kéo handle */}
               <View style={styles.handle} />
 
@@ -300,6 +301,7 @@ export default function OperationNumberPadModal({ visible, product, defaultUnit,
               </View>
             </View>
           </TouchableWithoutFeedback>
+          <ModalNavBarSpacer />
         </View>
       </TouchableWithoutFeedback>
     </Modal>

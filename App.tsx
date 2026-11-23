@@ -244,7 +244,7 @@ function AppContent() {
       {/* ── BOTTOM NAVIGATION BAR (TINH GỌN 5 NÚT: MENU + 4 CHỨC NĂNG CHÍNH) ─────────────────── */}
       <View
         style={{
-          backgroundColor: colors.bg,
+          backgroundColor: colors.barBg,
           paddingBottom: insets.bottom,
         }}
       >

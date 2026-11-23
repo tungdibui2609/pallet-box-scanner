@@ -14,6 +14,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { ModalNavBarSpacer } from '../common/ModalNavBarSpacer';
 import {
   DeliveryShift,
   InterimCloseStatus,
@@ -220,7 +221,7 @@ export default function InterimCloseModal({
             <View
               style={[
                 styles.sheetContainer,
-                { paddingBottom: Math.max(insets.bottom, 16) + 8, maxHeight: '88%' },
+                { paddingBottom: 16, maxHeight: '88%' },
               ]}
             >
               <View style={styles.handle} />
@@ -469,6 +470,7 @@ export default function InterimCloseModal({
               </ScrollView>
             </View>
           </TouchableWithoutFeedback>
+          <ModalNavBarSpacer />
         </View>
       </TouchableWithoutFeedback>
     </Modal>

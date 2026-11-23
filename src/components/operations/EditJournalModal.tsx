@@ -12,6 +12,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { ModalNavBarSpacer } from '../common/ModalNavBarSpacer';
 import { JournalRecord } from '../../services/operationsService';
 
 interface Props {
@@ -82,7 +83,7 @@ export default function EditJournalModal({ visible, record, onClose, onSubmit }:
       <TouchableWithoutFeedback onPress={onClose}>
         <View style={styles.overlay}>
           <TouchableWithoutFeedback>
-            <View style={[styles.sheetContainer, { paddingBottom: Math.max(insets.bottom, 16) + 8 }]}>
+            <View style={[styles.sheetContainer, { paddingBottom: 16 }]}>
               <View style={styles.handle} />
 
               <View style={styles.header}>
@@ -192,6 +193,7 @@ export default function EditJournalModal({ visible, record, onClose, onSubmit }:
               </View>
             </View>
           </TouchableWithoutFeedback>
+          <ModalNavBarSpacer />
         </View>
       </TouchableWithoutFeedback>
     </Modal>

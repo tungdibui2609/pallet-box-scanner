@@ -13,7 +13,9 @@ import {
   Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme, AppThemeColors } from '../../contexts/ThemeContext';
+import { ModalNavBarSpacer } from '../common/ModalNavBarSpacer';
 import type { DeliveryShift, ShiftProductItem } from '../../services/operationsService';
 import type { QuickSnapItem } from '../../services/quickSnapStore';
 
@@ -64,6 +66,8 @@ export default function QuickSnapQueueModal({
   onSaveToShiftAlbum,
   onAssignSnap,
 }: Props) {
+  const insets = useSafeAreaInsets();
+  const bottomInset = Math.max(insets.bottom, Platform.OS === 'android' ? 16 : 12);
   const { colors, isDark } = useTheme();
   const styles = useMemo(() => createStyles(colors, isDark), [colors, isDark]);
   const [selectedId, setSelectedId] = useState<string>('');
@@ -624,6 +628,7 @@ export default function QuickSnapQueueModal({
           </>
           )}
         </View>
+        <ModalNavBarSpacer />
       </KeyboardAvoidingView>
     </Modal>
   );
