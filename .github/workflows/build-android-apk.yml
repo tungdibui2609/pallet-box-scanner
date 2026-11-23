@@ -69,15 +69,7 @@ jobs:
             const fs = require("fs");
             const p = "android/app/build.gradle";
             let g = fs.readFileSync(p, "utf8");
-            const releaseSigning = `
-        release {
-            if (project.hasProperty("MYAPP_UPLOAD_STORE_FILE")) {
-                storeFile file(MYAPP_UPLOAD_STORE_FILE)
-                storePassword MYAPP_UPLOAD_STORE_PASSWORD
-                keyAlias MYAPP_UPLOAD_KEY_ALIAS
-                keyPassword MYAPP_UPLOAD_KEY_PASSWORD
-            }
-        }`;
+            const releaseSigning = "\n        release {\n            if (project.hasProperty(\"MYAPP_UPLOAD_STORE_FILE\")) {\n                storeFile file(MYAPP_UPLOAD_STORE_FILE)\n                storePassword MYAPP_UPLOAD_STORE_PASSWORD\n                keyAlias MYAPP_UPLOAD_KEY_ALIAS\n                keyPassword MYAPP_UPLOAD_KEY_PASSWORD\n            }\n        }";
             g = g.replace(/signingConfigs\s*\{/, "signingConfigs {" + releaseSigning);
             g = g.replace(/release\s*\{([\s\S]*?)signingConfig\s+signingConfigs\.debug/, "release {$1signingConfig signingConfigs.release");
             fs.writeFileSync(p, g);
