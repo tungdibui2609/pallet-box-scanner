@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
-  View, Text, StyleSheet, TextInput, TouchableOpacity,
+  View, Text, TextInput, TouchableOpacity,
   Alert, ActivityIndicator, ScrollView, Switch, Modal
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -13,7 +13,7 @@ import {
 } from '../services/supabase';
 import { getStampDictionariesCount } from '../services/database';
 import { useAuth } from '../contexts/AuthContext';
-import { useTheme, useThemedStyles, THEME_TAB_META } from '../contexts/ThemeContext';
+import { useTheme, THEME_TAB_META } from '../contexts/ThemeContext';
 import { isAutoSyncEnabled, setAutoSyncEnabled, syncAllWarehouseDataMaster } from '../services/autoSync';
 import {
   syncOfflineAdjustmentProposals,
@@ -29,9 +29,8 @@ import {
 
 export default function SettingsScreen({ onBack }: { onBack: () => void }) {
   const { user, logout } = useAuth();
-  const { colors, tabThemes, setTabTheme, setAllTabsTheme } = useTheme();
+  const { colors, isDark, tabThemes, setTabTheme, setAllTabsTheme } = useTheme();
   const [isThemeModalOpen, setIsThemeModalOpen] = useState(false);
-  const styles = useThemedStyles(baseStyles);
   const [url, setUrl] = useState(DEFAULT_SUPABASE_URL);
   const [anonKey, setAnonKey] = useState(DEFAULT_ANON_KEY);
   const [systemCode, setSystemCode] = useState('KHO_DONG_LANH');
@@ -281,60 +280,759 @@ export default function SettingsScreen({ onBack }: { onBack: () => void }) {
     );
   }
 
-  return (
-    <ScrollView style={styles.container}>
-      <View style={styles.header}>
-        <TouchableOpacity onPress={onBack} style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-          <Ionicons name="arrow-back" size={22} color={colors.text} />
-          <Text style={{ color: colors.text, fontWeight: '700' }}>Quay lại</Text>
-        </TouchableOpacity>
-        <Text style={styles.title}>CÀI ĐẶT HỆ THỐNG</Text>
-      </View>
+  const formatShortSync = (iso: string | null) => {
+    if (!iso) return 'Chưa tải';
+    try {
+      const d = new Date(iso);
+      return `${d.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })} ${d.toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit' })}`;
+    } catch {
+      return 'Chưa tải';
+    }
+  };
 
-      {/* ── NÚT MỞ CÀI ĐẶT GIAO DIỆN (THEME) RIÊNG CHO TỪNG MENU ────── */}
-      <TouchableOpacity
-        onPress={() => setIsThemeModalOpen(true)}
-        activeOpacity={0.8}
+  const lightCount = THEME_TAB_META.filter(t => tabThemes[t.key] === 'light').length;
+  const darkCount = THEME_TAB_META.filter(t => tabThemes[t.key] === 'dark').length;
+
+  return (
+    <View style={{ flex: 1, backgroundColor: colors.bg }}>
+      {/* ── HEADER GỌN SẠCH ── */}
+      <View
         style={{
-          marginHorizontal: 16,
-          marginTop: 14,
-          backgroundColor: colors.surface,
-          borderRadius: 16,
-          padding: 14,
-          borderWidth: 1,
-          borderColor: colors.border,
           flexDirection: 'row',
           alignItems: 'center',
           justifyContent: 'space-between',
-          gap: 12,
+          paddingHorizontal: 14,
+          paddingVertical: 12,
+          backgroundColor: colors.surface,
+          borderBottomWidth: 1,
+          borderBottomColor: colors.border,
         }}
       >
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, flex: 1 }}>
+        <TouchableOpacity
+          onPress={onBack}
+          style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 2 }}
+          activeOpacity={0.7}
+        >
+          <Ionicons name="arrow-back" size={20} color={colors.text} />
+          <Text style={{ color: colors.text, fontSize: 14, fontWeight: '700' }}>Quay lại</Text>
+        </TouchableOpacity>
+        <Text style={{ color: colors.text, fontSize: 15, fontWeight: '900', letterSpacing: 0.3 }}>
+          Cài đặt
+        </Text>
+        <View style={{ width: 70 }} />
+      </View>
+
+      <ScrollView
+        style={{ flex: 1 }}
+        contentContainerStyle={{ padding: 14, paddingBottom: 36, gap: 16 }}
+        showsVerticalScrollIndicator={false}
+      >
+        {/* ── 1. THẺ TÀI KHOẢN GỌN ── */}
+        {user && (
           <View
             style={{
-              width: 42,
-              height: 42,
-              borderRadius: 12,
-              backgroundColor: colors.primarySoftBg,
+              backgroundColor: colors.surface,
+              borderRadius: 16,
+              padding: 14,
               borderWidth: 1,
-              borderColor: colors.primarySoftBorder,
-              alignItems: 'center',
-              justifyContent: 'center',
+              borderColor: colors.border,
             }}
           >
-            <Ionicons name="color-palette" size={22} color={colors.primary} />
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+              <View
+                style={{
+                  width: 44,
+                  height: 44,
+                  borderRadius: 22,
+                  backgroundColor: colors.primarySoftBg,
+                  borderWidth: 1,
+                  borderColor: colors.primarySoftBorder,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                <Ionicons name="person" size={22} color={colors.primary} />
+              </View>
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <Text style={{ color: colors.text, fontSize: 15, fontWeight: '800' }} numberOfLines={1}>
+                  {user.full_name}
+                </Text>
+                <Text style={{ color: colors.textMuted, fontSize: 12, marginTop: 1 }} numberOfLines={1}>
+                  {user.email || user.username}
+                </Text>
+              </View>
+              <TouchableOpacity
+                onPress={handleLogoutConfirm}
+                activeOpacity={0.75}
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 4,
+                  paddingHorizontal: 10,
+                  paddingVertical: 7,
+                  borderRadius: 10,
+                  backgroundColor: isDark ? 'rgba(239, 68, 68, 0.16)' : '#fef2f2',
+                  borderWidth: 1,
+                  borderColor: isDark ? 'rgba(239, 68, 68, 0.35)' : '#fecaca',
+                }}
+              >
+                <Ionicons name="log-out-outline" size={15} color={isDark ? '#f87171' : '#dc2626'} />
+                <Text style={{ color: isDark ? '#f87171' : '#dc2626', fontSize: 12, fontWeight: '700' }}>
+                  Đăng xuất
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            <View
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 8,
+                marginTop: 12,
+                paddingTop: 10,
+                borderTopWidth: 1,
+                borderTopColor: colors.border,
+              }}
+            >
+              <Ionicons name="business-outline" size={15} color="#059669" />
+              <Text style={{ flex: 1, color: isDark ? '#34d399' : '#047857', fontSize: 12, fontWeight: '700' }} numberOfLines={2}>
+                {user.company?.name || 'Công Ty Cổ Phần Tập Đoàn XNK Trái Cây Chánh Thu'}
+                {user.company?.code ? ` (${user.company.code})` : ''}
+              </Text>
+            </View>
+
+            {(user.employee_code || user.department) && (
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12, marginTop: 6 }}>
+                {user.employee_code && (
+                  <Text style={{ color: colors.textMuted, fontSize: 11 }}>
+                    Mã NV: <Text style={{ color: colors.text, fontWeight: '700' }}>{user.employee_code}</Text>
+                  </Text>
+                )}
+                {user.department && (
+                  <Text style={{ color: colors.textMuted, fontSize: 11 }}>
+                    Phòng ban: <Text style={{ color: colors.text, fontWeight: '700' }}>{user.department}</Text>
+                  </Text>
+                )}
+              </View>
+            )}
           </View>
-          <View style={{ flex: 1 }}>
-            <Text style={{ fontSize: 13, fontWeight: '800', color: colors.text }}>
-              Cài Đặt Giao Diện (Theme) Từng Menu
-            </Text>
-            <Text style={{ fontSize: 11, color: colors.textMuted, marginTop: 2 }}>
-              Tùy chỉnh Sáng / Tối riêng biệt cho từng tab chức năng ({THEME_TAB_META.filter(t => tabThemes[t.key] === 'light').length} Sáng · {THEME_TAB_META.filter(t => tabThemes[t.key] === 'dark').length} Tối)
-            </Text>
+        )}
+
+        {/* ── 2. NHÓM GIAO DIỆN & HÌNH ẢNH ── */}
+        <View>
+          <Text
+            style={{
+              color: colors.textMuted,
+              fontSize: 11,
+              fontWeight: '800',
+              letterSpacing: 0.6,
+              marginBottom: 6,
+              marginLeft: 4,
+            }}
+          >
+            GIAO DIỆN & HÌNH ẢNH
+          </Text>
+          <View
+            style={{
+              backgroundColor: colors.surface,
+              borderRadius: 16,
+              borderWidth: 1,
+              borderColor: colors.border,
+              overflow: 'hidden',
+            }}
+          >
+            {/* Dòng 1: Theme từng menu */}
+            <TouchableOpacity
+              onPress={() => setIsThemeModalOpen(true)}
+              activeOpacity={0.7}
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                paddingHorizontal: 14,
+                paddingVertical: 13,
+                gap: 12,
+              }}
+            >
+              <View
+                style={{
+                  width: 36,
+                  height: 36,
+                  borderRadius: 10,
+                  backgroundColor: colors.primarySoftBg,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                <Ionicons name="color-palette" size={19} color={colors.primary} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={{ color: colors.text, fontSize: 13.5, fontWeight: '700' }}>
+                  Giao diện Sáng / Tối từng Menu
+                </Text>
+                <Text style={{ color: colors.textMuted, fontSize: 11.5, marginTop: 1 }}>
+                  {lightCount} Sáng · {darkCount} Tối
+                </Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+            </TouchableOpacity>
+
+            <View style={{ height: 1, backgroundColor: colors.border, marginLeft: 62 }} />
+
+            {/* Dòng 2: Hình ảnh & Google Drive */}
+            <TouchableOpacity
+              onPress={() => setIsDriveModalVisible(true)}
+              activeOpacity={0.7}
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                paddingHorizontal: 14,
+                paddingVertical: 13,
+                gap: 12,
+              }}
+            >
+              <View
+                style={{
+                  width: 36,
+                  height: 36,
+                  borderRadius: 10,
+                  backgroundColor: isDark ? 'rgba(16, 185, 129, 0.18)' : '#ecfdf5',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                <Ionicons name="images-outline" size={19} color="#059669" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={{ color: colors.text, fontSize: 13.5, fontWeight: '700' }}>
+                  Hình ảnh & Google Drive
+                </Text>
+                <Text style={{ color: colors.textMuted, fontSize: 11.5, marginTop: 1 }}>
+                  Webhook Drive, Timemark & tự xóa ảnh gốc
+                </Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+            </TouchableOpacity>
           </View>
         </View>
-        <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
-      </TouchableOpacity>
+
+        {/* ── 3. NHÓM QUÉT PALLET & THÙNG ── */}
+        <View>
+          <Text
+            style={{
+              color: colors.textMuted,
+              fontSize: 11,
+              fontWeight: '800',
+              letterSpacing: 0.6,
+              marginBottom: 6,
+              marginLeft: 4,
+            }}
+          >
+            QUÉT PALLET & THÙNG
+          </Text>
+          <View
+            style={{
+              backgroundColor: colors.surface,
+              borderRadius: 16,
+              borderWidth: 1,
+              borderColor: colors.border,
+              padding: 14,
+            }}
+          >
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+              <View style={{ flex: 1 }}>
+                <Text style={{ color: colors.text, fontSize: 13.5, fontWeight: '700' }}>
+                  Số thùng mặc định / Pallet
+                </Text>
+                <Text style={{ color: colors.textMuted, fontSize: 11.5, marginTop: 1 }}>
+                  Dùng cho Quét Đóng Dấu & Quét Tem
+                </Text>
+              </View>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <TextInput
+                  style={{
+                    width: 64,
+                    height: 38,
+                    borderRadius: 10,
+                    backgroundColor: colors.surfaceAlt,
+                    borderWidth: 1,
+                    borderColor: colors.border,
+                    color: colors.text,
+                    fontSize: 16,
+                    fontWeight: '800',
+                    textAlign: 'center',
+                  }}
+                  value={defaultTargetQty}
+                  onChangeText={setDefaultTargetQtyState}
+                  keyboardType="number-pad"
+                  placeholder="30"
+                  placeholderTextColor={colors.textMuted}
+                />
+                <TouchableOpacity
+                  onPress={() => handleSaveTargetBoxQty()}
+                  disabled={savingTargetQty}
+                  activeOpacity={0.8}
+                  style={{
+                    height: 38,
+                    paddingHorizontal: 12,
+                    borderRadius: 10,
+                    backgroundColor: colors.primary,
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                >
+                  {savingTargetQty ? (
+                    <ActivityIndicator color="#fff" size="small" />
+                  ) : (
+                    <Text style={{ color: '#fff', fontSize: 12, fontWeight: '800' }}>Lưu</Text>
+                  )}
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            {/* Chọn nhanh */}
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 10 }}>
+              {[20, 24, 30, 36, 40, 50].map((num) => {
+                const isSelected = defaultTargetQty === String(num);
+                return (
+                  <TouchableOpacity
+                    key={num}
+                    activeOpacity={0.75}
+                    onPress={() => {
+                      setDefaultTargetQtyState(String(num));
+                      handleSaveTargetBoxQty(num);
+                    }}
+                    style={{
+                      paddingHorizontal: 10,
+                      paddingVertical: 6,
+                      borderRadius: 8,
+                      backgroundColor: isSelected ? colors.primarySoftBg : colors.surfaceAlt,
+                      borderWidth: 1,
+                      borderColor: isSelected ? colors.primary : colors.border,
+                    }}
+                  >
+                    <Text
+                      style={{
+                        color: isSelected ? colors.primary : colors.textMuted,
+                        fontSize: 12,
+                        fontWeight: isSelected ? '800' : '600',
+                      }}
+                    >
+                      {num}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+
+            <View style={{ height: 1, backgroundColor: colors.border, marginVertical: 12 }} />
+
+            {/* Tự động chốt khi đủ thùng */}
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+              <View style={{ flex: 1 }}>
+                <Text style={{ color: colors.text, fontSize: 13.5, fontWeight: '700' }}>
+                  Tự động chốt khi đủ {defaultTargetQty || 30} thùng
+                </Text>
+                <Text style={{ color: colors.textMuted, fontSize: 11.5, marginTop: 1 }}>
+                  Tự hoàn thành Pallet ngay khi quét đủ chỉ tiêu
+                </Text>
+              </View>
+              <Switch
+                value={autoCompleteOnFull}
+                onValueChange={handleToggleAutoComplete}
+                trackColor={{ false: isDark ? '#334155' : '#cbd5e1', true: '#10b981' }}
+                thumbColor="#ffffff"
+              />
+            </View>
+          </View>
+        </View>
+
+        {/* ── 4. NHÓM DỮ LIỆU NGOẠI TUYẾN (GOM 1 KHỐI GỌN) ── */}
+        <View>
+          <Text
+            style={{
+              color: colors.textMuted,
+              fontSize: 11,
+              fontWeight: '800',
+              letterSpacing: 0.6,
+              marginBottom: 6,
+              marginLeft: 4,
+            }}
+          >
+            DỮ LIỆU NGOẠI TUYẾN (KHO LẠNH)
+          </Text>
+          <View
+            style={{
+              backgroundColor: colors.surface,
+              borderRadius: 16,
+              borderWidth: 1,
+              borderColor: colors.border,
+              overflow: 'hidden',
+            }}
+          >
+            {/* Nút tải tất cả */}
+            <View style={{ padding: 14, borderBottomWidth: 1, borderBottomColor: colors.border }}>
+              <TouchableOpacity
+                onPress={handleSyncAllMaster}
+                disabled={syncingAllMaster}
+                activeOpacity={0.85}
+                style={{
+                  backgroundColor: colors.primary,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 8,
+                  paddingVertical: 12,
+                  borderRadius: 12,
+                }}
+              >
+                {syncingAllMaster ? (
+                  <ActivityIndicator color="#fff" size="small" />
+                ) : (
+                  <Ionicons name="cloud-download-outline" size={18} color="#fff" />
+                )}
+                <Text style={{ color: '#fff', fontSize: 13.5, fontWeight: '800' }}>
+                  {syncingAllMaster ? 'Đang tải toàn bộ dữ liệu...' : 'Tải toàn bộ dữ liệu làm việc'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            {/* Dòng: Sơ đồ kho */}
+            <View
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                paddingHorizontal: 14,
+                paddingVertical: 11,
+                gap: 10,
+              }}
+            >
+              <Ionicons name="map-outline" size={18} color="#059669" />
+              <View style={{ flex: 1 }}>
+                <Text style={{ color: colors.text, fontSize: 13, fontWeight: '700' }}>
+                  Sơ đồ kho · {warehouseMapCount.toLocaleString('vi-VN')} vị trí
+                  {warehouseMapWarehouses > 0 ? ` (${warehouseMapWarehouses} kho)` : ''}
+                </Text>
+                <Text style={{ color: colors.textMuted, fontSize: 11, marginTop: 1 }}>
+                  Cập nhật: {formatShortSync(lastWarehouseMapSync)}
+                </Text>
+              </View>
+              <TouchableOpacity
+                onPress={handleSyncWarehouseMap}
+                disabled={syncingWarehouseMap}
+                style={{
+                  width: 34,
+                  height: 34,
+                  borderRadius: 10,
+                  backgroundColor: colors.surfaceAlt,
+                  borderWidth: 1,
+                  borderColor: colors.border,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                {syncingWarehouseMap ? (
+                  <ActivityIndicator size="small" color="#059669" />
+                ) : (
+                  <Ionicons name="refresh" size={16} color={colors.text} />
+                )}
+              </TouchableOpacity>
+            </View>
+
+            <View style={{ height: 1, backgroundColor: colors.border, marginLeft: 42 }} />
+
+            {/* Dòng: Danh sách LOT */}
+            <View
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                paddingHorizontal: 14,
+                paddingVertical: 11,
+                gap: 10,
+              }}
+            >
+              <Ionicons name="layers-outline" size={18} color="#0284c7" />
+              <View style={{ flex: 1 }}>
+                <Text style={{ color: colors.text, fontSize: 13, fontWeight: '700' }}>
+                  Danh sách LOT · {offlinePalletsCount.toLocaleString('vi-VN')} LOT
+                </Text>
+                <Text style={{ color: colors.textMuted, fontSize: 11, marginTop: 1 }}>
+                  Cập nhật: {formatShortSync(lastOfflineSync)}
+                </Text>
+              </View>
+              <TouchableOpacity
+                onPress={handleSyncOfflinePallets}
+                disabled={syncingOfflinePallets}
+                style={{
+                  width: 34,
+                  height: 34,
+                  borderRadius: 10,
+                  backgroundColor: colors.surfaceAlt,
+                  borderWidth: 1,
+                  borderColor: colors.border,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                {syncingOfflinePallets ? (
+                  <ActivityIndicator size="small" color="#0284c7" />
+                ) : (
+                  <Ionicons name="refresh" size={16} color={colors.text} />
+                )}
+              </TouchableOpacity>
+            </View>
+
+            <View style={{ height: 1, backgroundColor: colors.border, marginLeft: 42 }} />
+
+            {/* Dòng: Quy tắc dấu đóng */}
+            <View
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                paddingHorizontal: 14,
+                paddingVertical: 11,
+                gap: 10,
+              }}
+            >
+              <Ionicons name="barcode-outline" size={18} color="#7c3aed" />
+              <View style={{ flex: 1 }}>
+                <Text style={{ color: colors.text, fontSize: 13, fontWeight: '700' }}>
+                  Quy tắc dấu đóng · {stampRulesCount} quy tắc
+                </Text>
+                <Text style={{ color: colors.textMuted, fontSize: 11, marginTop: 1 }}>
+                  Cập nhật: {formatShortSync(lastStampSync)}
+                </Text>
+              </View>
+              <TouchableOpacity
+                onPress={handleSyncStampRules}
+                disabled={syncingStamp}
+                style={{
+                  width: 34,
+                  height: 34,
+                  borderRadius: 10,
+                  backgroundColor: colors.surfaceAlt,
+                  borderWidth: 1,
+                  borderColor: colors.border,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                {syncingStamp ? (
+                  <ActivityIndicator size="small" color="#7c3aed" />
+                ) : (
+                  <Ionicons name="refresh" size={16} color={colors.text} />
+                )}
+              </TouchableOpacity>
+            </View>
+
+            <View style={{ height: 1, backgroundColor: colors.border }} />
+
+            {/* Switch tự động tải ngầm */}
+            <View
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                paddingHorizontal: 14,
+                paddingVertical: 11,
+                gap: 10,
+              }}
+            >
+              <View style={{ flex: 1 }}>
+                <Text style={{ color: colors.text, fontSize: 13, fontWeight: '700' }}>
+                  Tự động tải ngầm khi có Wi-Fi
+                </Text>
+                <Text style={{ color: colors.textMuted, fontSize: 11, marginTop: 1 }}>
+                  Cập nhật LOT & Quy tắc dấu khi có mạng
+                </Text>
+              </View>
+              <Switch
+                value={autoSyncEnabled}
+                onValueChange={async (val) => {
+                  setAutoSyncEnabledState(val);
+                  await setAutoSyncEnabled(val);
+                }}
+                trackColor={{ false: isDark ? '#334155' : '#cbd5e1', true: colors.primary }}
+                thumbColor="#ffffff"
+              />
+            </View>
+          </View>
+        </View>
+
+        {/* ── 5. CẤU HÌNH MÁY CHỦ (KỸ THUẬT VIÊN - ẨN MẶC ĐỊNH) ── */}
+        {showAdvancedConfig && (
+          <View
+            style={{
+              backgroundColor: colors.surface,
+              borderRadius: 16,
+              padding: 14,
+              borderWidth: 1,
+              borderColor: '#f59e0b',
+              gap: 10,
+            }}
+          >
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <Ionicons name="construct-outline" size={16} color="#d97706" />
+                <Text style={{ color: '#d97706', fontSize: 12, fontWeight: '800' }}>
+                  CẤU HÌNH MÁY CHỦ (KỸ THUẬT)
+                </Text>
+              </View>
+              <TouchableOpacity onPress={() => setShowAdvancedConfig(false)}>
+                <Text style={{ color: colors.textMuted, fontSize: 12, fontWeight: '700' }}>Ẩn</Text>
+              </TouchableOpacity>
+            </View>
+
+            <View>
+              <Text style={{ color: colors.textMuted, fontSize: 11.5, fontWeight: '700', marginBottom: 4 }}>
+                Supabase URL
+              </Text>
+              <TextInput
+                style={{
+                  backgroundColor: colors.surfaceAlt,
+                  color: colors.text,
+                  borderRadius: 10,
+                  paddingHorizontal: 12,
+                  paddingVertical: 9,
+                  borderWidth: 1,
+                  borderColor: colors.border,
+                  fontSize: 12.5,
+                }}
+                value={url}
+                onChangeText={setUrl}
+                placeholder="https://api.chanhthu.click"
+                placeholderTextColor={colors.textMuted}
+                autoCapitalize="none"
+              />
+            </View>
+
+            <View>
+              <Text style={{ color: colors.textMuted, fontSize: 11.5, fontWeight: '700', marginBottom: 4 }}>
+                Mã phân hệ kho (system_code)
+              </Text>
+              <TextInput
+                style={{
+                  backgroundColor: colors.surfaceAlt,
+                  color: colors.text,
+                  borderRadius: 10,
+                  paddingHorizontal: 12,
+                  paddingVertical: 9,
+                  borderWidth: 1,
+                  borderColor: colors.border,
+                  fontSize: 12.5,
+                }}
+                value={systemCode}
+                onChangeText={setSystemCode}
+                placeholder="KHO_DONG_LANH"
+                placeholderTextColor={colors.textMuted}
+              />
+            </View>
+
+            <View>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                <Text style={{ color: colors.textMuted, fontSize: 11.5, fontWeight: '700' }}>Anon Key</Text>
+                <TouchableOpacity onPress={() => setShowKeyPlain(s => !s)}>
+                  <Text style={{ color: colors.primary, fontSize: 11.5, fontWeight: '700' }}>
+                    {showKeyPlain ? 'Ẩn mã' : 'Xem mã'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+              <TextInput
+                style={{
+                  backgroundColor: colors.surfaceAlt,
+                  color: colors.text,
+                  borderRadius: 10,
+                  paddingHorizontal: 12,
+                  paddingVertical: 9,
+                  borderWidth: 1,
+                  borderColor: colors.border,
+                  fontSize: 11.5,
+                  height: showKeyPlain ? 70 : 40,
+                }}
+                value={anonKey}
+                onChangeText={setAnonKey}
+                secureTextEntry={!showKeyPlain}
+                multiline={showKeyPlain}
+                placeholder="eyJhbGciOi..."
+                placeholderTextColor={colors.textMuted}
+              />
+            </View>
+
+            <View style={{ flexDirection: 'row', gap: 8, marginTop: 4 }}>
+              <TouchableOpacity
+                onPress={handleTest}
+                disabled={testing}
+                style={{
+                  flex: 1,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 6,
+                  paddingVertical: 10,
+                  borderRadius: 10,
+                  backgroundColor: colors.surfaceAlt,
+                  borderWidth: 1,
+                  borderColor: colors.border,
+                }}
+              >
+                {testing ? (
+                  <ActivityIndicator color={colors.primary} size="small" />
+                ) : (
+                  <>
+                    <Ionicons name="pulse-outline" size={16} color={colors.primary} />
+                    <Text style={{ color: colors.primary, fontSize: 12.5, fontWeight: '700' }}>Kiểm tra</Text>
+                  </>
+                )}
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={handleSave}
+                style={{
+                  flex: 1,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 6,
+                  paddingVertical: 10,
+                  borderRadius: 10,
+                  backgroundColor: '#059669',
+                }}
+              >
+                <Ionicons name="save-outline" size={16} color="#fff" />
+                <Text style={{ color: '#fff', fontSize: 12.5, fontWeight: '800' }}>Lưu cấu hình</Text>
+              </TouchableOpacity>
+            </View>
+
+            {testResult && (
+              <View
+                style={{
+                  backgroundColor: colors.surfaceAlt,
+                  padding: 10,
+                  borderRadius: 10,
+                  borderWidth: 1,
+                  borderColor: colors.border,
+                }}
+              >
+                <Text style={{ color: colors.text, fontSize: 12 }}>{testResult}</Text>
+              </View>
+            )}
+          </View>
+        )}
+
+        {/* ── 6. PHIÊN BẢN ── */}
+        <TouchableOpacity
+          onPress={handleVersionTap}
+          activeOpacity={0.7}
+          style={{ alignItems: 'center', paddingVertical: 8 }}
+        >
+          <Text style={{ color: colors.textMuted, fontSize: 12, fontWeight: '600' }}>
+            Phiên bản v1.0.82 · Chánh Thu WMS
+          </Text>
+          {showAdvancedConfig && (
+            <Text style={{ color: '#d97706', fontSize: 11, fontWeight: '700', marginTop: 2 }}>
+              Chế độ kỹ thuật viên đang mở (Chạm 5 lần để ẩn)
+            </Text>
+          )}
+        </TouchableOpacity>
+      </ScrollView>
 
       {/* Modal Tùy Chỉnh Theme Sáng / Tối Cho Từng Menu */}
       <Modal
@@ -370,7 +1068,7 @@ export default function SettingsScreen({ onBack }: { onBack: () => void }) {
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                 <Ionicons name="color-palette" size={20} color={colors.primary} />
                 <Text style={{ fontSize: 15, fontWeight: '800', color: colors.text }}>
-                  Giao Diện Sáng / Tối Theo Từng Menu
+                  Giao diện Sáng / Tối từng Menu
                 </Text>
               </View>
               <TouchableOpacity onPress={() => setIsThemeModalOpen(false)} style={{ padding: 4 }}>
@@ -378,7 +1076,6 @@ export default function SettingsScreen({ onBack }: { onBack: () => void }) {
               </TouchableOpacity>
             </View>
 
-            {/* 2 Nút đặt nhanh tất cả */}
             <View style={{ flexDirection: 'row', gap: 8, marginTop: 12, marginBottom: 10 }}>
               <TouchableOpacity
                 onPress={() => setAllTabsTheme('light')}
@@ -464,7 +1161,6 @@ export default function SettingsScreen({ onBack }: { onBack: () => void }) {
                       </View>
                     </View>
 
-                    {/* Công tắc Sáng / Tối riêng cho Menu này */}
                     <View
                       style={{
                         flexDirection: 'row',
@@ -519,662 +1215,12 @@ export default function SettingsScreen({ onBack }: { onBack: () => void }) {
         </View>
       </Modal>
 
-      {/* ── THÔNG TIN TÀI KHOẢN ĐĂNG NHẬP ────── */}
-      {user && (
-        <View style={styles.userCard}>
-          <View style={styles.userHeader}>
-            <View style={styles.userAvatar}>
-              <Ionicons name="person" size={24} color="#38bdf8" />
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.userName}>{user.full_name}</Text>
-              <Text style={styles.userEmail}>{user.email || user.username}</Text>
-            </View>
-          </View>
-
-          {/* Company Badge */}
-          <View style={styles.companyBox}>
-            <Ionicons name="business-outline" size={18} color="#10b981" />
-            <View style={{ flex: 1 }}>
-              <Text style={styles.companyLabel}>Công ty trực thuộc:</Text>
-              <Text style={styles.companyName}>
-                {user.company?.name || 'Công Ty Cổ Phần Tập Đoàn XNK Trái Cây Chánh Thu'}
-                {user.company?.code ? ` (${user.company.code})` : ''}
-              </Text>
-            </View>
-          </View>
-
-          {/* Department / Employee code if available */}
-          {(user.employee_code || user.department) && (
-            <View style={styles.userMetaRow}>
-              {user.employee_code && (
-                <Text style={styles.userMetaText}>Mã NV: <Text style={styles.userMetaBold}>{user.employee_code}</Text></Text>
-              )}
-              {user.department && (
-                <Text style={styles.userMetaText}>Phòng ban: <Text style={styles.userMetaBold}>{user.department}</Text></Text>
-              )}
-            </View>
-          )}
-
-          <TouchableOpacity style={styles.logoutBtn} onPress={handleLogoutConfirm}>
-            <Ionicons name="log-out-outline" size={18} color="#ef4444" />
-            <Text style={styles.logoutBtnText}>Đăng xuất tài khoản</Text>
-          </TouchableOpacity>
-        </View>
-      )}
-
-      {/* ── CẤU HÌNH MỤC TIÊU SỐ THÙNG (PALLET) ───────── */}
-      <View style={[styles.card, { borderColor: '#f59e0b', borderWidth: 1.5, backgroundColor: '#0b1329' }]}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-          <Ionicons name="cube-outline" size={20} color="#fbbf24" />
-          <Text style={[styles.sectionTitle, { color: '#fbbf24', marginBottom: 0 }]}>
-            MỤC TIÊU SỐ THÙNG MẶC ĐỊNH (PALLET)
-          </Text>
-        </View>
-
-        <Text style={{ color: '#94a3b8', fontSize: 12, lineHeight: 18, marginBottom: 12 }}>
-          Số lượng thùng tiêu chuẩn trên một Pallet khi bạn tạo mới Pallet ở chức năng <Text style={{ color: '#38bdf8', fontWeight: '700' }}>Quét Đóng Dấu</Text> và <Text style={{ color: '#10b981', fontWeight: '700' }}>Quét Tem</Text>.
-        </Text>
-
-        <Text style={styles.label}>Số thùng tiêu chuẩn (Mặc định khi tạo Pallet):</Text>
-        <TextInput
-          style={[styles.input, { fontSize: 20, fontWeight: '800', color: '#fbbf24', textAlign: 'center', letterSpacing: 1 }]}
-          value={defaultTargetQty}
-          onChangeText={setDefaultTargetQtyState}
-          keyboardType="number-pad"
-          placeholder="30"
-          placeholderTextColor="#64748b"
-        />
-
-        {/* Nút gợi ý nhanh số thùng phổ biến */}
-        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 10, marginBottom: 14 }}>
-          {[20, 24, 30, 36, 40, 50].map((num) => {
-            const isSelected = defaultTargetQty === String(num);
-            return (
-              <TouchableOpacity
-                key={num}
-                style={{
-                  paddingHorizontal: 12,
-                  paddingVertical: 7,
-                  borderRadius: 8,
-                  backgroundColor: isSelected ? 'rgba(245, 158, 11, 0.25)' : '#1e293b',
-                  borderWidth: 1,
-                  borderColor: isSelected ? '#fbbf24' : '#334155',
-                }}
-                onPress={() => {
-                  setDefaultTargetQtyState(String(num));
-                  handleSaveTargetBoxQty(num);
-                }}
-              >
-                <Text style={{ color: isSelected ? '#fbbf24' : '#cbd5e1', fontSize: 12, fontWeight: '700' }}>
-                  {num} thùng
-                </Text>
-              </TouchableOpacity>
-            );
-          })}
-        </View>
-
-        {/* Tuỳ chọn tự động chốt Pallet khi đủ số thùng */}
-        <View style={[styles.autoSyncRow, { marginTop: 4, marginBottom: 14, backgroundColor: '#0f172a', borderColor: '#334155' }]}>
-          <View style={{ flex: 1, paddingRight: 10 }}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-              <Ionicons name="checkmark-done-circle" size={17} color="#10b981" />
-              <Text style={styles.autoSyncLabel}>Tự động chốt khi quét đủ số thùng</Text>
-            </View>
-            <Text style={styles.autoSyncSub}>
-              Khi đạt chỉ tiêu ({defaultTargetQty} thùng), hệ thống sẽ tự động hoàn thành & chốt Pallet ngay mà không cần thao tác thêm.
-            </Text>
-          </View>
-          <Switch
-            value={autoCompleteOnFull}
-            onValueChange={handleToggleAutoComplete}
-            trackColor={{ false: '#334155', true: '#059669' }}
-            thumbColor={autoCompleteOnFull ? '#10b981' : '#94a3b8'}
-          />
-        </View>
-
-        <TouchableOpacity 
-          style={{
-            backgroundColor: '#d97706',
-            flexDirection: 'row',
-            alignItems: 'center',
-            justifyContent: 'center',
-            gap: 8,
-            paddingVertical: 12,
-            borderRadius: 12,
-          }}
-          onPress={() => handleSaveTargetBoxQty()}
-          disabled={savingTargetQty}
-        >
-          {savingTargetQty ? (
-            <ActivityIndicator color="#fff" size="small" />
-          ) : (
-            <Ionicons name="save-outline" size={18} color="#fff" />
-          )}
-          <Text style={{ color: '#fff', fontWeight: '800', fontSize: 13 }}>
-            {savingTargetQty ? 'Đang lưu...' : 'Lưu Cài Đặt Số Thùng Mặc Định'}
-          </Text>
-        </TouchableOpacity>
-      </View>
-
-      {/* ── CẬP NHẬT QUY TẮC DẤU ĐÓNG TỪ WEB ─────── */}
-      <View style={styles.card}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-          <Ionicons name="barcode-outline" size={20} color="#a855f7" />
-          <Text style={[styles.sectionTitle, { color: '#a855f7', marginBottom: 0 }]}>
-            QUY TẮC GIẢI MÃ DẤU ĐÓNG (OFFLINE)
-          </Text>
-        </View>
-
-        <Text style={{ color: '#94a3b8', fontSize: 12, lineHeight: 18, marginBottom: 12 }}>
-          Dữ liệu này được lưu trong bộ nhớ máy để tự động giải mã 2 dòng dấu đóng ngay cả khi không có mạng wifi trong kho lạnh.
-        </Text>
-
-        <View style={{ backgroundColor: '#0f172a', padding: 12, borderRadius: 12, marginBottom: 14, borderWidth: 1, borderColor: '#334155' }}>
-          <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 }}>
-            <Text style={{ color: '#94a3b8', fontSize: 12 }}>Số quy tắc trong máy:</Text>
-            <Text style={{ color: '#38bdf8', fontSize: 13, fontWeight: '700' }}>{stampRulesCount} quy tắc</Text>
-          </View>
-          <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-            <Text style={{ color: '#94a3b8', fontSize: 12 }}>Cập nhật lần cuối:</Text>
-            <Text style={{ color: '#cbd5e1', fontSize: 11, fontStyle: 'italic' }}>
-              {lastStampSync ? new Date(lastStampSync).toLocaleString('vi-VN') : 'Dữ liệu mặc định'}
-            </Text>
-          </View>
-        </View>
-
-        <TouchableOpacity 
-          style={{ backgroundColor: '#7c3aed', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 12, borderRadius: 12 }}
-          onPress={handleSyncStampRules}
-          disabled={syncingStamp}
-        >
-          {syncingStamp ? (
-            <ActivityIndicator color="#fff" size="small" />
-          ) : (
-            <Ionicons name="cloud-download-outline" size={18} color="#fff" />
-          )}
-          <Text style={{ color: '#fff', fontWeight: '700', fontSize: 13 }}>
-            {syncingStamp ? 'Đang tải từ Server...' : 'Tải / Cập nhật quy tắc từ Server'}
-          </Text>
-        </TouchableOpacity>
-      </View>
-
-      {/* ── CÀI ĐẶT HÌNH ẢNH & GOOGLE DRIVE ───────── */}
-      <View style={[styles.card, { borderColor: '#10b981', borderWidth: 1 }]}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-            <Ionicons name="images" size={20} color="#34d399" />
-            <Text style={[styles.sectionTitle, { color: '#34d399', marginBottom: 0 }]}>
-              HÌNH ẢNH & GOOGLE DRIVE
-            </Text>
-          </View>
-        </View>
-
-        <Text style={{ color: '#94a3b8', fontSize: 12, lineHeight: 18, marginBottom: 12 }}>
-          Cấu hình Webhook Google Drive, tùy chọn tự động xóa ảnh gốc trên máy sau 1/3/7/14/30 ngày và đóng dấu thông tin Timemark lên ảnh.
-        </Text>
-
-        <TouchableOpacity 
-          style={{ backgroundColor: '#10b981', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 12, borderRadius: 12 }}
-          onPress={() => setIsDriveModalVisible(true)}
-        >
-          <Ionicons name="settings-outline" size={18} color="#fff" />
-          <Text style={{ color: '#fff', fontWeight: '700', fontSize: 13 }}>
-            Cài Đặt Hình Ảnh & Google Drive
-          </Text>
-        </TouchableOpacity>
-      </View>
-
-      {/* ── NÚT TỔNG HỢP: TẢI TOÀN BỘ DỮ LIỆU KHO (ALL-IN-ONE) ───────── */}
-      <View style={[styles.card, { borderColor: '#38bdf8', borderWidth: 1.5, backgroundColor: '#071626' }]}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-          <Ionicons name="flash" size={20} color="#38bdf8" />
-          <Text style={[styles.sectionTitle, { color: '#38bdf8', marginBottom: 0, fontSize: 14 }]}>
-            TẢI TOÀN BỘ DỮ LIỆU KHO (ALL-IN-ONE)
-          </Text>
-        </View>
-
-        <Text style={{ color: '#94a3b8', fontSize: 12, lineHeight: 18, marginBottom: 14 }}>
-          Tải đồng bộ đầy đủ 100% dữ liệu: <Text style={{ color: '#10b981', fontWeight: '700' }}>Sơ Đồ 6 Kho (7.820 vị trí)</Text>, <Text style={{ color: '#38bdf8', fontWeight: '700' }}>Danh sách LOT Pallet</Text>, và <Text style={{ color: '#fbbf24', fontWeight: '700' }}>Quy tắc dấu đóng</Text> để sẵn sàng sử dụng ngoại tuyến cho tất cả tính năng (Quét tem, Sơ đồ kho, Kiểm kê).
-        </Text>
-
-        <TouchableOpacity 
-          style={{
-            backgroundColor: '#0284c7',
-            flexDirection: 'row',
-            alignItems: 'center',
-            justifyContent: 'center',
-            gap: 10,
-            paddingVertical: 14,
-            borderRadius: 12,
-            shadowColor: '#0284c7',
-            shadowOffset: { width: 0, height: 4 },
-            shadowOpacity: 0.3,
-            shadowRadius: 8,
-            elevation: 4
-          }}
-          onPress={handleSyncAllMaster}
-          disabled={syncingAllMaster}
-        >
-          {syncingAllMaster ? (
-            <ActivityIndicator color="#fff" size="small" />
-          ) : (
-            <Ionicons name="cloud-download" size={20} color="#fff" />
-          )}
-          <Text style={{ color: '#fff', fontWeight: '800', fontSize: 14, letterSpacing: 0.5 }}>
-            {syncingAllMaster ? 'Đang tải toàn bộ dữ liệu kho...' : '⚡ TẢI TOÀN BỘ DỮ LIỆU LÀM VIỆC'}
-          </Text>
-        </TouchableOpacity>
-      </View>
-
-      {/* ── TẢI DANH SÁCH LOT XEM NGOẠI TUYẾN ─────── */}
-      <View style={styles.card}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-          <Ionicons name="cloud-offline-outline" size={20} color="#0ea5e9" />
-          <Text style={[styles.sectionTitle, { color: '#0ea5e9', marginBottom: 0 }]}>
-            DỮ LIỆU LOT XEM NGOẠI TUYẾN (OFFLINE)
-          </Text>
-        </View>
-
-        <Text style={{ color: '#94a3b8', fontSize: 12, lineHeight: 18, marginBottom: 12 }}>
-          Lưu trữ toàn bộ danh sách LOT và danh mục sản phẩm vào bộ nhớ máy để tra cứu, tìm kiếm và lọc khi mất sóng hoặc ở sâu trong kho lạnh.
-        </Text>
-
-        <View style={{ backgroundColor: '#0f172a', padding: 12, borderRadius: 12, marginBottom: 14, borderWidth: 1, borderColor: '#334155' }}>
-          <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 }}>
-            <Text style={{ color: '#94a3b8', fontSize: 12 }}>Số LOT lưu trong máy:</Text>
-            <Text style={{ color: '#10b981', fontSize: 13, fontWeight: '700' }}>{offlinePalletsCount} LOT</Text>
-          </View>
-          <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-            <Text style={{ color: '#94a3b8', fontSize: 12 }}>Đồng bộ lần cuối:</Text>
-            <Text style={{ color: '#cbd5e1', fontSize: 11, fontStyle: 'italic' }}>
-              {lastOfflineSync ? new Date(lastOfflineSync).toLocaleString('vi-VN') : 'Chưa tải về'}
-            </Text>
-          </View>
-        </View>
-
-        {/* Nút gạt bật/tắt tự động tải ngầm */}
-        <View style={styles.autoSyncRow}>
-          <View style={{ flex: 1, paddingRight: 10 }}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-              <Ionicons name="sync-circle" size={17} color="#38bdf8" />
-              <Text style={styles.autoSyncLabel}>Tự động tải ngầm khi có mạng</Text>
-            </View>
-            <Text style={styles.autoSyncSub}>
-              Tự động cập nhật dữ liệu LOT & Quy tắc khi mở app hoặc khi vừa có Wi-Fi trở lại
-            </Text>
-          </View>
-          <Switch
-            value={autoSyncEnabled}
-            onValueChange={async (val) => {
-              setAutoSyncEnabledState(val);
-              await setAutoSyncEnabled(val);
-            }}
-            trackColor={{ false: '#334155', true: '#0284c7' }}
-            thumbColor={autoSyncEnabled ? '#38bdf8' : '#94a3b8'}
-          />
-        </View>
-
-        <TouchableOpacity 
-          style={{ backgroundColor: '#0284c7', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 12, borderRadius: 12 }}
-          onPress={handleSyncOfflinePallets}
-          disabled={syncingOfflinePallets}
-        >
-          {syncingOfflinePallets ? (
-            <ActivityIndicator color="#fff" size="small" />
-          ) : (
-            <Ionicons name="download-outline" size={18} color="#fff" />
-          )}
-          <Text style={{ color: '#fff', fontWeight: '700', fontSize: 13 }}>
-            {syncingOfflinePallets ? 'Đang tải dữ liệu LOT...' : 'Tải / Cập nhật dữ liệu LOT về máy'}
-          </Text>
-        </TouchableOpacity>
-      </View>
-
-      {/* ── TẢI SƠ ĐỒ KHO XEM NGOẠI TUYẾN ─────────── */}
-      <View style={styles.card}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-          <Ionicons name="map-outline" size={20} color="#10b981" />
-          <Text style={[styles.sectionTitle, { color: '#10b981', marginBottom: 0 }]}>
-            SƠ ĐỒ KHO XEM NGOẠI TUYẾN (OFFLINE)
-          </Text>
-        </View>
-
-        <Text style={{ color: '#94a3b8', fontSize: 12, lineHeight: 18, marginBottom: 12 }}>
-          Lưu trữ toàn bộ sơ đồ phân cấp (Kho, Dãy, Ô, Tầng) và vị trí Pallet vào máy để nhân viên mang vào kho đông kiểm tra khi không có mạng.
-        </Text>
-
-        <View style={{ backgroundColor: '#0f172a', padding: 12, borderRadius: 12, marginBottom: 14, borderWidth: 1, borderColor: '#334155' }}>
-          <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 }}>
-            <Text style={{ color: '#94a3b8', fontSize: 12 }}>Số vị trí lưu trong máy:</Text>
-            <Text style={{ color: '#10b981', fontSize: 13, fontWeight: '700' }}>
-              {warehouseMapCount} vị trí {warehouseMapWarehouses > 0 ? `(${warehouseMapWarehouses} kho)` : ''}
-            </Text>
-          </View>
-          <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-            <Text style={{ color: '#94a3b8', fontSize: 12 }}>Đồng bộ lần cuối:</Text>
-            <Text style={{ color: '#cbd5e1', fontSize: 11, fontStyle: 'italic' }}>
-              {lastWarehouseMapSync ? new Date(lastWarehouseMapSync).toLocaleString('vi-VN') : 'Chưa tải về'}
-            </Text>
-          </View>
-        </View>
-
-        <TouchableOpacity 
-          style={{ backgroundColor: '#059669', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 12, borderRadius: 12 }}
-          onPress={handleSyncWarehouseMap}
-          disabled={syncingWarehouseMap}
-        >
-          {syncingWarehouseMap ? (
-            <ActivityIndicator color="#fff" size="small" />
-          ) : (
-            <Ionicons name="download-outline" size={18} color="#fff" />
-          )}
-          <Text style={{ color: '#fff', fontWeight: '700', fontSize: 13 }}>
-            {syncingWarehouseMap ? 'Đang tải sơ đồ kho...' : 'Tải / Cập nhật Sơ Đồ Kho về máy'}
-          </Text>
-        </TouchableOpacity>
-      </View>
-
-      {/* ── CẤU HÌNH MÁY CHỦ (NÂNG CAO - ẨN MẶC ĐỊNH) ─────────────────── */}
-      {showAdvancedConfig && (
-        <View style={[styles.card, { borderColor: 'rgba(245, 158, 11, 0.4)', borderWidth: 1.5 }]}>
-          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-              <Ionicons name="construct" size={17} color="#f59e0b" />
-              <Text style={[styles.sectionTitle, { marginBottom: 0, color: '#f59e0b' }]}>CẤU HÌNH MÁY CHỦ (KỸ THUẬT)</Text>
-            </View>
-            <TouchableOpacity 
-              onPress={() => setShowAdvancedConfig(false)}
-              style={{ backgroundColor: '#1e293b', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6 }}
-            >
-              <Text style={{ color: '#94a3b8', fontSize: 11, fontWeight: '700' }}>Đóng lại</Text>
-            </TouchableOpacity>
-          </View>
-
-          <Text style={styles.label}>Tên miền máy chủ Supabase:</Text>
-          <TextInput
-            style={styles.input}
-            value={url}
-            onChangeText={setUrl}
-            placeholder="https://api.chanhthu.click"
-            placeholderTextColor="#64748b"
-            autoCapitalize="none"
-          />
-
-          <Text style={styles.label}>Mã hệ thống kho (system_code):</Text>
-          <TextInput
-            style={styles.input}
-            value={systemCode}
-            onChangeText={setSystemCode}
-            placeholder="KHO_DONG_LANH"
-            placeholderTextColor="#64748b"
-          />
-
-          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 10, marginBottom: 4 }}>
-            <Text style={[styles.label, { marginTop: 0, marginBottom: 0 }]}>Anon Key (Mã truy cập Client):</Text>
-            <TouchableOpacity 
-              onPress={() => setShowKeyPlain(s => !s)} 
-              style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}
-            >
-              <Ionicons name={showKeyPlain ? "eye-off-outline" : "eye-outline"} size={14} color="#38bdf8" />
-              <Text style={{ color: '#38bdf8', fontSize: 11, fontWeight: '700' }}>
-                {showKeyPlain ? 'Ẩn mã' : 'Xem mã'}
-              </Text>
-            </TouchableOpacity>
-          </View>
-
-          <TextInput
-            style={[styles.input, { height: showKeyPlain ? 70 : 44, fontSize: 11 }]}
-            value={anonKey}
-            onChangeText={setAnonKey}
-            secureTextEntry={!showKeyPlain}
-            multiline={showKeyPlain}
-            placeholder="eyJhbGciOi..."
-            placeholderTextColor="#64748b"
-          />
-
-          <View style={styles.btnRow}>
-            <TouchableOpacity style={styles.testBtn} onPress={handleTest} disabled={testing}>
-              {testing ? (
-                <ActivityIndicator color="#38bdf8" />
-              ) : (
-                <>
-                  <Ionicons name="pulse-outline" size={18} color="#38bdf8" />
-                  <Text style={styles.testBtnText}>Kiểm tra kết nối</Text>
-                </>
-              )}
-            </TouchableOpacity>
-
-            <TouchableOpacity style={styles.saveBtn} onPress={handleSave}>
-              <Ionicons name="save-outline" size={18} color="#fff" />
-              <Text style={styles.saveBtnText}>Lưu Cài Đặt</Text>
-            </TouchableOpacity>
-          </View>
-
-          {testResult && (
-            <View style={styles.resultBox}>
-              <Text style={styles.resultText}>{testResult}</Text>
-            </View>
-          )}
-        </View>
-      )}
-
-      {/* ── THÔNG TIN PHIÊN BẢN (CHẠM 5 LẦN ĐỂ MỞ CẤU HÌNH KỸ THUẬT) ─── */}
-      <TouchableOpacity 
-        style={styles.versionContainer}
-        onPress={handleVersionTap}
-        activeOpacity={0.8}
-      >
-        <Text style={styles.versionText}>Phiên bản v1.0.70 (Build 71)</Text>
-        <Text style={styles.versionSubText}>Hệ thống Quản lý Tem & Pallet • Chánh Thu</Text>
-        {showAdvancedConfig && (
-          <Text style={{ color: '#f59e0b', fontSize: 10, fontWeight: '700', marginTop: 4 }}>
-            ⚠️ Chế độ kỹ thuật viên đang mở (Chạm để ẩn lại)
-          </Text>
-        )}
-      </TouchableOpacity>
-
       {/* Modal Cài Đặt Hình Ảnh & Google Drive */}
       <DriveImageSettingsModal
         visible={isDriveModalVisible}
         onClose={() => setIsDriveModalVisible(false)}
         systemCode={systemCode}
       />
-    </ScrollView>
+    </View>
   );
 }
-
-const baseStyles = {
-  container: { flex: 1, backgroundColor: '#0f172a' },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    padding: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: '#1e293b'
-  },
-  title: { color: '#fff', fontSize: 16, fontWeight: '900' },
-  userCard: {
-    margin: 16,
-    marginBottom: 0,
-    backgroundColor: '#1e293b',
-    borderRadius: 16,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: '#334155',
-  },
-  userHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-  },
-  userAvatar: {
-    width: 46,
-    height: 46,
-    borderRadius: 23,
-    backgroundColor: '#0f172a',
-    borderWidth: 1.5,
-    borderColor: '#38bdf8',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  userName: {
-    color: '#ffffff',
-    fontSize: 16,
-    fontWeight: '800',
-  },
-  userEmail: {
-    color: '#94a3b8',
-    fontSize: 12,
-    marginTop: 2,
-  },
-  companyBox: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 10,
-    backgroundColor: '#0f172a',
-    borderRadius: 12,
-    padding: 12,
-    marginTop: 14,
-    borderWidth: 1,
-    borderColor: 'rgba(16, 185, 129, 0.3)',
-  },
-  companyLabel: {
-    color: '#64748b',
-    fontSize: 10,
-    fontWeight: '700',
-    textTransform: 'uppercase',
-  },
-  companyName: {
-    color: '#10b981',
-    fontSize: 13,
-    fontWeight: '800',
-    marginTop: 2,
-  },
-  userMetaRow: {
-    flexDirection: 'row',
-    gap: 16,
-    marginTop: 10,
-    paddingHorizontal: 4,
-  },
-  userMetaText: {
-    color: '#64748b',
-    fontSize: 11,
-  },
-  userMetaBold: {
-    color: '#cbd5e1',
-    fontWeight: '700',
-  },
-  logoutBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    marginTop: 14,
-    paddingVertical: 10,
-    borderRadius: 10,
-    backgroundColor: 'rgba(239, 68, 68, 0.12)',
-    borderWidth: 1,
-    borderColor: 'rgba(239, 68, 68, 0.3)',
-  },
-  logoutBtnText: {
-    color: '#ef4444',
-    fontSize: 13,
-    fontWeight: '800',
-  },
-  card: { padding: 16 },
-  sectionTitle: {
-    color: '#94a3b8',
-    fontSize: 11,
-    fontWeight: '800',
-    letterSpacing: 1,
-    marginBottom: 8,
-  },
-  label: { color: '#cbd5e1', fontSize: 12, fontWeight: '700', marginTop: 12, marginBottom: 4 },
-  input: {
-    backgroundColor: '#1e293b',
-    color: '#fff',
-    borderRadius: 8,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: '#334155',
-    fontSize: 13
-  },
-  autoSyncRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    backgroundColor: '#0f172a',
-    padding: 12,
-    borderRadius: 12,
-    marginBottom: 14,
-    borderWidth: 1,
-    borderColor: '#334155',
-  },
-  autoSyncLabel: {
-    color: '#f8fafc',
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  autoSyncSub: {
-    color: '#94a3b8',
-    fontSize: 11,
-    marginTop: 2,
-    lineHeight: 15,
-  },
-  btnRow: { flexDirection: 'row', gap: 10, marginTop: 20 },
-  testBtn: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#1e293b',
-    borderColor: '#38bdf8',
-    borderWidth: 1,
-    paddingVertical: 12,
-    borderRadius: 8,
-    gap: 6
-  },
-  testBtnText: { color: '#38bdf8', fontWeight: '800' },
-  saveBtn: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#059669',
-    paddingVertical: 12,
-    borderRadius: 8,
-    gap: 6
-  },
-  saveBtnText: { color: '#fff', fontWeight: '900' },
-  resultBox: {
-    backgroundColor: '#020617',
-    padding: 12,
-    borderRadius: 8,
-    marginTop: 14,
-    borderWidth: 1,
-    borderColor: '#334155'
-  },
-  resultText: { color: '#38bdf8', fontSize: 12, fontWeight: '600' },
-  versionContainer: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginTop: 28,
-    marginBottom: 16,
-    paddingVertical: 12,
-  },
-  versionText: {
-    color: '#94a3b8',
-    fontSize: 12,
-    fontWeight: '700',
-    letterSpacing: 0.5,
-  },
-  versionSubText: {
-    color: '#475569',
-    fontSize: 10,
-    marginTop: 4,
-    fontWeight: '500',
-  }
-};
-const styles = StyleSheet.create(baseStyles as any);

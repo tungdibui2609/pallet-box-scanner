@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   View,
   Text,
@@ -12,6 +12,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useTheme, AppThemeColors } from '../../contexts/ThemeContext';
 import { ShiftProductItem } from '../../services/operationsService';
 import { LocalPickedImage } from '../../services/operationImagesService';
 import OperationImagePickerBar from './OperationImagePickerBar';
@@ -26,6 +27,8 @@ interface Props {
 }
 
 export default function OperationNumberPadModal({ visible, product, defaultUnit, onClose, onSubmit, currentStats }: Props) {
+  const { colors, isDark } = useTheme();
+  const styles = useMemo(() => createStyles(colors, isDark), [colors, isDark]);
   const insets = useSafeAreaInsets();
   const [valueStr, setValueStr] = useState<string>('');
   const [selectedUnit, setSelectedUnit] = useState<string>('Thùng');
@@ -34,29 +37,37 @@ export default function OperationNumberPadModal({ visible, product, defaultUnit,
   const [images, setImages] = useState<LocalPickedImage[]>([]);
   const [submitting] = useState<boolean>(false);
 
+  const productId = product?.id || null;
+  const initDepsRef = React.useRef({ product, currentStats, defaultUnit });
+  initDepsRef.current = { product, currentStats, defaultUnit };
+
+  // Chỉ reset số lượng / ghi chú / ảnh khi MỞ modal hoặc ĐỔI sang sản phẩm khác
+  // Tránh reset mất số lượng / ảnh đang nhập khi parent re-render lúc quay về từ Camera/Thư viện hoặc Realtime
   useEffect(() => {
-    if (!visible || !product) return;
+    if (!visible || !productId) return;
+    const { product: curProd, currentStats: curStats, defaultUnit: curDefUnit } = initDepsRef.current;
+    if (!curProd) return;
     const timer = setTimeout(() => {
       setValueStr('');
       setNote('');
       setShowNoteInput(false);
       setImages([]);
-      const units = product.available_units && product.available_units.length > 0
-        ? product.available_units
-        : [product.unit || 'Kg'];
+      const units = curProd.available_units && curProd.available_units.length > 0
+        ? curProd.available_units
+        : [curProd.unit || 'Kg'];
 
       const isBox = (u: string) => u.toLowerCase().includes('thùng') || u.toLowerCase().startsWith('thung');
       const boxU = units.find(isBox);
 
-      let chosen = defaultUnit && units.includes(defaultUnit) ? defaultUnit : null;
-      if (!chosen && currentStats?.unit && units.includes(currentStats.unit)) {
-        chosen = currentStats.unit;
+      let chosen = curDefUnit && units.includes(curDefUnit) ? curDefUnit : null;
+      if (!chosen && curStats?.unit && units.includes(curStats.unit)) {
+        chosen = curStats.unit;
       }
       if (!chosen && boxU) {
         chosen = boxU;
       }
-      if (!chosen && product.unit && units.includes(product.unit)) {
-        chosen = product.unit;
+      if (!chosen && curProd.unit && units.includes(curProd.unit)) {
+        chosen = curProd.unit;
       }
       if (!chosen) {
         chosen = units[0] || 'Kg';
@@ -64,7 +75,7 @@ export default function OperationNumberPadModal({ visible, product, defaultUnit,
       setSelectedUnit(chosen);
     }, 0);
     return () => clearTimeout(timer);
-  }, [visible, product, currentStats, defaultUnit]);
+  }, [visible, productId]);
 
   if (!product) return null;
 
@@ -145,7 +156,7 @@ export default function OperationNumberPadModal({ visible, product, defaultUnit,
                   </Text>
                 </View>
                 <TouchableOpacity onPress={onClose} style={styles.closeBtn}>
-                  <Ionicons name="close" size={22} color="#94a3b8" />
+                  <Ionicons name="close" size={20} color={isDark ? '#94a3b8' : '#475569'} />
                 </TouchableOpacity>
               </View>
 
@@ -192,9 +203,19 @@ export default function OperationNumberPadModal({ visible, product, defaultUnit,
                 ))}
                 <TouchableOpacity
                   onPress={() => setShowNoteInput(!showNoteInput)}
-                  style={[styles.quickAddBtn, showNoteInput && { backgroundColor: '#38bdf820', borderColor: '#38bdf8' }]}
+                  style={[
+                    styles.quickAddBtn,
+                    showNoteInput && {
+                      backgroundColor: isDark ? '#38bdf820' : '#e0f2fe',
+                      borderColor: isDark ? '#38bdf8' : '#0284c7',
+                    },
+                  ]}
                 >
-                  <Ionicons name="chatbubble-ellipses-outline" size={15} color={showNoteInput ? '#38bdf8' : '#94a3b8'} />
+                  <Ionicons
+                    name="chatbubble-ellipses-outline"
+                    size={15}
+                    color={showNoteInput ? (isDark ? '#38bdf8' : '#0284c7') : colors.textMuted}
+                  />
                 </TouchableOpacity>
               </View>
 
@@ -285,26 +306,26 @@ export default function OperationNumberPadModal({ visible, product, defaultUnit,
   );
 }
 
-const styles = StyleSheet.create({
+const createStyles = (c: AppThemeColors, isDark: boolean) => StyleSheet.create({
   overlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.65)',
+    backgroundColor: 'rgba(0,0,0,0.58)',
     justifyContent: 'flex-end',
   },
   sheetContainer: {
-    backgroundColor: '#1e293b',
+    backgroundColor: isDark ? '#1e293b' : '#ffffff',
     borderTopLeftRadius: 28,
     borderTopRightRadius: 28,
     paddingHorizontal: 16,
     paddingTop: 8,
     paddingBottom: Platform.OS === 'ios' ? 32 : 16,
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: isDark ? '#334155' : '#e2e8f0',
   },
   handle: {
     width: 44,
     height: 5,
-    backgroundColor: '#475569',
+    backgroundColor: isDark ? '#475569' : '#cbd5e1',
     borderRadius: 3,
     alignSelf: 'center',
     marginBottom: 10,
@@ -313,25 +334,25 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingBottom: 8,
+    paddingBottom: 10,
     borderBottomWidth: 1,
-    borderBottomColor: '#334155',
+    borderBottomColor: isDark ? '#334155' : '#e2e8f0',
   },
   productName: {
     fontSize: 15,
-    fontWeight: '700',
-    color: '#f8fafc',
+    fontWeight: '800',
+    color: c.text,
     lineHeight: 20,
   },
   productSku: {
     fontSize: 11,
-    color: '#94a3b8',
+    color: c.textMuted,
     marginTop: 2,
   },
   closeBtn: {
     padding: 6,
-    borderRadius: 8,
-    backgroundColor: '#0f172a',
+    borderRadius: 999,
+    backgroundColor: isDark ? '#0f172a' : '#f1f5f9',
   },
   unitRow: {
     flexDirection: 'row',
@@ -340,63 +361,63 @@ const styles = StyleSheet.create({
   },
   unitLabel: {
     fontSize: 12,
-    fontWeight: '600',
-    color: '#94a3b8',
+    fontWeight: '700',
+    color: c.textMuted,
     marginRight: 8,
   },
   unitPill: {
     paddingHorizontal: 12,
-    paddingVertical: 5,
-    borderRadius: 8,
-    backgroundColor: '#0f172a',
+    paddingVertical: 6,
+    borderRadius: 10,
+    backgroundColor: isDark ? '#0f172a' : '#f8fafc',
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: isDark ? '#334155' : '#cbd5e1',
     marginRight: 6,
   },
   unitPillActive: {
-    backgroundColor: '#6366f1',
-    borderColor: '#818cf8',
+    backgroundColor: '#4f46e5',
+    borderColor: '#4f46e5',
   },
   unitPillText: {
     fontSize: 12,
-    color: '#cbd5e1',
-    fontWeight: '600',
+    color: c.textSecondary,
+    fontWeight: '700',
   },
   unitPillTextActive: {
     color: '#fff',
-    fontWeight: '700',
+    fontWeight: '800',
   },
   displayBox: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#0f172a',
-    borderRadius: 14,
+    backgroundColor: isDark ? '#0f172a' : '#eef2ff',
+    borderRadius: 16,
     paddingVertical: 12,
     paddingHorizontal: 16,
     marginVertical: 4,
     borderWidth: 1.5,
-    borderColor: '#6366f1',
+    borderColor: isDark ? '#6366f1' : '#c7d2fe',
   },
   displayPrefix: {
     fontSize: 13,
-    color: '#64748b',
-    fontWeight: '600',
+    color: c.textMuted,
+    fontWeight: '700',
     marginRight: 10,
   },
   displayValue: {
     fontSize: 28,
     fontWeight: '900',
-    color: '#38bdf8',
+    color: isDark ? '#38bdf8' : '#0f172a',
     letterSpacing: 1,
   },
   displayPlaceholder: {
-    color: '#475569',
+    color: isDark ? '#475569' : '#94a3b8',
   },
   displayUnit: {
     fontSize: 14,
-    fontWeight: '700',
-    color: '#a5b4fc',
+    fontWeight: '800',
+    color: isDark ? '#a5b4fc' : '#4f46e5',
     marginLeft: 8,
   },
   quickAddRow: {
@@ -406,35 +427,38 @@ const styles = StyleSheet.create({
   },
   quickAddBtn: {
     flex: 1,
-    height: 32,
-    backgroundColor: '#0f172a',
-    borderRadius: 8,
+    height: 34,
+    backgroundColor: isDark ? '#0f172a' : '#eef2ff',
+    borderRadius: 10,
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: isDark ? '#334155' : '#c7d2fe',
     alignItems: 'center',
     justifyContent: 'center',
     marginHorizontal: 3,
   },
   quickAddText: {
     fontSize: 12,
-    fontWeight: '700',
-    color: '#e2e8f0',
+    fontWeight: '800',
+    color: isDark ? '#e2e8f0' : '#4338ca',
   },
   noteInputWrapper: {
     marginBottom: 6,
   },
   noteInput: {
     height: 36,
-    backgroundColor: '#0f172a',
-    borderRadius: 8,
+    backgroundColor: c.inputBg,
+    borderRadius: 10,
     borderWidth: 1,
-    borderColor: '#475569',
+    borderColor: c.border,
     paddingHorizontal: 12,
-    color: '#f8fafc',
+    color: c.text,
     fontSize: 12,
   },
   keypad: {
     marginVertical: 4,
+    padding: 6,
+    borderRadius: 16,
+    backgroundColor: isDark ? 'transparent' : '#f1f5f9',
   },
   keypadRow: {
     flexDirection: 'row',
@@ -444,22 +468,23 @@ const styles = StyleSheet.create({
   keyBtn: {
     flex: 1,
     height: 48,
-    backgroundColor: '#0f172a',
-    borderRadius: 10,
+    backgroundColor: isDark ? '#0f172a' : '#ffffff',
+    borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
     marginHorizontal: 3,
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: isDark ? '#334155' : '#e2e8f0',
+    elevation: isDark ? 0 : 1,
   },
   keyText: {
     fontSize: 20,
-    fontWeight: '700',
-    color: '#f8fafc',
+    fontWeight: '800',
+    color: c.text,
   },
   backspaceBtn: {
-    backgroundColor: '#3f1d24',
-    borderColor: '#881337',
+    backgroundColor: isDark ? '#3f1d24' : '#fff1f2',
+    borderColor: isDark ? '#881337' : '#fecdd3',
   },
   actionRow: {
     flexDirection: 'row',
@@ -469,7 +494,7 @@ const styles = StyleSheet.create({
   actionBtn: {
     flex: 1,
     height: 48,
-    borderRadius: 12,
+    borderRadius: 14,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
@@ -491,7 +516,7 @@ const styles = StyleSheet.create({
   },
   modeRow: {
     flexDirection: 'row',
-    backgroundColor: '#0f172a',
+    backgroundColor: isDark ? '#0f172a' : '#f1f5f9',
     borderRadius: 10,
     padding: 3,
     marginBottom: 8,
@@ -504,21 +529,21 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   modeBtnActive: {
-    backgroundColor: '#1e293b',
+    backgroundColor: c.surface,
   },
   modeText: {
     fontSize: 12,
     fontWeight: '700',
-    color: '#94a3b8',
+    color: c.textMuted,
   },
   modeTextActive: {
-    color: '#38bdf8',
+    color: isDark ? '#38bdf8' : '#4f46e5',
   },
   rangeCard: {
-    backgroundColor: '#0f172a',
+    backgroundColor: c.surfaceAlt,
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: c.border,
     padding: 10,
     marginBottom: 8,
     gap: 8,
@@ -530,17 +555,17 @@ const styles = StyleSheet.create({
   rangeLabel: {
     fontSize: 11,
     fontWeight: '700',
-    color: '#94a3b8',
+    color: c.textMuted,
     marginBottom: 4,
   },
   rangeInput: {
     height: 44,
-    backgroundColor: '#1e293b',
+    backgroundColor: c.inputBg,
     borderRadius: 10,
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: c.border,
     paddingHorizontal: 12,
-    color: '#f8fafc',
+    color: c.text,
     fontSize: 18,
     fontWeight: '800',
   },
@@ -553,53 +578,53 @@ const styles = StyleSheet.create({
     paddingVertical: 7,
     paddingHorizontal: 6,
     borderRadius: 8,
-    backgroundColor: '#1e293b',
+    backgroundColor: c.surface,
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: c.border,
     alignItems: 'center',
   },
   calcTypeBtnActive: {
-    backgroundColor: 'rgba(245, 158, 11, 0.16)',
+    backgroundColor: c.amberSoftBg,
     borderColor: '#f59e0b',
   },
   calcTypeText: {
     fontSize: 11,
     fontWeight: '700',
-    color: '#94a3b8',
+    color: c.textMuted,
   },
   calcTypeTextActive: {
-    color: '#fbbf24',
+    color: c.amberSoftText,
   },
   calcHintText: {
     fontSize: 11,
-    color: '#94a3b8',
+    color: c.textMuted,
     lineHeight: 15,
   },
   rangeResultBox: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    backgroundColor: 'rgba(245, 158, 11, 0.1)',
+    backgroundColor: c.amberSoftBg,
     borderRadius: 10,
     borderWidth: 1,
-    borderColor: 'rgba(245, 158, 11, 0.35)',
+    borderColor: c.amberSoftBorder,
     paddingHorizontal: 10,
     paddingVertical: 8,
   },
   rangeFormula: {
     fontSize: 12,
     fontWeight: '700',
-    color: '#fbbf24',
+    color: c.amberSoftText,
   },
   rangeSuggest: {
     fontSize: 11,
-    color: '#cbd5e1',
+    color: c.textSecondary,
     marginTop: 2,
   },
   rangeResultNum: {
     fontSize: 22,
     fontWeight: '900',
-    color: '#f8fafc',
+    color: c.text,
     marginLeft: 8,
   },
 });

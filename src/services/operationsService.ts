@@ -1379,14 +1379,57 @@ async function fetchAndMergeMobileShiftSummary(
   return { mergedSummary, serverStatus: serverShift?.status };
 }
 
+let inFlightOpsSyncPromise: Promise<{
+  success: boolean;
+  syncedCount: number;
+  syncedImagesCount?: number;
+  message?: string;
+}> | null = null;
+
 export async function syncOperationsOfflineQueue(): Promise<{
   success: boolean;
   syncedCount: number;
+  syncedImagesCount?: number;
   message?: string;
 }> {
+  if (inFlightOpsSyncPromise) {
+    return inFlightOpsSyncPromise;
+  }
+
+  inFlightOpsSyncPromise = _runSyncOperationsOfflineQueue();
+  try {
+    return await inFlightOpsSyncPromise;
+  } finally {
+    inFlightOpsSyncPromise = null;
+  }
+}
+
+async function _runSyncOperationsOfflineQueue(): Promise<{
+  success: boolean;
+  syncedCount: number;
+  syncedImagesCount?: number;
+  message?: string;
+}> {
+  // Cho phép thử kết nối lại ngay (tránh bị cờ offline cũ từ phòng lạnh chặn)
+  setKnownOffline(false);
+
   const queue = await getOfflineOperationsQueue();
   if (queue.length === 0) {
-    return { success: true, syncedCount: 0, message: 'Không có dữ liệu chờ đồng bộ' };
+    let syncedImgs = 0;
+    try {
+      syncedImgs = await syncOfflineOperationImages();
+    } catch (e) {
+      console.warn('syncOfflineOperationImages error:', e);
+    }
+    return {
+      success: true,
+      syncedCount: 0,
+      syncedImagesCount: syncedImgs,
+      message:
+        syncedImgs > 0
+          ? `Đã đồng bộ ${syncedImgs} hình ảnh offline lên máy chủ!`
+          : 'Không có dữ liệu chờ đồng bộ',
+    };
   }
 
   const supabase = await getSupabaseClient();
@@ -1464,7 +1507,10 @@ export async function syncOperationsOfflineQueue(): Promise<{
           notes: finalNotes,
         };
 
-        const { error: jnErr } = await supabase.from('delivery_journal').insert([journalPayload]);
+        // Dùng upsert ignoreDuplicates theo id (UUID do client sinh sẵn) để chống nhân đôi & chống kẹt queue khi mạng chập chờn
+        const { error: jnErr } = await supabase
+          .from('delivery_journal')
+          .upsert([journalPayload], { onConflict: 'id', ignoreDuplicates: true });
         if (jnErr) throw jnErr;
         if (realShiftId) touchedShiftIds.add(String(realShiftId));
         syncedCount++;
@@ -1561,8 +1607,9 @@ export async function syncOperationsOfflineQueue(): Promise<{
   }
 
   // Đồng bộ ảnh chụp offline (nếu có)
+  let syncedImagesCount = 0;
   try {
-    await syncOfflineOperationImages(tempShiftIdMap);
+    syncedImagesCount = await syncOfflineOperationImages(tempShiftIdMap);
   } catch (e) {
     console.warn('syncOfflineOperationImages error:', e);
   }
@@ -1574,8 +1621,9 @@ export async function syncOperationsOfflineQueue(): Promise<{
   return {
     success: remainingQueue.length === 0,
     syncedCount,
+    syncedImagesCount,
     message: remainingQueue.length === 0
-      ? `Đã đồng bộ ${syncedCount} lượt số liệu lên máy chủ thành công!`
+      ? `Đã đồng bộ ${syncedCount} lượt số liệu${syncedImagesCount > 0 ? ` & ${syncedImagesCount} ảnh` : ''} lên máy chủ thành công!`
       : `Đã đồng bộ ${syncedCount} lượt, còn ${remainingQueue.length} lượt chưa đẩy được${lastErrorMsg ? ` (${lastErrorMsg})` : ''}`,
   };
 }

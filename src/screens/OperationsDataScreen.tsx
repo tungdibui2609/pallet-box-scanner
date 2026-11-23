@@ -12,9 +12,11 @@ import {
   RefreshControl,
   Image,
   Modal,
+  AppState,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
+import * as Network from 'expo-network';
 import { useAuth } from '../contexts/AuthContext';
 import { useTheme, AppThemeColors } from '../contexts/ThemeContext';
 import {
@@ -36,6 +38,7 @@ import {
   aggregateShiftsUnits,
   getPendingOperationsCount,
   syncOperationsOfflineQueue,
+  setKnownOffline,
   getJobTemplates,
   getOrderTypes,
   getCurrentSystemCode,
@@ -65,6 +68,7 @@ import {
   uploadOperationImages,
   getShiftOperationImages,
   syncOfflineOperationImages,
+  getPendingOfflineImagesCount,
 } from '../services/operationImagesService';
 import {
   QuickSnapItem,
@@ -315,6 +319,7 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
   const [isImagesModalVisible, setIsImagesModalVisible] = useState(false);
   const [journalTargetForImages, setJournalTargetForImages] = useState<JournalImageTarget | null>(null);
   const [shiftImageCount, setShiftImageCount] = useState(0);
+  const [journalImageCountMap, setJournalImageCountMap] = useState<Record<string, number>>({});
   const [bgUploadingCount, setBgUploadingCount] = useState(0);
   const [quickSnaps, setQuickSnaps] = useState<QuickSnapItem[]>([]);
   const [isQuickSnapModalVisible, setIsQuickSnapModalVisible] = useState(false);
@@ -371,18 +376,60 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
   // ── TRẠNG THÁI OFFLINE & ĐỒNG BỘ DỮ LIỆU KHO ĐÔNG ──
   const [pendingSyncCount, setPendingSyncCount] = useState<number>(0);
   const [isSyncingOffline, setIsSyncingOffline] = useState<boolean>(false);
+  const autoSyncLockRef = useRef<boolean>(false);
+  const handleRefreshRef = useRef<(() => Promise<void>) | null>(null);
 
   const refreshPendingCount = useCallback(async () => {
     try {
-      const count = await getPendingOperationsCount();
-      setPendingSyncCount(count);
-    } catch {}
+      const [opsCount, imgCount] = await Promise.all([
+        getPendingOperationsCount(),
+        getPendingOfflineImagesCount(),
+      ]);
+      setPendingSyncCount(opsCount + imgCount);
+      return opsCount + imgCount;
+    } catch {
+      return 0;
+    }
   }, []);
 
+  // Tự động đồng bộ ngầm ngay khi có mạng (không hiện Alert làm gián đoạn thao tác)
+  const runAutoOfflineSync = useCallback(async () => {
+    if (autoSyncLockRef.current) return;
+    try {
+      const totalPending = await refreshPendingCount();
+      if (totalPending <= 0) return;
+
+      const net = await Network.getNetworkStateAsync().catch(() => null);
+      if (net && (!net.isConnected || net.isInternetReachable === false)) {
+        return;
+      }
+
+      autoSyncLockRef.current = true;
+      setIsSyncingOffline(true);
+      setKnownOffline(false);
+
+      const res = await syncOperationsOfflineQueue();
+      const extraImgs = await syncOfflineOperationImages().catch(() => 0);
+      await refreshPendingCount();
+
+      const totalSynced = (res.syncedCount || 0) + (res.syncedImagesCount || 0) + extraImgs;
+      if (totalSynced > 0 && handleRefreshRef.current) {
+        await handleRefreshRef.current().catch(() => {});
+      }
+    } catch (e) {
+      console.warn('[AutoOfflineSync] Tạm hoãn do mạng chưa ổn định:', e);
+    } finally {
+      autoSyncLockRef.current = false;
+      setIsSyncingOffline(false);
+    }
+  }, [refreshPendingCount]);
+
   const handleSyncOfflineNow = async () => {
-    if (isSyncingOffline) return;
+    if (isSyncingOffline || autoSyncLockRef.current) return;
+    autoSyncLockRef.current = true;
     setIsSyncingOffline(true);
     try {
+      setKnownOffline(false);
       const res = await syncOperationsOfflineQueue();
       await refreshPendingCount();
       await handleRefresh();
@@ -390,22 +437,44 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
     } catch (err: any) {
       Alert.alert('Đồng bộ thất bại', err?.message || 'Không thể kết nối đến máy chủ. Bạn vui lòng thử lại sau khi có mạng!');
     } finally {
+      autoSyncLockRef.current = false;
       setIsSyncingOffline(false);
     }
   };
 
   useEffect(() => {
+    // 1. Kiểm tra & tự đồng bộ ngay khi vào màn hình
     const initialTimer = setTimeout(() => {
-      void refreshPendingCount();
-    }, 0);
+      void runAutoOfflineSync();
+    }, 600);
+
+    // 2. Lắng nghe sự kiện mạng: vừa có mạng lại -> đẩy dữ liệu lên ngay lập tức
+    const netSub = Network.addNetworkStateListener((state) => {
+      if (state.isConnected && state.isInternetReachable !== false) {
+        setKnownOffline(false);
+        void runAutoOfflineSync();
+      }
+    });
+
+    // 3. Khi mở lại app từ nền -> kiểm tra & đẩy hàng chờ ngay
+    const appSub = AppState.addEventListener('change', (nextState) => {
+      if (nextState === 'active') {
+        void runAutoOfflineSync();
+      }
+    });
+
+    // 4. Retry ngầm mỗi 15 giây (chỉ chạy khi thực sự còn dữ liệu/ảnh chờ, nếu = 0 sẽ thoát 0ms)
     const interval = setInterval(() => {
-      void refreshPendingCount();
-    }, 10000);
+      void runAutoOfflineSync();
+    }, 15000);
+
     return () => {
       clearTimeout(initialTimer);
       clearInterval(interval);
+      netSub.remove();
+      appSub.remove();
     };
-  }, [refreshPendingCount]);
+  }, [runAutoOfflineSync]);
 
   // Mở xem chi tiết báo cáo ca đã hoàn thành
   const handleOpenPastShiftDetail = async (shift: DeliveryShift) => {
@@ -455,7 +524,11 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
       setSubShifts(sList);
       setShiftImageCount(imgList.length);
       const refMap: Record<string, { start: OperationImageRecord[]; end: OperationImageRecord[] }> = {};
+      const jCountMap: Record<string, number> = {};
       imgList.forEach(img => {
+        if (img.journal_id) {
+          jCountMap[img.journal_id] = (jCountMap[img.journal_id] || 0) + 1;
+        }
         const m = img.notes?.match(/^\[THAM_CHIEU:([^\]:]+)(?::(start|end))?\]/);
         if (m && m[1]) {
           const phase = m[2] === 'end' ? 'end' : 'start';
@@ -463,6 +536,7 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
           refMap[m[1]][phase].push(img);
         }
       });
+      setJournalImageCountMap(jCountMap);
       setReconcileImagesMap(refMap);
     } catch (e) {
       console.warn('Lỗi lấy nhật ký & đợt chốt tạm:', e);
@@ -555,6 +629,10 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
       setRefreshing(false);
     }
   }, [selectedShift, selectShift]);
+
+  useEffect(() => {
+    handleRefreshRef.current = handleRefresh;
+  }, [handleRefresh]);
 
   const [downloadingOpsOffline, setDownloadingOpsOffline] = useState(false);
   const [syncingShift, setSyncingShift] = useState(false);
@@ -1073,7 +1151,8 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
             { event: '*', schema: 'public', table: 'delivery_journal' },
             (payload: any) => {
               const notesStr = String(payload?.new?.notes || payload?.old?.notes || '');
-              if (notesStr.includes(`[CV_ID: ${shiftId}]`)) {
+              // DELETE mặc định của Postgres chỉ gửi old.id (không gửi notes), nên luôn reload khi DELETE
+              if (payload?.eventType === 'DELETE' || notesStr.includes(`[CV_ID: ${shiftId}]`)) {
                 void reloadShiftDataRef.current(shiftId);
               }
             }
@@ -1172,6 +1251,16 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
     getAllQuickSnaps().then(setQuickSnaps);
   }, []);
 
+  // Sản phẩm vừa nhập/xuất gần nhất (để tô màu nền nhận diện thay vì đẩy lên dòng 1)
+  const latestJournalInfo = useMemo(() => {
+    const first = allJournals[0];
+    if (!first || !first.item_name) return null;
+    return {
+      nameKey: first.item_name.trim().toLowerCase(),
+      isImport: first.to_department === 'Kho',
+    };
+  }, [allJournals]);
+
   // Danh sách sản phẩm hiển thị theo thanh tìm kiếm
   const displayedProducts = useMemo(() => {
     const q = searchQuery.trim();
@@ -1183,21 +1272,11 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
         .sort((a, b) => calculateSearchScore(b, q) - calculateSearchScore(a, q))
         .slice(0, 30);
     } else {
-      // Chế độ Nhập: Tìm trong các sản phẩm đã ghim (đẩy SP vừa làm lên đầu nếu chưa tìm kiếm)
-      if (!q) {
-        if (recentProductOrder.size === 0) return pinnedProducts;
-        return [...pinnedProducts].sort((a, b) => {
-          const ia = recentProductOrder.get(a.name.trim().toLowerCase());
-          const ib = recentProductOrder.get(b.name.trim().toLowerCase());
-          if (ia !== undefined && ib !== undefined) return ia - ib;
-          if (ia !== undefined) return -1;
-          if (ib !== undefined) return 1;
-          return 0;
-        });
-      }
+      // Chế độ Nhập: Giữ cố định thứ tự sản phẩm đã ghim (không tự nhảy lên dòng 1 gây rối)
+      if (!q) return pinnedProducts;
       return pinnedProducts.filter(p => matchSearch(p, q));
     }
-  }, [searchMode, searchQuery, allProducts, pinnedProducts, recentProductOrder]);
+  }, [searchMode, searchQuery, allProducts, pinnedProducts]);
 
   // Ghim / Bỏ ghim 1 sản phẩm
   const togglePin = async (product: ShiftProductItem) => {
@@ -1355,7 +1434,12 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
           notes: note || null,
         })
           .then(() => {
-            if (isCurrentShift) setShiftImageCount((c) => c + count);
+            if (isCurrentShift) {
+              setShiftImageCount((c) => c + count);
+              if (journalId) {
+                setJournalImageCountMap(prev => ({ ...prev, [journalId]: (prev[journalId] || 0) + count }));
+              }
+            }
           })
           .catch((e) => console.warn('Upload journal images error:', e))
           .finally(() => {
@@ -1848,6 +1932,10 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
               renderItem={({ item, index }) => {
                 const isPinned = pinnedProducts.some(p => p.id === item.id);
                 const isAltRow = index % 2 === 1;
+                const isLatest =
+                  !!latestJournalInfo &&
+                  latestJournalInfo.nameKey === item.name.trim().toLowerCase();
+                const latestIsImport = latestJournalInfo?.isImport !== false;
                 const productUnits = getProductUnits(item);
                 const currentUnit = getPreferredUnit(item);
 
@@ -1864,11 +1952,50 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
                 ]));
 
                 return (
-                  <View style={[styles.productCard, isAltRow ? styles.cardAmber : styles.cardIndigo]}>
+                  <View
+                    style={[
+                      styles.productCard,
+                      isAltRow ? styles.cardAmber : styles.cardIndigo,
+                      isLatest && {
+                        backgroundColor: latestIsImport
+                          ? isDark
+                            ? 'rgba(16, 185, 129, 0.2)'
+                            : '#d1fae5'
+                          : isDark
+                          ? 'rgba(244, 63, 94, 0.2)'
+                          : '#ffe4e6',
+                        borderColor: latestIsImport
+                          ? isDark
+                            ? 'rgba(52, 211, 153, 0.65)'
+                            : '#34d399'
+                          : isDark
+                          ? 'rgba(251, 113, 133, 0.65)'
+                          : '#fb7185',
+                        borderLeftColor: latestIsImport ? '#059669' : '#e11d48',
+                        borderWidth: 1.5,
+                        borderLeftWidth: 4,
+                      },
+                    ]}
+                  >
                     {/* HÀNG TRÊN: STT, TÊN SẢN PHẨM, SKU, CON MẮT & NÚT GHIM */}
                     <View style={styles.cardTopRow}>
-                      <View style={[styles.sttBadge, isAltRow ? styles.sttAmber : styles.sttIndigo]}>
-                        <Text style={[styles.sttBadgeText, isAltRow ? styles.sttAmberText : styles.sttIndigoText]}>
+                      <View
+                        style={[
+                          styles.sttBadge,
+                          isAltRow ? styles.sttAmber : styles.sttIndigo,
+                          isLatest && {
+                            backgroundColor: latestIsImport ? '#059669' : '#e11d48',
+                            borderColor: latestIsImport ? '#059669' : '#e11d48',
+                          },
+                        ]}
+                      >
+                        <Text
+                          style={[
+                            styles.sttBadgeText,
+                            isAltRow ? styles.sttAmberText : styles.sttIndigoText,
+                            isLatest && { color: '#ffffff' },
+                          ]}
+                        >
                           {index + 1}
                         </Text>
                       </View>
@@ -1881,9 +2008,43 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
                         <Text style={styles.cardProductName} numberOfLines={2}>
                           {item.name}
                         </Text>
-                        {item.sku ? (
-                          <Text style={styles.cardProductSku}>{item.sku}</Text>
-                        ) : null}
+                        <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 6, marginTop: 2 }}>
+                          {item.sku ? (
+                            <Text style={styles.cardProductSku}>{item.sku}</Text>
+                          ) : null}
+                          {isLatest && (
+                            <View
+                              style={{
+                                paddingHorizontal: 6,
+                                paddingVertical: 1,
+                                borderRadius: 6,
+                                backgroundColor: latestIsImport
+                                  ? isDark
+                                    ? 'rgba(16, 185, 129, 0.32)'
+                                    : '#059669'
+                                  : isDark
+                                  ? 'rgba(244, 63, 94, 0.32)'
+                                  : '#e11d48',
+                              }}
+                            >
+                              <Text
+                                style={{
+                                  fontSize: 10,
+                                  fontWeight: '800',
+                                  color: latestIsImport
+                                    ? isDark
+                                      ? '#6ee7b7'
+                                      : '#ffffff'
+                                    : isDark
+                                    ? '#fda4af'
+                                    : '#ffffff',
+                                }}
+                              >
+                                {latestIsImport ? 'Vừa nhập' : 'Vừa xuất'}
+                              </Text>
+                            </View>
+                          )}
+                        </View>
                       </TouchableOpacity>
 
                       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
@@ -2233,22 +2394,40 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
                                                     {record.item_name}
                                                   </Text>
                                                   <View style={styles.rowActions}>
-                                                    <TouchableOpacity
-                                                      onPress={() => {
-                                                        setJournalTargetForImages({
-                                                          id: record.id,
-                                                          itemName: record.item_name,
-                                                          quantity: record.quantity_sent,
-                                                          unit: stdUnit,
-                                                          direction: isImport ? 'in' : 'out',
-                                                        });
-                                                        setIsImagesModalVisible(true);
-                                                      }}
-                                                      style={styles.actionPencilBtn}
-                                                      accessibilityLabel="Ảnh đợt này"
-                                                    >
-                                                      <Ionicons name="camera-outline" size={14} color="#38bdf8" />
-                                                    </TouchableOpacity>
+                                                    {(() => {
+                                                      const imgCount = journalImageCountMap[record.id] || 0;
+                                                      return (
+                                                        <TouchableOpacity
+                                                          onPress={() => {
+                                                            setJournalTargetForImages({
+                                                              id: record.id,
+                                                              itemName: record.item_name,
+                                                              quantity: record.quantity_sent,
+                                                              unit: stdUnit,
+                                                              direction: isImport ? 'in' : 'out',
+                                                            });
+                                                            setIsImagesModalVisible(true);
+                                                          }}
+                                                          style={[
+                                                            styles.actionPencilBtn,
+                                                            { position: 'relative' },
+                                                            imgCount > 0 && {
+                                                              backgroundColor: isDark ? 'rgba(14,165,233,0.22)' : '#e0f2fe',
+                                                              borderWidth: 1,
+                                                              borderColor: isDark ? '#38bdf8' : '#7dd3fc',
+                                                            },
+                                                          ]}
+                                                          accessibilityLabel="Ảnh đợt này"
+                                                        >
+                                                          <Ionicons name="camera-outline" size={14} color={isDark ? '#38bdf8' : '#0284c7'} />
+                                                          {imgCount > 0 && (
+                                                            <View style={styles.cameraCountBadge}>
+                                                              <Text style={styles.cameraCountBadgeText}>{imgCount}</Text>
+                                                            </View>
+                                                          )}
+                                                        </TouchableOpacity>
+                                                      );
+                                                    })()}
                                                     <TouchableOpacity
                                                       onPress={() => handleStartEdit(record)}
                                                       style={styles.actionPencilBtn}
@@ -2340,22 +2519,40 @@ export default function OperationsDataScreen({ isActive = true }: OperationsData
                                           {record.item_name}
                                         </Text>
                                         <View style={styles.rowActions}>
-                                          <TouchableOpacity
-                                            onPress={() => {
-                                              setJournalTargetForImages({
-                                                id: record.id,
-                                                itemName: record.item_name,
-                                                quantity: record.quantity_sent,
-                                                unit: stdUnit,
-                                                direction: isImport ? 'in' : 'out',
-                                              });
-                                              setIsImagesModalVisible(true);
-                                            }}
-                                            style={styles.actionPencilBtn}
-                                            accessibilityLabel="Ảnh đợt này"
-                                          >
-                                            <Ionicons name="camera-outline" size={14} color="#38bdf8" />
-                                          </TouchableOpacity>
+                                          {(() => {
+                                            const imgCount = journalImageCountMap[record.id] || 0;
+                                            return (
+                                              <TouchableOpacity
+                                                onPress={() => {
+                                                  setJournalTargetForImages({
+                                                    id: record.id,
+                                                    itemName: record.item_name,
+                                                    quantity: record.quantity_sent,
+                                                    unit: stdUnit,
+                                                    direction: isImport ? 'in' : 'out',
+                                                  });
+                                                  setIsImagesModalVisible(true);
+                                                }}
+                                                style={[
+                                                  styles.actionPencilBtn,
+                                                  { position: 'relative' },
+                                                  imgCount > 0 && {
+                                                    backgroundColor: isDark ? 'rgba(14,165,233,0.22)' : '#e0f2fe',
+                                                    borderWidth: 1,
+                                                    borderColor: isDark ? '#38bdf8' : '#7dd3fc',
+                                                  },
+                                                ]}
+                                                accessibilityLabel="Ảnh đợt này"
+                                              >
+                                                <Ionicons name="camera-outline" size={14} color={isDark ? '#38bdf8' : '#0284c7'} />
+                                                {imgCount > 0 && (
+                                                  <View style={styles.cameraCountBadge}>
+                                                    <Text style={styles.cameraCountBadgeText}>{imgCount}</Text>
+                                                  </View>
+                                                )}
+                                              </TouchableOpacity>
+                                            );
+                                          })()}
                                           <TouchableOpacity
                                             onPress={() => handleStartEdit(record)}
                                             style={styles.actionPencilBtn}
@@ -5025,6 +5222,26 @@ const createStyles = (c: AppThemeColors, isDark: boolean) => StyleSheet.create({
     backgroundColor: c.pillBg,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  cameraCountBadge: {
+    position: 'absolute',
+    top: -5,
+    right: -5,
+    minWidth: 15,
+    height: 15,
+    paddingHorizontal: 3,
+    borderRadius: 8,
+    backgroundColor: '#0284c7',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1.5,
+    borderColor: isDark ? '#1e293b' : '#ffffff',
+  },
+  cameraCountBadgeText: {
+    color: '#ffffff',
+    fontSize: 9,
+    fontWeight: '900',
+    lineHeight: 11,
   },
   actionTrashBtn: {
     width: 26,

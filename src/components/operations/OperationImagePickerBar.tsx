@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   View,
   Text,
@@ -10,6 +10,7 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useTheme, AppThemeColors } from '../../contexts/ThemeContext';
 import {
   LocalPickedImage,
   capturePhotoWithCamera,
@@ -29,6 +30,8 @@ export default function OperationImagePickerBar({
   compact = false,
   label = 'Ảnh chứng minh (không bắt buộc)',
 }: Props) {
+  const { colors, isDark } = useTheme();
+  const styles = useMemo(() => createStyles(colors, isDark), [colors, isDark]);
   const [busy, setBusy] = useState(false);
   const [previewUri, setPreviewUri] = useState<string | null>(null);
 
@@ -146,12 +149,12 @@ export default function OperationImagePickerBar({
   );
 }
 
-const styles = StyleSheet.create({
+const createStyles = (c: AppThemeColors, isDark: boolean) => StyleSheet.create({
   container: {
-    backgroundColor: 'rgba(15, 23, 42, 0.7)',
+    backgroundColor: isDark ? 'rgba(15, 23, 42, 0.7)' : '#f8fafc',
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: isDark ? '#334155' : '#e2e8f0',
     padding: 10,
     gap: 8,
   },
@@ -167,9 +170,9 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   label: {
-    color: '#94a3b8',
+    color: c.textMuted,
     fontSize: 12,
-    fontWeight: '600',
+    fontWeight: '700',
     flex: 1,
   },
   actionsRow: {
@@ -187,20 +190,20 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   btnCamera: {
-    backgroundColor: 'rgba(56, 189, 248, 0.12)',
-    borderColor: 'rgba(56, 189, 248, 0.35)',
+    backgroundColor: isDark ? 'rgba(56, 189, 248, 0.12)' : '#e0f2fe',
+    borderColor: isDark ? 'rgba(56, 189, 248, 0.35)' : '#bae6fd',
   },
   btnCameraText: {
-    color: '#38bdf8',
+    color: isDark ? '#38bdf8' : '#0369a1',
     fontSize: 12,
     fontWeight: '700',
   },
   btnLibrary: {
-    backgroundColor: 'rgba(167, 139, 250, 0.12)',
-    borderColor: 'rgba(167, 139, 250, 0.35)',
+    backgroundColor: isDark ? 'rgba(167, 139, 250, 0.12)' : '#eef2ff',
+    borderColor: isDark ? 'rgba(167, 139, 250, 0.35)' : '#c7d2fe',
   },
   btnLibraryText: {
-    color: '#c4b5fd',
+    color: isDark ? '#c4b5fd' : '#4338ca',
     fontSize: 12,
     fontWeight: '700',
   },
@@ -216,8 +219,8 @@ const styles = StyleSheet.create({
     height: 56,
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: '#475569',
-    backgroundColor: '#1e293b',
+    borderColor: isDark ? '#475569' : '#cbd5e1',
+    backgroundColor: c.surface,
   },
   removeBtn: {
     position: 'absolute',
@@ -230,7 +233,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1,
-    borderColor: '#0f172a',
+    borderColor: isDark ? '#0f172a' : '#ffffff',
   },
   previewOverlay: {
     flex: 1,

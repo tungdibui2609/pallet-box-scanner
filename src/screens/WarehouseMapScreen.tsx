@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { useThemedStyles } from '../contexts/ThemeContext';
+import { useTheme, useThemedStyles } from '../contexts/ThemeContext';
 import {
   View,
   Text,
@@ -389,6 +389,7 @@ const MobileWarehouseSearchBar = React.memo(function MobileWarehouseSearchBar({
   isFilterOpen: boolean;
   onToggleFilterOpen: () => void;
 }) {
+  const { isDark } = useTheme();
   const styles = useThemedStyles(baseStyles);
   const [inputValue, setInputValue] = useState(searchQuery);
   const [showSuggestions, setShowSuggestions] = useState(false);
@@ -1240,6 +1241,7 @@ export default function WarehouseMapScreen({
   onBackToScanner: () => void;
   isActive?: boolean;
 }) {
+  const { isDark } = useTheme();
   const styles = useThemedStyles(baseStyles);
   const initialMemory = getMemoryWarehouseMapCache();
   const hasMemoryCache = Boolean(initialMemory && initialMemory.positions && initialMemory.positions.length > 0);
@@ -2864,13 +2866,27 @@ export default function WarehouseMapScreen({
             onPress={onBackToScanner}
             hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
           >
-            <Ionicons name="arrow-back" size={20} color="#cbd5e1" />
+            <Ionicons name="arrow-back" size={20} color={isDark ? '#cbd5e1' : '#334155'} />
           </TouchableOpacity>
           <View style={{ flex: 1, minWidth: 0 }}>
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
               <Text style={styles.headerTitle} numberOfLines={1}>SƠ ĐỒ KHO</Text>
-              <View style={styles.badgeColdStorage}>
-                <Text style={styles.badgeColdText}>KHO ĐÔNG</Text>
+              <View
+                style={[
+                  styles.badgeColdStorage,
+                  isDark
+                    ? { backgroundColor: 'rgba(16, 185, 129, 0.2)', borderColor: 'rgba(52, 211, 153, 0.45)' }
+                    : { backgroundColor: '#dcfce7', borderColor: '#86efac' },
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.badgeColdText,
+                    { color: isDark ? '#6ee7b7' : '#047857' },
+                  ]}
+                >
+                  KHO ĐÔNG
+                </Text>
               </View>
             </View>
             <Text style={styles.headerSub} numberOfLines={1}>
@@ -2893,8 +2909,18 @@ export default function WarehouseMapScreen({
                 gap: 5,
                 paddingHorizontal: 10,
                 height: 36,
-                backgroundColor: isDraftMode ? '#78350f' : '#1e293b',
-                borderColor: isDraftMode ? '#f59e0b' : '#f59e0b55',
+                backgroundColor: isDraftMode
+                  ? isDark
+                    ? '#78350f'
+                    : '#fef3c7'
+                  : isDark
+                  ? '#1e293b'
+                  : '#fffbeb',
+                borderColor: isDraftMode
+                  ? '#f59e0b'
+                  : isDark
+                  ? '#f59e0b55'
+                  : '#fcd34d',
                 borderWidth: 1,
               },
             ]}
@@ -2906,11 +2932,11 @@ export default function WarehouseMapScreen({
             <Ionicons
               name={isDraftMode ? 'pencil' : 'pencil-outline'}
               size={14}
-              color={isDraftMode ? '#fef08a' : '#f59e0b'}
+              color={isDraftMode ? (isDark ? '#fef08a' : '#b45309') : isDark ? '#f59e0b' : '#d97706'}
             />
             <Text
               style={{
-                color: isDraftMode ? '#fef08a' : '#f59e0b',
+                color: isDraftMode ? (isDark ? '#fef08a' : '#b45309') : isDark ? '#f59e0b' : '#b45309',
                 fontSize: 11.5,
                 fontWeight: '800',
               }}
@@ -2934,14 +2960,25 @@ export default function WarehouseMapScreen({
           </TouchableOpacity>
 
           <TouchableOpacity
-            style={[styles.downloadOfflineBtn, { width: 36, height: 36, paddingHorizontal: 0, justifyContent: 'center', alignItems: 'center' }]}
+            style={[
+              styles.downloadOfflineBtn,
+              {
+                width: 36,
+                height: 36,
+                paddingHorizontal: 0,
+                justifyContent: 'center',
+                alignItems: 'center',
+                backgroundColor: isDark ? '#064e3b' : '#ecfdf5',
+                borderColor: isDark ? '#10b98166' : '#a7f3d0',
+              },
+            ]}
             onPress={handleDownloadOffline}
             disabled={downloadingOffline || refreshing}
           >
             {downloadingOffline || refreshing ? (
-              <ActivityIndicator size="small" color="#34d399" />
+              <ActivityIndicator size="small" color={isDark ? '#34d399' : '#047857'} />
             ) : (
-              <Ionicons name="cloud-download-outline" size={17} color="#34d399" />
+              <Ionicons name="cloud-download-outline" size={17} color={isDark ? '#34d399' : '#047857'} />
             )}
           </TouchableOpacity>
         </View>
@@ -3802,7 +3839,7 @@ export default function WarehouseMapScreen({
             <ScrollView style={styles.contentScroll} contentContainerStyle={styles.scrollPadding}>
               <View style={styles.sectionTitleRow}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                  <Ionicons name="business" size={15} color="#38bdf8" />
+                  <Ionicons name="business" size={15} color={isDark ? '#34d399' : '#059669'} />
                   <Text style={styles.sectionTitle}>
                     CHỌN KHO (TẤT CẢ KHO):
                   </Text>
@@ -3822,6 +3859,11 @@ export default function WarehouseMapScreen({
                       key={wh.id}
                       style={[
                         styles.warehouseCard,
+                        {
+                          borderLeftWidth: 4,
+                          borderLeftColor: '#10b981',
+                          ...(!isDark ? { backgroundColor: '#f0fdf4', borderColor: '#bbf7d0' } : {}),
+                        },
                         whMatchCount > 0 && styles.warehouseCardMatched
                       ]}
                       onPress={() => {
@@ -3836,7 +3878,7 @@ export default function WarehouseMapScreen({
                       {/* Header: Icon + Tên Kho & Xem Dãy */}
                       <View style={styles.warehouseCardHeader}>
                         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 }}>
-                          <Ionicons name="business" size={18} color="#38bdf8" />
+                          <Ionicons name="business" size={18} color={isDark ? '#34d399' : '#059669'} />
                           <Text style={styles.warehouseCardTitle}>{wh.name}</Text>
                         </View>
                         {isSearchActive && whMatchCount > 0 ? (
@@ -3844,15 +3886,15 @@ export default function WarehouseMapScreen({
                             <Text style={styles.whMatchBadgeInlineText}>🔥 {whMatchCount} khớp</Text>
                           </View>
                         ) : (
-                          <Text style={styles.warehouseCardAction}>Xem Dãy →</Text>
+                          <Text style={[styles.warehouseCardAction, { color: isDark ? '#34d399' : '#047857' }]}>Xem Dãy →</Text>
                         )}
                       </View>
 
                       {/* Thống kê Tổng, Đã chứa, Còn trống */}
                       <View style={styles.aisleStatsRow}>
                         <Text style={styles.statLabel}>Tổng: <Text style={styles.statValWhite}>{stats.total}</Text></Text>
-                        <Text style={styles.statLabel}>Đã chứa: <Text style={styles.statValAmber}>{stats.occupied}</Text></Text>
-                        <Text style={styles.statLabel}>Còn trống: <Text style={styles.statValEmerald}>{stats.empty}</Text></Text>
+                        <Text style={styles.statLabel}>Đã chứa: <Text style={[styles.statValAmber, !isDark && { color: '#b45309' }]}>{stats.occupied}</Text></Text>
+                        <Text style={styles.statLabel}>Còn trống: <Text style={[styles.statValEmerald, !isDark && { color: '#047857' }]}>{stats.empty}</Text></Text>
                       </View>
 
                       {/* Chi tiết phụ: Kệ & Sảnh */}
@@ -3862,15 +3904,15 @@ export default function WarehouseMapScreen({
                             Kệ: <Text style={styles.statValWhite}>{breakdown.rackTotal}</Text> ({breakdown.rackOccupied} có hàng)
                           </Text>
                           {breakdown.hallTotal > 0 && (
-                            <Text style={[styles.whBreakdownText, { color: '#34d399' }]}>
-                              Sảnh: <Text style={{ color: '#34d399', fontWeight: '800' }}>{breakdown.hallTotal}</Text> ({breakdown.hallOccupied})
+                            <Text style={[styles.whBreakdownText, { color: isDark ? '#34d399' : '#047857' }]}>
+                              Sảnh: <Text style={{ color: isDark ? '#34d399' : '#047857', fontWeight: '800' }}>{breakdown.hallTotal}</Text> ({breakdown.hallOccupied})
                             </Text>
                           )}
                         </View>
                       )}
 
                       {/* Progress Bar (2 màu xanh lá / vàng cam) */}
-                      <View style={styles.progressBarBg}>
+                      <View style={[styles.progressBarBg, !isDark && { backgroundColor: '#e2e8f0' }]}>
                         <View
                           style={[
                             styles.progressBarFill,
@@ -3900,7 +3942,7 @@ export default function WarehouseMapScreen({
                       setSelectedTierId(null);
                     }}
                   >
-                    <Ionicons name="arrow-back" size={13} color="#38bdf8" />
+                    <Ionicons name="arrow-back" size={13} color={isDark ? '#34d399' : '#059669'} />
                     <Text style={styles.backLevelText}>Tất cả Kho</Text>
                   </TouchableOpacity>
                   <Text style={[styles.sectionTitle, { marginLeft: 4 }]} numberOfLines={1}>
@@ -3926,7 +3968,7 @@ export default function WarehouseMapScreen({
                         flexDirection: 'row',
                         alignItems: 'center',
                         gap: 4,
-                        backgroundColor: '#0284c7',
+                        backgroundColor: '#059669',
                         paddingHorizontal: 8,
                         paddingVertical: 4,
                         borderRadius: 8,
@@ -4018,6 +4060,15 @@ export default function WarehouseMapScreen({
                       style={[
                         styles.aisleCard,
                         isHall && styles.hallCard,
+                        {
+                          borderLeftWidth: 4,
+                          borderLeftColor: isHall ? '#059669' : '#10b981',
+                          ...(!isDark
+                            ? isHall
+                              ? { backgroundColor: '#ecfdf5', borderColor: '#6ee7b7' }
+                              : { backgroundColor: '#f0fdf4', borderColor: '#bbf7d0' }
+                            : {}),
+                        },
                         matchCount > 0 && styles.aisleCardMatched
                       ]}
                       onPress={() => {
@@ -4071,7 +4122,7 @@ export default function WarehouseMapScreen({
                               <Text style={{ color: '#ffffff', fontSize: 10, fontWeight: '800' }}>Cập nhật</Text>
                             </TouchableOpacity>
                           )}
-                          <Text style={styles.aisleCardAction}>
+                          <Text style={[styles.aisleCardAction, { color: isDark ? '#34d399' : '#047857' }]}>
                             {isHall ? 'Xem Sảnh →' : 'Xem Ô →'}
                           </Text>
                         </View>
@@ -4079,19 +4130,17 @@ export default function WarehouseMapScreen({
 
                       <View style={styles.aisleStatsRow}>
                         <Text style={styles.statLabel}>Tổng: <Text style={styles.statValWhite}>{stats.total}</Text></Text>
-                        <Text style={styles.statLabel}>Có hàng: <Text style={styles.statValAmber}>{stats.occupied}</Text></Text>
-                        <Text style={styles.statLabel}>Trống: <Text style={styles.statValEmerald}>{stats.empty}</Text></Text>
+                        <Text style={styles.statLabel}>Có hàng: <Text style={[styles.statValAmber, !isDark && { color: '#b45309' }]}>{stats.occupied}</Text></Text>
+                        <Text style={styles.statLabel}>Trống: <Text style={[styles.statValEmerald, !isDark && { color: '#047857' }]}>{stats.empty}</Text></Text>
                       </View>
 
-                      <View style={styles.progressBarBg}>
+                      <View style={[styles.progressBarBg, !isDark && { backgroundColor: '#dcfce7' }]}>
                         <View
                           style={[
                             styles.progressBarFill,
                             {
                               width: `${pct}%`,
-                              backgroundColor: isHall
-                                ? (pct >= 90 ? '#f59e0b' : '#38bdf8')
-                                : (pct >= 90 ? '#f59e0b' : '#10b981')
+                              backgroundColor: pct >= 90 ? '#f59e0b' : '#10b981'
                             }
                           ]}
                         />
@@ -4216,7 +4265,12 @@ export default function WarehouseMapScreen({
                         key={pos.id}
                         style={[
                           styles.hallPosCard,
-                          isOccupied ? styles.hallPosCardOccupied : styles.hallPosCardEmpty,
+                          isOccupied
+                            ? [
+                                styles.hallPosCardOccupied,
+                                !isDark && { backgroundColor: '#ecfdf5', borderColor: '#34d399' },
+                              ]
+                            : styles.hallPosCardEmpty,
                           isMatched && styles.hallPosCardMatched,
                           isHighlighted && styles.hallPosCardHighlighted,
                           hasDraft && styles.posCardDraftActive,
@@ -4302,6 +4356,11 @@ export default function WarehouseMapScreen({
                       key={slot.id}
                       style={[
                         styles.slotCard,
+                        {
+                          borderLeftWidth: 4,
+                          borderLeftColor: '#10b981',
+                          ...(!isDark ? { backgroundColor: '#f0fdf4', borderColor: '#bbf7d0' } : {}),
+                        },
                         matchCount > 0 && styles.slotCardMatched
                       ]}
                       onPress={() => {
@@ -4323,7 +4382,7 @@ export default function WarehouseMapScreen({
                         <Text style={styles.slotCardPct}>{pct}%</Text>
                       </View>
 
-                      <View style={styles.progressBarBg}>
+                      <View style={[styles.progressBarBg, !isDark && { backgroundColor: '#dcfce7' }]}>
                         <View
                           style={[
                             styles.progressBarFill,
@@ -4408,10 +4467,10 @@ export default function WarehouseMapScreen({
                       </Text>
                       <View style={{ flexDirection: 'row', gap: 6 }}>
                         <TouchableOpacity style={styles.tierToggleBtn} onPress={handleExpandAllTiers}>
-                          <Text style={[styles.tierToggleBtnText, { color: '#38bdf8' }]}>+ Mở tất cả</Text>
+                          <Text style={[styles.tierToggleBtnText, { color: isDark ? '#34d399' : '#059669' }]}>+ Mở tất cả</Text>
                         </TouchableOpacity>
                         <TouchableOpacity style={styles.tierToggleBtn} onPress={handleCollapseAllTiers}>
-                          <Text style={[styles.tierToggleBtnText, { color: '#cbd5e1' }]}>− Thu tất cả</Text>
+                          <Text style={[styles.tierToggleBtnText, { color: isDark ? '#cbd5e1' : '#475569' }]}>− Thu tất cả</Text>
                         </TouchableOpacity>
                       </View>
                     </View>
@@ -4423,9 +4482,24 @@ export default function WarehouseMapScreen({
                       if (tierPositions.length === 0) return null;
 
                       return (
-                        <View key={tier.id} style={[styles.tierAccordionCard, isExpanded && styles.tierAccordionCardExpanded]}>
+                        <View
+                          key={tier.id}
+                          style={[
+                            styles.tierAccordionCard,
+                            isExpanded && styles.tierAccordionCardExpanded,
+                            {
+                              borderLeftWidth: 4,
+                              borderLeftColor: '#10b981',
+                              ...(!isDark ? { borderColor: '#bbf7d0' } : {}),
+                            },
+                          ]}
+                        >
                           <TouchableOpacity
-                            style={[styles.tierAccordionBtn, isExpanded && styles.tierAccordionBtnExpanded]}
+                            style={[
+                              styles.tierAccordionBtn,
+                              isExpanded && styles.tierAccordionBtnExpanded,
+                              !isDark && { backgroundColor: '#f0fdf4' },
+                            ]}
                             onPress={() => toggleTierExpand(tier.id)}
                             activeOpacity={0.7}
                           >
@@ -4433,7 +4507,7 @@ export default function WarehouseMapScreen({
                               <Ionicons
                                 name={isExpanded ? 'chevron-down' : 'chevron-forward'}
                                 size={14}
-                                color={isExpanded ? '#38bdf8' : '#64748b'}
+                                color={isExpanded ? (isDark ? '#34d399' : '#059669') : '#64748b'}
                               />
                               <View style={styles.tierDot} />
                               <Text style={styles.tierAccordionName}>{tier.name}</Text>
@@ -4461,7 +4535,12 @@ export default function WarehouseMapScreen({
                                       key={pos.id}
                                       style={[
                                         styles.posCard,
-                                        isOccupied ? styles.posCardOccupied : styles.posCardEmpty,
+                                        isOccupied
+                                          ? [
+                                              styles.posCardOccupied,
+                                              !isDark && { backgroundColor: '#ecfdf5', borderColor: '#34d399' },
+                                            ]
+                                          : styles.posCardEmpty,
                                         isHigh && styles.posCardHighlighted,
                                         isMatched && styles.posCardMatched,
                                         hasDraft && styles.posCardDraftActive,
@@ -4538,7 +4617,12 @@ export default function WarehouseMapScreen({
                           key={pos.id}
                           style={[
                             styles.posCard,
-                            isOccupied ? styles.posCardOccupied : styles.posCardEmpty,
+                            isOccupied
+                              ? [
+                                  styles.posCardOccupied,
+                                  !isDark && { backgroundColor: '#ecfdf5', borderColor: '#34d399' },
+                                ]
+                              : styles.posCardEmpty,
                             isHigh && styles.posCardHighlighted,
                             isMatched && styles.posCardMatched
                           ]}
@@ -5577,7 +5661,7 @@ const baseStyles = {
     backgroundColor: '#1e293b'
   },
   crumbBtnActive: {
-    backgroundColor: '#06b6d4'
+    backgroundColor: '#059669'
   },
   crumbText: {
     color: '#cbd5e1',
@@ -5628,7 +5712,7 @@ const baseStyles = {
     marginRight: 8
   },
   whPillActive: {
-    backgroundColor: '#0891b2'
+    backgroundColor: '#059669'
   },
   whPillText: {
     color: '#94a3b8',
@@ -5746,7 +5830,7 @@ const baseStyles = {
   },
   hallPosCardOccupied: {
     backgroundColor: '#131d33',
-    borderColor: '#0284c788'
+    borderColor: '#10b98188'
   },
   hallPosCardEmpty: {
     backgroundColor: '#0f172a88',
@@ -5856,7 +5940,7 @@ const baseStyles = {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    backgroundColor: '#0284c7',
+    backgroundColor: '#059669',
     paddingHorizontal: 8,
     paddingVertical: 3,
     borderRadius: 8,
@@ -6042,7 +6126,7 @@ const baseStyles = {
     width: 6,
     height: 6,
     borderRadius: 3,
-    backgroundColor: '#38bdf8'
+    backgroundColor: '#10b981'
   },
   tierAccordionName: {
     color: '#ffffff',
@@ -6125,7 +6209,7 @@ const baseStyles = {
   },
   posCardOccupied: {
     backgroundColor: '#131d33',
-    borderColor: '#06b6d466'
+    borderColor: '#10b98188'
   },
   posCardHighlighted: {
     borderColor: '#f59e0b',
@@ -6212,14 +6296,14 @@ const baseStyles = {
     flex: 1
   },
   posTagText: {
-    color: '#38bdf8',
+    color: '#059669',
     fontSize: 9,
     fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
     fontWeight: '700',
     flex: 1
   },
   posQtyText: {
-    color: '#38bdf8',
+    color: '#059669',
     fontSize: 9,
     fontWeight: '700'
   },

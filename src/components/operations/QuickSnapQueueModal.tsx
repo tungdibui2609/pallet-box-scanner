@@ -13,6 +13,7 @@ import {
   Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useTheme, AppThemeColors } from '../../contexts/ThemeContext';
 import type { DeliveryShift, ShiftProductItem } from '../../services/operationsService';
 import type { QuickSnapItem } from '../../services/quickSnapStore';
 
@@ -63,6 +64,8 @@ export default function QuickSnapQueueModal({
   onSaveToShiftAlbum,
   onAssignSnap,
 }: Props) {
+  const { colors, isDark } = useTheme();
+  const styles = useMemo(() => createStyles(colors, isDark), [colors, isDark]);
   const [selectedId, setSelectedId] = useState<string>('');
   const [query, setQuery] = useState<string>('');
   const [selectedProduct, setSelectedProduct] = useState<ShiftProductItem | null>(null);
@@ -266,12 +269,12 @@ export default function QuickSnapQueueModal({
             </View>
 
             <TouchableOpacity onPress={onCaptureMore} style={styles.captureMoreBtn}>
-              <Ionicons name="camera" size={14} color="#38bdf8" />
+              <Ionicons name="camera" size={14} color={isDark ? '#38bdf8' : '#0369a1'} />
               <Text style={styles.captureMoreText}>Chụp thêm</Text>
             </TouchableOpacity>
 
             <TouchableOpacity onPress={onClose} style={styles.closeBtn}>
-              <Ionicons name="close" size={18} color="#cbd5e1" />
+              <Ionicons name="close" size={18} color={isDark ? '#cbd5e1' : '#475569'} />
             </TouchableOpacity>
           </View>
 
@@ -319,7 +322,7 @@ export default function QuickSnapQueueModal({
                           </Text>
                           <Text
                             style={{
-                              color: '#a5b4fc',
+                              color: isDark ? '#a5b4fc' : '#4f46e5',
                               fontSize: 9,
                               fontWeight: '800',
                               textAlign: 'center',
@@ -353,16 +356,16 @@ export default function QuickSnapQueueModal({
                           paddingHorizontal: 10,
                           paddingVertical: 7,
                           borderRadius: 10,
-                          backgroundColor: '#1e293b',
+                          backgroundColor: isDark ? '#1e293b' : '#eef2ff',
                           borderWidth: 1,
-                          borderColor: 'rgba(99,102,241,0.45)',
+                          borderColor: isDark ? 'rgba(99,102,241,0.45)' : '#c7d2fe',
                         }}
                       >
                         <View style={{ flex: 1 }}>
-                          <Text style={{ color: '#94a3b8', fontSize: 10, fontWeight: '700' }}>
+                          <Text style={{ color: colors.textMuted, fontSize: 10, fontWeight: '700' }}>
                             THUỘC CÔNG VIỆC:
                           </Text>
-                          <Text style={{ color: '#e0e7ff', fontSize: 12, fontWeight: '800' }} numberOfLines={1}>
+                          <Text style={{ color: isDark ? '#e0e7ff' : '#312e81', fontSize: 12, fontWeight: '800' }} numberOfLines={1}>
                             {activeSnap.jobName || 'Công việc'}
                           </Text>
                         </View>
@@ -375,13 +378,13 @@ export default function QuickSnapQueueModal({
                             paddingHorizontal: 10,
                             paddingVertical: 6,
                             borderRadius: 8,
-                            backgroundColor: 'rgba(56,189,248,0.16)',
+                            backgroundColor: isDark ? 'rgba(56,189,248,0.16)' : '#e0f2fe',
                             borderWidth: 1,
-                            borderColor: 'rgba(56,189,248,0.45)',
+                            borderColor: isDark ? 'rgba(56,189,248,0.45)' : '#7dd3fc',
                           }}
                         >
-                          <Ionicons name="albums-outline" size={13} color="#38bdf8" />
-                          <Text style={{ color: '#7dd3fc', fontSize: 11, fontWeight: '800' }}>
+                          <Ionicons name="albums-outline" size={13} color={isDark ? '#38bdf8' : '#0369a1'} />
+                          <Text style={{ color: isDark ? '#7dd3fc' : '#0369a1', fontSize: 11, fontWeight: '800' }}>
                             Lưu thẳng Album
                           </Text>
                         </TouchableOpacity>
@@ -626,18 +629,18 @@ export default function QuickSnapQueueModal({
   );
 }
 
-const styles = StyleSheet.create({
+const createStyles = (c: AppThemeColors, isDark: boolean) => StyleSheet.create({
   overlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.8)',
+    backgroundColor: isDark ? 'rgba(0,0,0,0.8)' : 'rgba(15,23,42,0.55)',
     justifyContent: 'flex-end',
   },
   sheet: {
-    backgroundColor: '#0f172a',
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
+    backgroundColor: isDark ? '#0f172a' : '#ffffff',
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
     borderTopWidth: 1,
-    borderColor: '#334155',
+    borderColor: isDark ? '#334155' : '#e2e8f0',
     maxHeight: '92%',
   },
   header: {
@@ -645,31 +648,33 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: 14,
     paddingVertical: 12,
-    backgroundColor: '#1e293b',
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
+    backgroundColor: isDark ? '#1e293b' : '#f8fafc',
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
     borderBottomWidth: 1,
-    borderBottomColor: '#334155',
+    borderBottomColor: isDark ? '#334155' : '#e2e8f0',
     gap: 8,
   },
   headerTitle: {
-    color: '#fff',
+    color: c.text,
     fontSize: 14,
     fontWeight: '800',
   },
   headerSub: {
-    color: '#94a3b8',
+    color: c.textMuted,
     fontSize: 11,
     marginTop: 2,
   },
   countBadge: {
-    backgroundColor: 'rgba(245,158,11,0.2)',
+    backgroundColor: c.amberSoftBg,
+    borderWidth: 1,
+    borderColor: c.amberSoftBorder,
     paddingHorizontal: 8,
     paddingVertical: 2,
     borderRadius: 999,
   },
   countBadgeText: {
-    color: '#fcd34d',
+    color: c.amberSoftText,
     fontSize: 11,
     fontWeight: '900',
   },
@@ -679,13 +684,13 @@ const styles = StyleSheet.create({
     gap: 4,
     paddingHorizontal: 10,
     paddingVertical: 6,
-    borderRadius: 8,
-    backgroundColor: 'rgba(56,189,248,0.16)',
+    borderRadius: 10,
+    backgroundColor: isDark ? 'rgba(56,189,248,0.16)' : '#e0f2fe',
     borderWidth: 1,
-    borderColor: 'rgba(56,189,248,0.4)',
+    borderColor: isDark ? 'rgba(56,189,248,0.4)' : '#7dd3fc',
   },
   captureMoreText: {
-    color: '#7dd3fc',
+    color: isDark ? '#7dd3fc' : '#0369a1',
     fontSize: 11,
     fontWeight: '800',
   },
@@ -693,7 +698,7 @@ const styles = StyleSheet.create({
     width: 32,
     height: 32,
     borderRadius: 16,
-    backgroundColor: '#334155',
+    backgroundColor: isDark ? '#334155' : '#e2e8f0',
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -703,7 +708,7 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   emptyText: {
-    color: '#94a3b8',
+    color: c.textMuted,
     fontSize: 13,
     fontWeight: '600',
   },
@@ -729,18 +734,18 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     overflow: 'hidden',
     borderWidth: 2,
-    borderColor: '#334155',
-    backgroundColor: '#1e293b',
+    borderColor: isDark ? '#334155' : '#cbd5e1',
+    backgroundColor: c.surface,
   },
   thumbCardActive: {
-    borderColor: '#fbbf24',
+    borderColor: '#f59e0b',
   },
   thumbImg: {
     width: 78,
     height: 60,
   },
   thumbTime: {
-    color: '#cbd5e1',
+    color: c.textSecondary,
     fontSize: 10,
     fontWeight: '700',
     textAlign: 'center',
@@ -762,8 +767,8 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     overflow: 'hidden',
     borderWidth: 1,
-    borderColor: '#334155',
-    backgroundColor: '#000',
+    borderColor: c.border,
+    backgroundColor: isDark ? '#000' : '#f1f5f9',
     height: 160,
     alignItems: 'center',
     justifyContent: 'center',
@@ -773,24 +778,24 @@ const styles = StyleSheet.create({
     height: 160,
   },
   sectionLabel: {
-    color: '#94a3b8',
+    color: c.textMuted,
     fontSize: 11,
     fontWeight: '700',
   },
   recentChip: {
     paddingHorizontal: 10,
     paddingVertical: 6,
-    borderRadius: 8,
-    backgroundColor: '#1e293b',
+    borderRadius: 10,
+    backgroundColor: isDark ? '#1e293b' : '#f8fafc',
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: c.border,
   },
   recentChipActive: {
     backgroundColor: '#4f46e5',
-    borderColor: '#818cf8',
+    borderColor: '#4f46e5',
   },
   recentChipText: {
-    color: '#cbd5e1',
+    color: c.textSecondary,
     fontSize: 11,
     fontWeight: '700',
   },
@@ -800,43 +805,43 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
     paddingHorizontal: 10,
-    paddingVertical: 8,
-    borderRadius: 10,
-    backgroundColor: '#1e293b',
+    paddingVertical: 9,
+    borderRadius: 12,
+    backgroundColor: c.inputBg,
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: c.border,
   },
   searchInput: {
     flex: 1,
-    color: '#fff',
+    color: c.text,
     fontSize: 12,
     padding: 0,
   },
   suggestionsBox: {
     marginTop: 4,
-    borderRadius: 10,
-    backgroundColor: '#1e293b',
+    borderRadius: 12,
+    backgroundColor: c.surface,
     borderWidth: 1,
-    borderColor: 'rgba(99,102,241,0.45)',
+    borderColor: isDark ? 'rgba(99,102,241,0.45)' : '#c7d2fe',
     overflow: 'hidden',
   },
   suggestionRow: {
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 12,
-    paddingVertical: 8,
+    paddingVertical: 9,
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(51,65,85,0.6)',
+    borderBottomColor: c.borderSubtle,
     gap: 8,
   },
   suggestionName: {
-    color: '#fff',
+    color: c.text,
     fontSize: 12,
     fontWeight: '700',
   },
   suggestionAlias: {
-    color: '#fcd34d',
-    backgroundColor: 'rgba(245,158,11,0.2)',
+    color: c.amberSoftText,
+    backgroundColor: c.amberSoftBg,
     fontSize: 10,
     fontWeight: '800',
     paddingHorizontal: 6,
@@ -844,25 +849,25 @@ const styles = StyleSheet.create({
     borderRadius: 4,
   },
   suggestionSku: {
-    color: '#818cf8',
+    color: isDark ? '#818cf8' : '#4f46e5',
     fontSize: 10,
     fontWeight: '700',
   },
   chooseTxt: {
-    color: '#94a3b8',
-    fontSize: 10,
-    fontWeight: '700',
+    color: isDark ? '#94a3b8' : '#4f46e5',
+    fontSize: 11,
+    fontWeight: '800',
   },
   assignCard: {
     marginTop: 10,
     padding: 12,
-    borderRadius: 12,
-    backgroundColor: '#1e293b',
+    borderRadius: 14,
+    backgroundColor: isDark ? '#1e293b' : '#f8fafc',
     borderWidth: 1,
-    borderColor: 'rgba(99,102,241,0.45)',
+    borderColor: isDark ? 'rgba(99,102,241,0.45)' : '#c7d2fe',
   },
   assignProdName: {
-    color: '#fff',
+    color: c.text,
     fontSize: 13,
     fontWeight: '800',
   },
@@ -870,16 +875,16 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 5,
     borderRadius: 8,
-    backgroundColor: '#0f172a',
+    backgroundColor: c.surface,
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: c.border,
   },
   unitChipActive: {
     backgroundColor: '#4f46e5',
-    borderColor: '#818cf8',
+    borderColor: '#4f46e5',
   },
   unitChipText: {
-    color: '#cbd5e1',
+    color: c.textSecondary,
     fontSize: 11,
     fontWeight: '700',
   },
@@ -894,10 +899,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 8,
     borderRadius: 10,
-    backgroundColor: '#0f172a',
+    backgroundColor: c.inputBg,
     borderWidth: 1,
-    borderColor: '#334155',
-    color: '#fff',
+    borderColor: c.border,
+    color: c.text,
     fontSize: 14,
     fontWeight: '900',
   },
@@ -905,12 +910,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 9,
     borderRadius: 8,
-    backgroundColor: '#0f172a',
+    backgroundColor: isDark ? '#0f172a' : '#eef2ff',
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: isDark ? '#334155' : '#c7d2fe',
   },
   quickAddText: {
-    color: '#a5b4fc',
+    color: isDark ? '#a5b4fc' : '#4338ca',
     fontSize: 12,
     fontWeight: '800',
   },
@@ -919,10 +924,10 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 7,
     borderRadius: 10,
-    backgroundColor: '#0f172a',
+    backgroundColor: c.inputBg,
     borderWidth: 1,
-    borderColor: '#334155',
-    color: '#fff',
+    borderColor: c.border,
+    color: c.text,
     fontSize: 12,
   },
   actionRow: {
@@ -936,22 +941,22 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingTop: 10,
     paddingBottom: 14,
-    backgroundColor: '#0f172a',
+    backgroundColor: isDark ? '#0f172a' : '#ffffff',
     borderTopWidth: 1,
-    borderTopColor: '#1e293b',
+    borderTopColor: c.border,
   },
   actionBtn: {
     flex: 1,
     paddingVertical: 11,
-    borderRadius: 10,
+    borderRadius: 12,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 6,
   },
   actionBtnDisabled: {
-    backgroundColor: '#334155',
-    opacity: 0.6,
+    backgroundColor: isDark ? '#334155' : '#cbd5e1',
+    opacity: isDark ? 0.6 : 0.85,
   },
   actionBtnIn: {
     backgroundColor: '#059669',

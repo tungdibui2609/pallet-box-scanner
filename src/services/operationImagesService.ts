@@ -199,14 +199,14 @@ export async function capturePhotoWithCamera(): Promise<LocalPickedImage | null>
     return null;
   }
 
+  // Trả về ngay URI gốc trên máy (0ms) để hiện thumbnail tức thì; nén ảnh + đóng dấu sẽ chạy ngầm khi upload
   const asset = result.assets[0];
-  const compressed = await compressImageUri(asset.uri);
   return {
     localId: `img_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-    uri: compressed.uri,
-    originalUri: asset.uri !== compressed.uri ? asset.uri : undefined,
-    width: compressed.width || asset.width,
-    height: compressed.height || asset.height,
+    uri: asset.uri,
+    originalUri: asset.uri,
+    width: asset.width,
+    height: asset.height,
     mimeType: 'image/jpeg',
   };
 }
@@ -229,19 +229,16 @@ export async function pickPhotosFromLibrary(maxCount = 5): Promise<LocalPickedIm
     return [];
   }
 
-  const out: LocalPickedImage[] = [];
-  for (const asset of result.assets) {
-    const compressed = await compressImageUri(asset.uri);
-    out.push({
-      localId: `img_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-      uri: compressed.uri,
-      originalUri: asset.uri !== compressed.uri ? asset.uri : undefined,
-      width: compressed.width || asset.width,
-      height: compressed.height || asset.height,
-      mimeType: 'image/jpeg',
-    });
-  }
-  return out;
+  // Trả về ngay toàn bộ URI gốc (0ms) không chờ nén tuần tự từng tấm
+  const nowTs = Date.now();
+  return result.assets.map((asset, idx) => ({
+    localId: `img_${nowTs}_${idx}_${Math.random().toString(36).slice(2, 7)}`,
+    uri: asset.uri,
+    originalUri: asset.uri,
+    width: asset.width,
+    height: asset.height,
+    mimeType: 'image/jpeg',
+  }));
 }
 
 async function getCachedShiftImages(shiftId: string): Promise<OperationImageRecord[]> {
@@ -376,8 +373,13 @@ async function uploadSingleImageOnline(item: OfflineImageQueueItem): Promise<Ope
     item.uploadedDrive = driveInfo;
   }
 
-  // 5. Chỉ lưu đường link Google Drive & metadata vào Database
-  const insertPayload = {
+  const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+    item.localId || ''
+  );
+
+  // 5. Chỉ lưu đường link Google Drive & metadata vào Database (dùng id UUID cố định + upsert ignoreDuplicates chống trùng khi mạng chập chờn)
+  const insertPayload: Record<string, any> = {
+    ...(isUuid ? { id: item.localId } : {}),
     company_id: item.metadata.company_id || null,
     system_code: baseSys,
     shift_id: item.metadata.shift_id,
@@ -405,11 +407,10 @@ async function uploadSingleImageOnline(item: OfflineImageQueueItem): Promise<Ope
     drive_synced_at: driveInfo.syncedAt,
   };
 
-  let { data: inserted, error: dbErr } = await supabase
+  let { data: insertedRows, error: dbErr } = await supabase
     .from('operation_images')
-    .insert([insertPayload])
-    .select('*')
-    .single();
+    .upsert([insertPayload], { onConflict: 'id', ignoreDuplicates: true })
+    .select('*');
 
   if (dbErr && dbErr.code === '23503' && insertPayload.journal_id) {
     // Nếu journal_id bị lỗi FK (phiếu bị xóa hoặc chưa đồng bộ), kiểm tra xem phiếu còn trong queue offline không
@@ -418,15 +419,18 @@ async function uploadSingleImageOnline(item: OfflineImageQueueItem): Promise<Ope
     if (!hasPendingOps) {
       const retryRes = await supabase
         .from('operation_images')
-        .insert([{ ...insertPayload, journal_id: null }])
-        .select('*')
-        .single();
-      inserted = retryRes.data;
+        .upsert([{ ...insertPayload, journal_id: null }], { onConflict: 'id', ignoreDuplicates: true })
+        .select('*');
+      insertedRows = retryRes.data;
       dbErr = retryRes.error;
     }
   }
 
   if (dbErr) throw dbErr;
+  const inserted = (Array.isArray(insertedRows) && insertedRows[0]) || ({
+    ...insertPayload,
+    id: item.localId,
+  } as OperationImageRecord);
 
   // 6. Tự động xóa file nén tạm trên máy ngay sau khi đã đẩy lên Google Drive thành công
   deleteLocalFileSafe(item.localUri);
@@ -575,10 +579,16 @@ export async function uploadOperationImages(params: {
   const cached = await getCachedShiftImages(params.shiftId);
 
   for (const img of params.images) {
+    // Nén ảnh trong nền (sau khi UI đã đóng bàn phím) để thao tác chụp/chọn trước đó đạt 0ms
+    const compressed = await compressImageUri(img.uri);
+    const workUri = compressed.uri || img.uri;
+    const workWidth = compressed.width || img.width;
+    const workHeight = compressed.height || img.height;
+
     const stampedUri = await applyOperationWatermark({
-      uri: img.uri,
-      width: img.width,
-      height: img.height,
+      uri: workUri,
+      width: workWidth,
+      height: workHeight,
       systemCode: baseSys,
       jobName: params.jobName,
       itemName: params.itemName,
@@ -589,8 +599,8 @@ export async function uploadOperationImages(params: {
       capturedAt: now,
     });
 
-    if (stampedUri !== img.uri && img.uri !== img.originalUri) {
-      deleteLocalFileSafe(img.uri);
+    if (stampedUri !== workUri && workUri !== img.originalUri) {
+      deleteLocalFileSafe(workUri);
     }
 
     const queueItem: OfflineImageQueueItem = {
@@ -660,35 +670,76 @@ export async function uploadOperationImages(params: {
   return results;
 }
 
-export async function syncOfflineOperationImages(shiftIdMap?: Record<string, string>): Promise<number> {
+export async function getPendingOfflineImagesCount(): Promise<number> {
   const queue = await getOfflineQueue();
-  if (queue.length === 0) return 0;
+  return queue.length;
+}
 
-  const remaining: OfflineImageQueueItem[] = [];
-  let synced = 0;
+let inFlightImageSyncPromise: Promise<number> | null = null;
 
-  for (const item of queue) {
-    const resolvedShiftId = shiftIdMap?.[item.metadata.shift_id] || item.metadata.shift_id;
-    if (resolvedShiftId.startsWith('offline_shift_')) {
-      remaining.push(item);
-      continue;
-    }
-    const updatedItem: OfflineImageQueueItem = {
-      ...item,
-      metadata: { ...item.metadata, shift_id: resolvedShiftId },
-    };
-
-    try {
-      await uploadSingleImageOnline(updatedItem);
-      synced++;
-    } catch (err) {
-      console.warn('Sync offline image failed:', err);
-      remaining.push(updatedItem);
-    }
+export async function syncOfflineOperationImages(shiftIdMap?: Record<string, string>): Promise<number> {
+  if (inFlightImageSyncPromise) {
+    return inFlightImageSyncPromise;
   }
 
-  await setOfflineQueue(remaining);
-  return synced;
+  inFlightImageSyncPromise = (async () => {
+    const queue = await getOfflineQueue();
+    if (queue.length === 0) return 0;
+
+    const remaining: OfflineImageQueueItem[] = [];
+    const syncedLocalIdsByShift: Record<string, Set<string>> = {};
+    let synced = 0;
+
+    for (const item of queue) {
+      const resolvedShiftId = shiftIdMap?.[item.metadata.shift_id] || item.metadata.shift_id;
+      if (resolvedShiftId.startsWith('offline_shift_')) {
+        remaining.push(item);
+        continue;
+      }
+      const updatedItem: OfflineImageQueueItem = {
+        ...item,
+        metadata: { ...item.metadata, shift_id: resolvedShiftId },
+      };
+
+      try {
+        await uploadSingleImageOnline(updatedItem);
+        synced++;
+        const origShiftId = item.metadata.shift_id;
+        if (!syncedLocalIdsByShift[origShiftId]) syncedLocalIdsByShift[origShiftId] = new Set();
+        syncedLocalIdsByShift[origShiftId].add(item.localId);
+        if (resolvedShiftId !== origShiftId) {
+          if (!syncedLocalIdsByShift[resolvedShiftId]) syncedLocalIdsByShift[resolvedShiftId] = new Set();
+          syncedLocalIdsByShift[resolvedShiftId].add(item.localId);
+        }
+      } catch (err) {
+        console.warn('Sync offline image failed:', err);
+        remaining.push(updatedItem);
+      }
+    }
+
+    await setOfflineQueue(remaining);
+
+    // Xóa bản ghi tạm is_offline đã đồng bộ khỏi cache để tránh trùng khi xem album
+    for (const [sId, localIds] of Object.entries(syncedLocalIdsByShift)) {
+      try {
+        const cached = await getCachedShiftImages(sId);
+        if (cached.length > 0) {
+          const cleaned = cached.filter((img) => !(img.is_offline && localIds.has(img.id)));
+          if (cleaned.length !== cached.length) {
+            await setCachedShiftImages(sId, cleaned);
+          }
+        }
+      } catch {}
+    }
+
+    return synced;
+  })();
+
+  try {
+    return await inFlightImageSyncPromise;
+  } finally {
+    inFlightImageSyncPromise = null;
+  }
 }
 
 export async function getShiftOperationImages(shiftId: string): Promise<OperationImageRecord[]> {

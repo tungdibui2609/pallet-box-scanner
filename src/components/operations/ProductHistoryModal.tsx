@@ -15,6 +15,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useTheme, AppThemeColors } from '../../contexts/ThemeContext';
 import { ShiftProductItem, JournalRecord, getShiftJournals } from '../../services/operationsService';
 import {
   getShiftOperationImages,
@@ -32,6 +33,8 @@ interface Props {
 }
 
 export default function ProductHistoryModal({ visible, product, shiftId, onClose }: Props) {
+  const { colors, isDark } = useTheme();
+  const styles = useMemo(() => createStyles(colors, isDark), [colors, isDark]);
   const insets = useSafeAreaInsets();
   const [loading, setLoading] = useState(false);
   const [records, setRecords] = useState<JournalRecord[]>([]);
@@ -95,6 +98,30 @@ export default function ProductHistoryModal({ visible, product, shiftId, onClose
     return productImages;
   }, [productImages, inImages, outImages, directionFilter]);
 
+  // Ghép ảnh kèm theo cho từng dòng đợt nhập/xuất
+  const getImagesForRecord = React.useCallback(
+    (item: JournalRecord): OperationImageRecord[] => {
+      if (!productImages.length) return [];
+      const exact = productImages.filter(img => img.journal_id && img.journal_id === item.id);
+      if (exact.length > 0) return exact;
+      // Fallback: khớp ảnh không gắn journal_id nhưng cùng chiều + số lượng + thời gian sát nhau (±3 phút)
+      const isImport = item.to_department === 'Kho';
+      const dir = isImport ? 'in' : 'out';
+      const recTs = item.sent_at ? new Date(item.sent_at).getTime() : 0;
+      return productImages.filter(img => {
+        if (img.journal_id) return false;
+        if (img.direction && img.direction !== dir) return false;
+        if (img.quantity != null && Number(img.quantity) !== Number(item.quantity_sent)) return false;
+        if (recTs > 0 && img.captured_at) {
+          const imgTs = new Date(img.captured_at).getTime();
+          if (Math.abs(imgTs - recTs) > 3 * 60 * 1000) return false;
+        }
+        return true;
+      });
+    },
+    [productImages]
+  );
+
   if (!product) return null;
 
   const totalIn = inRecords.reduce((acc, r) => acc + (r.quantity_sent || 0), 0);
@@ -114,7 +141,7 @@ export default function ProductHistoryModal({ visible, product, shiftId, onClose
                   <Text style={styles.subtitle}>Lịch sử các đợt phát sinh trong ca này</Text>
                 </View>
                 <TouchableOpacity onPress={onClose} style={styles.closeBtn}>
-                  <Ionicons name="close" size={20} color="#94a3b8" />
+                  <Ionicons name="close" size={20} color={isDark ? '#94a3b8' : '#475569'} />
                 </TouchableOpacity>
               </View>
 
@@ -253,22 +280,47 @@ export default function ProductHistoryModal({ visible, product, shiftId, onClose
                   renderItem={({ item, index }) => {
                     const isImport = item.to_department === 'Kho';
                     const timeStr = item.sent_at ? new Date(item.sent_at).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' }) : '';
+                    const rowImages = getImagesForRecord(item);
                     return (
                       <View style={styles.recordItem}>
-                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                          <View style={[styles.typeBadge, isImport ? styles.typeIn : styles.typeOut]}>
-                            <Ionicons name={isImport ? 'arrow-down' : 'arrow-up'} size={12} color="#fff" />
+                        <View style={styles.recordTopRow}>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 }}>
+                            <View style={[styles.typeBadge, isImport ? styles.typeIn : styles.typeOut]}>
+                              <Ionicons name={isImport ? 'arrow-down' : 'arrow-up'} size={12} color="#fff" />
+                            </View>
+                            <View style={{ flex: 1 }}>
+                              <Text style={styles.recordTime}>
+                                Đợt #{filteredRecords.length - index} • {timeStr}
+                              </Text>
+                              <Text style={styles.recordUser}>Bởi: {item.sent_by_name || 'Nhân viên'}</Text>
+                            </View>
                           </View>
-                          <View>
-                            <Text style={styles.recordTime}>
-                              Đợt #{filteredRecords.length - index} • {timeStr}
-                            </Text>
-                            <Text style={styles.recordUser}>Bởi: {item.sent_by_name || 'Nhân viên'}</Text>
-                          </View>
+                          <Text style={[styles.recordQty, isImport ? { color: colors.success } : { color: colors.danger }]}>
+                            {isImport ? '+' : '-'}{item.quantity_sent} {item.unit}
+                          </Text>
                         </View>
-                        <Text style={[styles.recordQty, isImport ? { color: '#22c55e' } : { color: '#f43f5e' }]}>
-                          {isImport ? '+' : '-'}{item.quantity_sent} {item.unit}
-                        </Text>
+
+                        {rowImages.length > 0 && (
+                          <ScrollView
+                            horizontal
+                            showsHorizontalScrollIndicator={false}
+                            contentContainerStyle={styles.recordThumbRow}
+                          >
+                            {rowImages.map(img => (
+                              <TouchableOpacity
+                                key={img.id}
+                                activeOpacity={0.85}
+                                onPress={() => setPreviewImage(img)}
+                                style={styles.recordThumbWrap}
+                              >
+                                <Image
+                                  source={{ uri: getOperationImageDisplayUrl(img) }}
+                                  style={styles.recordThumbImg}
+                                />
+                              </TouchableOpacity>
+                            ))}
+                          </ScrollView>
+                        )}
                       </View>
                     );
                   }}
@@ -309,26 +361,26 @@ export default function ProductHistoryModal({ visible, product, shiftId, onClose
   );
 }
 
-const styles = StyleSheet.create({
+const createStyles = (c: AppThemeColors, isDark: boolean) => StyleSheet.create({
   overlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.65)',
+    backgroundColor: isDark ? 'rgba(0,0,0,0.65)' : 'rgba(15,23,42,0.5)',
     justifyContent: 'flex-end',
   },
   sheetContainer: {
-    backgroundColor: '#1e293b',
+    backgroundColor: isDark ? '#1e293b' : '#ffffff',
     borderTopLeftRadius: 28,
     borderTopRightRadius: 28,
     paddingHorizontal: 16,
     paddingTop: 8,
     paddingBottom: Platform.OS === 'ios' ? 32 : 16,
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: isDark ? '#334155' : '#e2e8f0',
   },
   handle: {
     width: 44,
     height: 5,
-    backgroundColor: '#475569',
+    backgroundColor: isDark ? '#475569' : '#cbd5e1',
     borderRadius: 3,
     alignSelf: 'center',
     marginBottom: 10,
@@ -339,29 +391,29 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingBottom: 8,
     borderBottomWidth: 1,
-    borderBottomColor: '#334155',
+    borderBottomColor: isDark ? '#334155' : '#e2e8f0',
   },
   title: {
     fontSize: 15,
-    fontWeight: '700',
-    color: '#f8fafc',
+    fontWeight: '800',
+    color: c.text,
   },
   subtitle: {
     fontSize: 11,
-    color: '#94a3b8',
+    color: c.textMuted,
     marginTop: 2,
   },
   closeBtn: {
     padding: 6,
-    borderRadius: 8,
-    backgroundColor: '#0f172a',
+    borderRadius: 999,
+    backgroundColor: isDark ? '#0f172a' : '#f1f5f9',
   },
   statsBanner: {
     flexDirection: 'row',
-    backgroundColor: '#0f172a',
-    borderRadius: 12,
+    backgroundColor: isDark ? '#0f172a' : '#f8fafc',
+    borderRadius: 14,
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: isDark ? '#334155' : '#e2e8f0',
     marginVertical: 10,
     paddingVertical: 10,
     alignItems: 'center',
@@ -372,27 +424,48 @@ const styles = StyleSheet.create({
   },
   statLabel: {
     fontSize: 10,
-    color: '#64748b',
-    fontWeight: '600',
+    color: c.textMuted,
+    fontWeight: '700',
   },
   statValue: {
     fontSize: 16,
     fontWeight: '800',
-    color: '#f8fafc',
+    color: c.text,
     marginTop: 2,
   },
   statDivider: {
     width: 1,
     height: 24,
-    backgroundColor: '#334155',
+    backgroundColor: isDark ? '#334155' : '#e2e8f0',
   },
   recordItem: {
+    paddingVertical: 9,
+    borderBottomWidth: 1,
+    borderBottomColor: isDark ? '#334155' : '#f1f5f9',
+    gap: 8,
+  },
+  recordTopRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingVertical: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: '#334155',
+    gap: 8,
+  },
+  recordThumbRow: {
+    paddingLeft: 30,
+    gap: 8,
+  },
+  recordThumbWrap: {
+    width: 54,
+    height: 54,
+    borderRadius: 10,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: isDark ? '#475569' : '#cbd5e1',
+    backgroundColor: isDark ? '#0f172a' : '#f1f5f9',
+  },
+  recordThumbImg: {
+    width: '100%',
+    height: '100%',
   },
   typeBadge: {
     width: 22,
@@ -410,11 +483,11 @@ const styles = StyleSheet.create({
   recordTime: {
     fontSize: 12,
     fontWeight: '700',
-    color: '#f8fafc',
+    color: c.text,
   },
   recordUser: {
     fontSize: 10,
-    color: '#64748b',
+    color: c.textMuted,
   },
   recordQty: {
     fontSize: 14,
@@ -422,23 +495,25 @@ const styles = StyleSheet.create({
   },
   doneBtn: {
     height: 42,
-    backgroundColor: '#334155',
-    borderRadius: 10,
+    backgroundColor: isDark ? '#334155' : '#f1f5f9',
+    borderWidth: 1,
+    borderColor: isDark ? '#475569' : '#cbd5e1',
+    borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
     marginTop: 10,
   },
   doneBtnText: {
-    color: '#cbd5e1',
+    color: isDark ? '#cbd5e1' : '#334155',
     fontSize: 13,
     fontWeight: '700',
   },
   tabRow: {
     flexDirection: 'row',
     gap: 6,
-    backgroundColor: '#0f172a',
+    backgroundColor: isDark ? '#0f172a' : '#f1f5f9',
     padding: 4,
-    borderRadius: 10,
+    borderRadius: 12,
     marginBottom: 8,
   },
   tabBtn: {
@@ -448,18 +523,19 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: 5,
     paddingVertical: 7,
-    borderRadius: 8,
+    borderRadius: 9,
   },
   tabBtnActive: {
-    backgroundColor: '#1e293b',
+    backgroundColor: isDark ? '#1e293b' : '#ffffff',
+    elevation: isDark ? 0 : 1,
   },
   tabText: {
     fontSize: 12,
     fontWeight: '700',
-    color: '#94a3b8',
+    color: c.textMuted,
   },
   tabTextActive: {
-    color: '#38bdf8',
+    color: isDark ? '#38bdf8' : '#0284c7',
   },
   filterRow: {
     flexDirection: 'row',
@@ -469,28 +545,28 @@ const styles = StyleSheet.create({
   filterBtn: {
     flex: 1,
     paddingVertical: 6,
-    borderRadius: 8,
-    backgroundColor: '#0f172a',
+    borderRadius: 9,
+    backgroundColor: isDark ? '#0f172a' : '#f8fafc',
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: isDark ? '#334155' : '#cbd5e1',
   },
   filterAllActive: {
     backgroundColor: '#0284c7',
-    borderColor: '#38bdf8',
+    borderColor: '#0284c7',
   },
   filterInActive: {
     backgroundColor: '#059669',
-    borderColor: '#34d399',
+    borderColor: '#059669',
   },
   filterOutActive: {
     backgroundColor: '#e11d48',
-    borderColor: '#fb7185',
+    borderColor: '#e11d48',
   },
   filterText: {
     fontSize: 11,
     fontWeight: '700',
-    color: '#94a3b8',
+    color: c.textSecondary,
   },
   gridWrap: {
     flexDirection: 'row',
@@ -503,9 +579,9 @@ const styles = StyleSheet.create({
     height: THUMB_SIZE,
     borderRadius: 10,
     overflow: 'hidden',
-    backgroundColor: '#0f172a',
+    backgroundColor: isDark ? '#0f172a' : '#f1f5f9',
     borderWidth: 1,
-    borderColor: '#334155',
+    borderColor: isDark ? '#334155' : '#cbd5e1',
   },
   gridImage: {
     width: '100%',
