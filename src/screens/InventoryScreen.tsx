@@ -2813,7 +2813,10 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
 
           {/* Nội dung Sơ đồ Tầng hoặc Thống kê Sảnh */}
           <KeyboardAvoidingView
-            style={{ flex: 1 }}
+            style={{
+              flex: 1,
+              paddingBottom: Platform.OS === 'android' ? detailKeyboardHeight : 0,
+            }}
             behavior={Platform.OS === 'ios' ? 'padding' : undefined}
           >
             <ScrollView
@@ -2823,7 +2826,7 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
               automaticallyAdjustKeyboardInsets
               contentContainerStyle={{
                 padding: 14,
-                paddingBottom: detailKeyboardHeight > 0 ? detailKeyboardHeight + 80 : 60,
+                paddingBottom: 32,
               }}
             >
             {showHallSummary && detailZone?.is_hall ? (
