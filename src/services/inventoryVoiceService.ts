@@ -203,6 +203,16 @@ export async function getOfflineInventoryVoicesBySessionApp(
     .sort((a, b) => String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
 }
 
+export async function getOfflineVoiceCountsBySessionApp(): Promise<Record<string, number>> {
+  const all = await readAllVoiceRecords();
+  const counts: Record<string, number> = {};
+  for (const it of all) {
+    if (!it.sessionId) continue;
+    counts[it.sessionId] = (counts[it.sessionId] || 0) + 1;
+  }
+  return counts;
+}
+
 export async function deleteOfflineInventoryVoiceByKeyApp(voiceKey: string): Promise<void> {
   const all = await readAllVoiceRecords();
   const target = all.find(x => x.key === voiceKey);
@@ -408,26 +418,34 @@ async function callGeminiBatchAudio(
   if (!geminiCfg || geminiCfg.apiKeys.length === 0 || items.length === 0) return {};
 
   const mergedVocab = Array.from(
-    new Set([...WAREHOUSE_VOICE_CONTEXT_STRINGS, ...extraVocab.slice(0, 50)])
+    new Set([
+      'Dona A', 'Dona B', 'Dona C', 'Dona D',
+      'Đô A', 'Đô B', 'Đô C', 'Đô D',
+      'Ri A', 'Ri B', 'Ri C', 'Ri D', 'Ri 6',
+      'vụn', 'múi', 'cơm', 'Nito', 'nguyên trái',
+      'thùng', 'pallet', 'LOT', 'kg',
+      ...extraVocab.slice(0, 50),
+    ])
   );
 
   const prompt = [
-    `Bạn sẽ nghe ${items.length} đoạn ghi âm kiểm kê tiếng Việt của nhân viên KHO LẠNH, mỗi đoạn đi kèm một mã ID.`,
-    `Từ khóa kho hay dùng: ${mergedVocab.join(', ')}.`,
-    'Quy tắc: nhân viên kho hay đọc tắt "Đô A/B/C/D" (="Dona A/B/C/D") và "Ri A/B/C/D". BẮT BUỘC giữ nguyên chữ phân loại A/B/C/D: "đô a"->"Dona A", "đô bê"->"Dona B", "đô xê"->"Dona C", "ri a"->"Ri A", "ri bê"->"Ri B", "ri xê"->"Ri C". ĐẶC BIỆT: nghe "đô a 8 thùng" phải viết "Dona A 8 thùng", TUYỆT ĐỐI KHÔNG nuốt chữ A thành "Dona 8 thùng"; KHÔNG tự thêm số "6" khi chỉ nói "Ri A/B/C". "lót"->"LOT", "ba lết"->"pallet"; viết số lượng bằng chữ số (0-9).',
-    'Trả về DUY NHẤT một JSON object map chính xác từng ID sang nội dung tiếng Việt đã nghe được, ví dụ: {"<ID>": "Dona A thiếu 2 thùng"}. Nếu đoạn nào im lặng trả về chuỗi rỗng "".',
+    `Nghe ${items.length} đoạn ghi âm kiểm kê của nhân viên KHO LẠNH SẦU RIÊNG (đánh số "1".."${items.length}").`,
+    `Tên hàng & từ hay dùng trong kho: ${mergedVocab.join(', ')}.`,
+    'Chép lại đúng ý người nói bằng tiếng Việt, viết số bằng chữ số (0-9), giữ nguyên phân loại A/B/C/D nếu có.',
+    `Trả về DUY NHẤT JSON object chứa đủ ${items.length} khóa "1".."${items.length}", ví dụ: {"1": "...", "2": "..."}. Đoạn im lặng trả về "".`,
   ].join('\n');
 
+  // Dùng ID ngắn "1", "2", ... khi gửi Gemini để AI không bao giờ viết sai/bỏ sót chuỗi UUID dài
   const parts: any[] = [{ text: prompt }];
-  for (const it of items) {
-    parts.push({ text: `ID: ${it.itemId}` });
+  items.forEach((it, idx) => {
+    parts.push({ text: `Đoạn "${idx + 1}":` });
     parts.push({
       inlineData: {
         mimeType: it.mimeType || 'audio/mp4',
         data: it.audioBase64,
       },
     });
-  }
+  });
 
   for (const apiKey of getOrderedGeminiKeysApp(geminiCfg.apiKeys)) {
     try {
@@ -466,7 +484,13 @@ async function callGeminiBatchAudio(
         .trim();
       const parsed = JSON.parse(cleanJson);
       if (parsed && typeof parsed === 'object') {
-        return parsed;
+        const mapped: Record<string, string> = {};
+        items.forEach((it, idx) => {
+          const shortKey = String(idx + 1);
+          const val = parsed[shortKey] ?? parsed[it.itemId] ?? '';
+          mapped[it.itemId] = String(val || '').trim();
+        });
+        return mapped;
       }
     } catch {}
   }
@@ -601,6 +625,25 @@ export async function syncOfflineInventoryVoicesForSessionApp(params: {
         combinedVocab
       ),
     ]);
+
+    // Nếu trong lô có đoạn bị AI bỏ sót (rỗng text), tự động thử dịch lẻ 1 lần nữa cho đoạn đó
+    if (loadedItems.length > 1 && geminiCfg && geminiCfg.apiKeys.length > 0) {
+      for (const { item, audioBase64 } of loadedItems) {
+        if (!String(geminiMap[item.key] || '').trim()) {
+          try {
+            const retryMap = await callGeminiBatchAudio(
+              geminiCfg,
+              [{ itemId: item.key, audioBase64, mimeType: item.mimeType }],
+              combinedVocab
+            );
+            const retryText = String(retryMap[item.key] || '').trim();
+            if (retryText) {
+              geminiMap[item.key] = retryText;
+            }
+          } catch {}
+        }
+      }
+    }
 
     for (let i = 0; i < loadedItems.length; i++) {
       const { item } = loadedItems[i];

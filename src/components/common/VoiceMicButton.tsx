@@ -50,7 +50,7 @@ export function VoiceMicButton({
   vocabulary,
   size = 15,
 }: VoiceMicButtonProps) {
-  const audioRecorder = useAudioRecorder(RecordingPresets.LOW_QUALITY);
+  const audioRecorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   const [status, setStatus] = useState<'idle' | 'recording' | 'transcribing'>('idle');
   const startedAtRef = useRef<number>(0);
   const autoStopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
