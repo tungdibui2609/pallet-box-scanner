@@ -27,6 +27,8 @@ import {
   setDefaultTargetBoxQty,
   getAutoCompletePalletOnFull,
   setAutoCompletePalletOnFull,
+  getAutoTranscribeVoiceOnStop,
+  setAutoTranscribeVoiceOnStop,
 } from '../services/appSettings';
 
 export default function SettingsScreen({ onBack }: { onBack: () => void }) {
@@ -45,6 +47,7 @@ export default function SettingsScreen({ onBack }: { onBack: () => void }) {
   const [defaultTargetQty, setDefaultTargetQtyState] = useState<string>('30');
   const [savingTargetQty, setSavingTargetQty] = useState(false);
   const [autoCompleteOnFull, setAutoCompleteOnFullState] = useState(true);
+  const [autoTranscribeVoice, setAutoTranscribeVoiceState] = useState(false);
 
   // Master All-in-One Sync
   const [syncingAllMaster, setSyncingAllMaster] = useState(false);
@@ -108,6 +111,8 @@ export default function SettingsScreen({ onBack }: { onBack: () => void }) {
       setDefaultTargetQtyState(String(savedTargetQty));
       const autoChot = await getAutoCompletePalletOnFull();
       setAutoCompleteOnFullState(autoChot);
+      const autoVoice = await getAutoTranscribeVoiceOnStop();
+      setAutoTranscribeVoiceState(autoVoice);
 
       const count = await getStampDictionariesCount();
       setStampRulesCount(count);
@@ -156,6 +161,11 @@ export default function SettingsScreen({ onBack }: { onBack: () => void }) {
   async function handleToggleAutoComplete(val: boolean) {
     setAutoCompleteOnFullState(val);
     await setAutoCompletePalletOnFull(val);
+  }
+
+  async function handleToggleAutoTranscribeVoice(val: boolean) {
+    setAutoTranscribeVoiceState(val);
+    await setAutoTranscribeVoiceOnStop(val);
   }
 
   async function handleSave() {
@@ -644,6 +654,26 @@ export default function SettingsScreen({ onBack }: { onBack: () => void }) {
                 value={autoCompleteOnFull}
                 onValueChange={handleToggleAutoComplete}
                 trackColor={{ false: isDark ? '#334155' : '#cbd5e1', true: '#10b981' }}
+                thumbColor="#ffffff"
+              />
+            </View>
+
+            <View style={{ height: 1, backgroundColor: colors.border, marginVertical: 12 }} />
+
+            {/* Tự động gửi AI dịch ngay khi ghi âm xong */}
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+              <View style={{ flex: 1 }}>
+                <Text style={{ color: colors.text, fontSize: 13.5, fontWeight: '700' }}>
+                  Tự động gửi AI dịch khi ghi âm xong
+                </Text>
+                <Text style={{ color: colors.textMuted, fontSize: 11.5, marginTop: 1 }}>
+                  Mặc định tắt: lưu máy nghe lại trước, bấm &quot;Dịch&quot; hoặc Đồng bộ sau
+                </Text>
+              </View>
+              <Switch
+                value={autoTranscribeVoice}
+                onValueChange={handleToggleAutoTranscribeVoice}
+                trackColor={{ false: isDark ? '#334155' : '#cbd5e1', true: '#8b5cf6' }}
                 thumbColor="#ffffff"
               />
             </View>

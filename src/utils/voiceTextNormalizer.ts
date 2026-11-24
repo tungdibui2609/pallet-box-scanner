@@ -160,9 +160,18 @@ export function normalizeWarehouseVoiceText(raw: string): string {
   let text = raw.trim().replace(/\s+/g, ' ');
   if (!text) return '';
 
-  const replacements: [RegExp, string][] = [
+  const replacements: [RegExp, string | ((...args: any[]) => string)][] = [
+    [/\b(?:ri|di|ghi|ry)\s*(?:sáu|6)\s*(a|b|c|d)\b/gi, (_: string, g: string) => `Ri 6 ${String(g).toUpperCase()}`],
     [/\b(?:ri|di|ghi|ry)\s*(?:sáu|6)\b/gi, 'Ri 6'],
     [/\b(?:ri6|di6)\b/gi, 'Ri 6'],
+    [/\b(?:ri|ry)\s+(?:a)\b/gi, 'Ri A'],
+    [/\b(?:ri|ry)\s+(?:bê|b)\b/gi, 'Ri B'],
+    [/\b(?:ri|ry)\s+(?:xê|cê|c)\b/gi, 'Ri C'],
+    [/\b(?:ri|ry)\s+(?:dê|đê|d)\b/gi, 'Ri D'],
+    [/\b(?:đô\s*na|dô\s*na|do\s*na|đôna|đô|dô)\s+(?:a)\b/gi, 'Dona A'],
+    [/\b(?:đô\s*na|dô\s*na|do\s*na|đôna|đô|dô)\s+(?:bê|b)\b/gi, 'Dona B'],
+    [/\b(?:đô\s*na|dô\s*na|do\s*na|đôna|đô|dô)\s+(?:xê|cê|c)\b/gi, 'Dona C'],
+    [/\b(?:đô\s*na|dô\s*na|do\s*na|đôna|đô|dô)\s+(?:dê|đê|d)\b/gi, 'Dona D'],
     [/\b(?:đô\s*na|dô\s*na|do\s*na|đôna)\b/gi, 'Dona'],
     [/\b(?:mô\s*thon|môn\s*thon|mông\s*thon|mon\s*thong)\b/gi, 'Monthong'],
     [/\b(?:mu\s*sang\s*kinh|mu\s*sang\s*king|mú\s*sang\s*king)\b/gi, 'Musang King'],
@@ -173,7 +182,7 @@ export function normalizeWarehouseVoiceText(raw: string): string {
   ];
 
   for (const [pattern, rep] of replacements) {
-    text = text.replace(pattern, rep);
+    text = text.replace(pattern, rep as any);
   }
 
   text = convertSpokenNumbers(text);
@@ -187,13 +196,35 @@ export function appendWarehouseVoiceText(currentText: string, spokenText: string
   const cleanSpoken = normalizeWarehouseVoiceText(spokenText);
   if (!cleanSpoken) return currentText;
   const cur = (currentText || '').trim();
-  if (!cur) return cleanSpoken;
-  const sep = /[,.;:\-]$/.test(cur) ? ' ' : ', ';
-  return `${cur}${sep}${cleanSpoken}`;
+  if (!cur) return `#1 ${cleanSpoken}`;
+  const lines = cur
+    .split(/\r?\n/)
+    .map(l => l.trim())
+    .filter(Boolean);
+  const normalizedLines = lines.map((line, idx) =>
+    /^#\d+\b/.test(line) ? line : `#${idx + 1} ${line}`
+  );
+  let maxNum = normalizedLines.length;
+  for (const line of normalizedLines) {
+    const m = /^#(\d+)\b/.exec(line);
+    if (m) {
+      const n = parseInt(m[1], 10);
+      if (n > maxNum) maxNum = n;
+    }
+  }
+  return [...normalizedLines, `#${maxNum + 1} ${cleanSpoken}`].join('\n');
 }
 
 export const WAREHOUSE_VOICE_CONTEXT_STRINGS = [
+  'Ri A',
+  'Ri B',
+  'Ri C',
+  'Ri D',
   'Ri 6',
+  'Dona A',
+  'Dona B',
+  'Dona C',
+  'Dona D',
   'Dona',
   'Monthong',
   'Musang King',

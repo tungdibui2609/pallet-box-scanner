@@ -2,6 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 export const STORAGE_KEY_DEFAULT_TARGET_BOX_QTY = 'config_default_target_box_qty';
 export const STORAGE_KEY_AUTO_COMPLETE_PALLET_ON_FULL = 'config_auto_complete_pallet_on_full';
+export const STORAGE_KEY_AUTO_TRANSCRIBE_VOICE = 'config_auto_transcribe_voice_on_stop';
 export const FALLBACK_TARGET_BOX_QTY = 30;
 
 /**
@@ -60,6 +61,31 @@ export async function setAutoCompletePalletOnFull(enabled: boolean): Promise<boo
     await AsyncStorage.setItem(STORAGE_KEY_AUTO_COMPLETE_PALLET_ON_FULL, enabled ? 'true' : 'false');
   } catch (err) {
     console.warn('[AppSettings] Không thể lưu auto_complete_pallet_on_full:', err);
+  }
+  return enabled;
+}
+
+/**
+ * Cài đặt: Có tự động gửi file ghi âm kiểm kê cho Gemini AI dịch ngay khi vừa nói xong không.
+ * Mặc định: false (TẮT) — nói xong luôn lưu local để người dùng nghe lại trước, rồi tự bấm "Dịch" hoặc đồng bộ 1 lần.
+ */
+export async function getAutoTranscribeVoiceOnStop(): Promise<boolean> {
+  try {
+    const raw = await AsyncStorage.getItem(STORAGE_KEY_AUTO_TRANSCRIBE_VOICE);
+    if (raw !== null) {
+      return raw === 'true';
+    }
+  } catch (err) {
+    console.warn('[AppSettings] Không thể đọc auto_transcribe_voice_on_stop:', err);
+  }
+  return false;
+}
+
+export async function setAutoTranscribeVoiceOnStop(enabled: boolean): Promise<boolean> {
+  try {
+    await AsyncStorage.setItem(STORAGE_KEY_AUTO_TRANSCRIBE_VOICE, enabled ? 'true' : 'false');
+  } catch (err) {
+    console.warn('[AppSettings] Không thể lưu auto_transcribe_voice_on_stop:', err);
   }
   return enabled;
 }

@@ -47,6 +47,12 @@
       "expo-font",
       "expo-status-bar",
       [
+        "expo-audio",
+        {
+          "microphonePermission": "Ứng dụng cần quyền Microphone để ghi âm ghi chú kiểm kê."
+        }
+      ],
+      [
         "expo-speech-recognition",
         {
           "microphonePermission": "Ứng dụng cần quyền Microphone để nhân viên nói chuyển thành ghi chú kiểm kê.",

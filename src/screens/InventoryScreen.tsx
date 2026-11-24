@@ -27,7 +27,23 @@ import {
   PositionItem,
 } from '../services/supabase';
 import HallLotInputModal, { HallOption } from '../components/HallLotInputModal';
-import { VoiceMicButton } from '../components/common/VoiceMicButton';
+import {
+  VoiceMicButton,
+  VoiceAudioPlayerBar,
+  AppOfflineVoicePayload,
+} from '../components/common/VoiceMicButton';
+import {
+  OfflineInventoryVoiceAppItem,
+  saveOfflineInventoryVoiceApp,
+  getOfflineInventoryVoicesBySessionApp,
+  deleteOfflineInventoryVoiceByKeyApp,
+  remapOfflineInventoryVoiceSessionApp,
+  syncOfflineInventoryVoicesForSessionApp,
+  processSingleVoiceOnlineApp,
+  parseVoiceNoteUrlsApp,
+  appendVoiceNoteUrlApp,
+} from '../services/inventoryVoiceService';
+import * as Network from 'expo-network';
 import { appendWarehouseVoiceText } from '../utils/voiceTextNormalizer';
 import { useAuth } from '../contexts/AuthContext';
 import { useThemedStyles } from '../contexts/ThemeContext';
@@ -230,16 +246,38 @@ const LevelInventoryModal = ({
   visible,
   onClose,
   inventoryResults,
+  systemCode,
+  companyId,
+  sessionId,
+  sessionName,
+  vocabulary,
+  pendingVoicesMap,
+  transcribingVoicesMap,
   togglePositionChecked,
   updatePositionNote,
+  onSaveVoiceResult,
+  onSaveOfflineVoice,
+  onDeleteOfflineVoice,
+  onTranscribeOfflineVoice,
   bulkCheckPositions,
 }: {
   level: any;
   visible: boolean;
   onClose: () => void;
-  inventoryResults: Record<string, { checked?: boolean; note?: string }>;
+  inventoryResults: Record<string, { checked?: boolean; note?: string; voice_note_url?: string | null }>;
+  systemCode: string;
+  companyId?: string | null;
+  sessionId?: string | null;
+  sessionName?: string | null;
+  vocabulary?: string[];
+  pendingVoicesMap: Record<string, OfflineInventoryVoiceAppItem[]>;
+  transcribingVoicesMap: Record<string, boolean>;
   togglePositionChecked: (posId: string) => void;
   updatePositionNote: (posId: string, note: string) => void;
+  onSaveVoiceResult: (posId: string, spokenText: string, voiceUrl?: string | null, voiceKey?: string) => void;
+  onSaveOfflineVoice: (posId: string, payload: AppOfflineVoicePayload) => void;
+  onDeleteOfflineVoice: (posId: string, voiceKey: string) => void;
+  onTranscribeOfflineVoice: (posId: string, voiceKey: string, positionCode?: string | null) => void;
   bulkCheckPositions: (posIds: string[], checked: boolean) => void;
 }) => {
   const styles = useThemedStyles(baseStyles);
@@ -573,6 +611,8 @@ const LevelInventoryModal = ({
                       />
                       <TextInput
                         style={styles.noteInput}
+                        multiline
+                        textAlignVertical="top"
                         placeholder="Ghi chú sai lệch (gõ hoặc bấm Micro)..."
                         placeholderTextColor="#64748b"
                         value={res.note || ''}
@@ -584,14 +624,41 @@ const LevelInventoryModal = ({
                         </TouchableOpacity>
                       ) : null}
                       <VoiceMicButton
-                        onResult={spoken =>
-                          updatePositionNote(
-                            posKey,
-                            appendWarehouseVoiceText(res.note || '', spoken)
-                          )
+                        systemCode={systemCode}
+                        companyId={companyId}
+                        sessionId={sessionId}
+                        sessionName={sessionName}
+                        positionId={posKey}
+                        positionCode={slot.code}
+                        vocabulary={vocabulary}
+                        onResult={(spoken, voiceUrl) =>
+                          onSaveVoiceResult(posKey, spoken, voiceUrl)
                         }
+                        onOfflineAudio={payload => onSaveOfflineVoice(posKey, payload)}
                       />
                     </View>
+                    {parseVoiceNoteUrlsApp(res.voice_note_url).map((savedUrl, sIdx, arr) => (
+                      <VoiceAudioPlayerBar
+                        key={`saved-${posKey}-${sIdx}`}
+                        voiceNoteUrl={savedUrl}
+                        label={arr.length > 1 ? `Ghi âm đã lưu #${sIdx + 1}` : 'Nghe lại ghi âm đã lưu'}
+                      />
+                    ))}
+                    {(pendingVoicesMap[posKey] || []).map((pv, pIdx, arr) => (
+                      <VoiceAudioPlayerBar
+                        key={pv.key}
+                        localUri={pv.localUri}
+                        durationSec={pv.durationSec}
+                        label={
+                          arr.length > 1
+                            ? `Ghi âm #${pIdx + 1} (${pv.durationSec}s)`
+                            : `Nghe lại (${pv.durationSec}s)`
+                        }
+                        isTranscribing={Boolean(transcribingVoicesMap[pv.key])}
+                        onTranscribeOffline={() => onTranscribeOfflineVoice(posKey, pv.key, slot.code)}
+                        onDeleteOffline={() => onDeleteOfflineVoice(posKey, pv.key)}
+                      />
+                    ))}
                   </View>
                 );
               })}
@@ -627,6 +694,9 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
   const [currentSession, setCurrentSession] = useState<any>(null);
   const [inventoryResults, setInventoryResults] = useState<Record<string, any>>({});
   const [allInventoryResults, setAllInventoryResults] = useState<Record<string, Record<string, any>>>({});
+  const [activeSystemCode, setActiveSystemCode] = useState<string>('KHO_DONG_LANH');
+  const [pendingVoicesMap, setPendingVoicesMap] = useState<Record<string, OfflineInventoryVoiceAppItem[]>>({});
+  const [transcribingVoicesMap, setTranscribingVoicesMap] = useState<Record<string, boolean>>({});
   const [syncingRef, setSyncingRef] = useState<Record<string, boolean>>({});
   const [toastMsg, setToastMsg] = useState<{ text: string; type: 'success' | 'error' | 'warning' | 'info' } | null>(null);
 
@@ -715,6 +785,25 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
     const grouped = groupInventoryWarehouseData(zones, rawPositions);
     return { displayZones: grouped.zones, displayPositions: grouped.positions };
   }, [zones, rawPositions, isGrouped]);
+
+  // Gom tên gõ tắt (aliases) từ hàng hóa trên sơ đồ kho để bổ sung từ điển gợi ý cho Gemini AI
+  const voiceVocabulary = useMemo(() => {
+    const set = new Set<string>();
+    for (const p of rawPositions as any[]) {
+      if (set.size >= 50) break;
+      const rawAlias = String(p?.aliases || '').trim();
+      if (rawAlias) {
+        for (const part of rawAlias.split(/[,;/|\n]+/)) {
+          const w = part.trim();
+          if (w.length >= 2 && w.length <= 32) {
+            set.add(w);
+            if (set.size >= 50) break;
+          }
+        }
+      }
+    }
+    return Array.from(set);
+  }, [rawPositions]);
 
   // Nạp dữ liệu từ bộ nhớ máy trước (0ms), chỉ tải từ Supabase khi forceOnline = true hoặc chưa có phiếu nào
   const loadData = useCallback(async (forceOnline = false) => {
@@ -850,7 +939,7 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
         if (activeCloudIds.length > 0) {
           const { data: cloudItems } = await client
             .from('internal_inventory_items')
-            .select('session_id, position_id, checked, note')
+            .select('session_id, position_id, checked, note, voice_note_url')
             .in('session_id', activeCloudIds);
 
           if (cloudItems) {
@@ -860,6 +949,7 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
               nextAllResults[item.session_id][item.position_id] = {
                 checked: item.checked,
                 note: item.note || '',
+                voice_note_url: item.voice_note_url || null,
               };
             });
             setAllInventoryResults(nextAllResults);
@@ -960,6 +1050,7 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
         fetchedResults[item.position_id] = {
           checked: item.checked,
           note: item.note || '',
+          voice_note_url: item.voice_note_url || null,
         };
       });
 
@@ -972,24 +1063,32 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
     } catch {}
   };
 
-  const syncItemToSupabase = async (posId: string, checked: boolean, note: string | null) => {
+  const syncItemToSupabase = async (
+    posId: string,
+    checked: boolean,
+    note: string | null,
+    voiceNoteUrl?: string | null
+  ) => {
     if (!currentSession || !isUUID(currentSession.id) || !user) return;
     try {
       const client = await getSupabaseClient();
       const pos = displayPositions.find((p: any) => p.id === posId);
-      await client.from('internal_inventory_items').upsert(
-        {
-          session_id: currentSession.id,
-          position_id: posId,
-          zone_id: pos?.real_zone_id || pos?.zone_id || null,
-          checked,
-          note: note || null,
-          checked_by: user.id,
-          checked_at: new Date().toISOString(),
-          lot_id_snapshot: pos?.lot_id || null,
-        },
-        { onConflict: 'session_id,position_id' }
-      );
+      const payload: any = {
+        session_id: currentSession.id,
+        position_id: posId,
+        zone_id: pos?.real_zone_id || pos?.zone_id || null,
+        checked,
+        note: note || null,
+        checked_by: user.id,
+        checked_at: new Date().toISOString(),
+        lot_id_snapshot: pos?.lot_id || null,
+      };
+      if (voiceNoteUrl !== undefined) {
+        payload.voice_note_url = voiceNoteUrl;
+      }
+      await client.from('internal_inventory_items').upsert(payload, {
+        onConflict: 'session_id,position_id',
+      });
     } catch {}
   };
 
@@ -1078,11 +1177,59 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
 
         if (createErr) throw createErr;
         targetSessionId = createdSess.id;
+        await remapOfflineInventoryVoiceSessionApp(sessionId, targetSessionId);
       }
 
       const resStr = await AsyncStorage.getItem(INVENTORY_KEYS.RESULTS);
       const allResults = resStr ? JSON.parse(resStr) : {};
-      const localResults = allResults[sessionId] || {};
+      const localResults: Record<string, any> = { ...(allResults[sessionId] || {}) };
+
+      // Đồng bộ toàn bộ ghi âm offline lên Google Drive & dịch Gemini AI (gộp tối đa 10 file/lượt)
+      let syncedVoicesCount = 0;
+      try {
+        const positionCodeById: Record<string, string> = {};
+        displayPositions.forEach((p: any) => {
+          if (p?.id && p?.code) positionCodeById[p.id] = p.code;
+        });
+        const voiceSync = await syncOfflineInventoryVoicesForSessionApp({
+          sessionId: targetSessionId,
+          sessionName: session.name || null,
+          systemCode,
+          companyId: user.company_id || null,
+          positionCodeById,
+          vocabulary: voiceVocabulary,
+          onProgress: msg => showToast(msg, 'info'),
+        });
+        syncedVoicesCount = voiceSync.syncedCount;
+        Object.entries(voiceSync.resultsByPos).forEach(([pid, vRes]) => {
+          const cur = localResults[pid] || {};
+          let mergedNote = cur.note || '';
+          for (const txt of vRes.texts) {
+            if (txt) mergedNote = appendWarehouseVoiceText(mergedNote, txt);
+          }
+          const mergedVoiceUrl = appendVoiceNoteUrlApp(cur.voice_note_url, vRes.voiceUrls);
+          localResults[pid] = {
+            ...cur,
+            checked: true,
+            note: mergedNote,
+            voice_note_url: mergedVoiceUrl,
+          };
+        });
+        if (syncedVoicesCount > 0) {
+          allResults[sessionId] = localResults;
+          await AsyncStorage.setItem(INVENTORY_KEYS.RESULTS, JSON.stringify(allResults));
+          if (currentSession?.id === sessionId || currentSession?.id === targetSessionId) {
+            setInventoryResults({ ...localResults });
+            const remList = await getOfflineInventoryVoicesBySessionApp(targetSessionId);
+            const remMap: Record<string, OfflineInventoryVoiceAppItem[]> = {};
+            remList.forEach(x => {
+              if (!remMap[x.positionId]) remMap[x.positionId] = [];
+              remMap[x.positionId].push(x);
+            });
+            setPendingVoicesMap(remMap);
+          }
+        }
+      } catch {}
 
       const entries = Object.entries(localResults).filter(([posId]) => !posId.startsWith('summary|'));
       if (entries.length === 0) {
@@ -1098,6 +1245,7 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
           zone_id: pos?.real_zone_id || pos?.zone_id || null,
           checked: Boolean(res.checked),
           note: res.note || null,
+          voice_note_url: res.voice_note_url || null,
           checked_by: user.id,
           checked_at: new Date().toISOString(),
           lot_id_snapshot: pos?.lot_id || null,
@@ -1122,7 +1270,12 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
       }
 
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      showToast(`Đã đồng bộ ${itemsToUpsert.length} vị trí lên hệ thống!`, 'success');
+      showToast(
+        syncedVoicesCount > 0
+          ? `Đã lưu Drive & dịch AI ${syncedVoicesCount} ghi âm + đồng bộ ${itemsToUpsert.length} vị trí!`
+          : `Đã đồng bộ ${itemsToUpsert.length} vị trí lên hệ thống!`,
+        'success'
+      );
       syncOfflineHallLotUpdates().catch(() => {});
       await loadData(true);
     } catch (e: any) {
@@ -1277,6 +1430,183 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
       const finalResults = updateWithNote(inventoryResults);
       syncItemToSupabase(posId, finalResults[sId].checked, note);
     } catch {}
+  };
+
+  useEffect(() => {
+    AsyncStorage.getItem('config_system_code')
+      .then(v => {
+        if (v) setActiveSystemCode(v);
+      })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (!currentSession?.id) {
+      setPendingVoicesMap({});
+      return;
+    }
+    let cancelled = false;
+    void getOfflineInventoryVoicesBySessionApp(currentSession.id).then(list => {
+      if (cancelled) return;
+      const map: Record<string, OfflineInventoryVoiceAppItem[]> = {};
+      list.forEach(v => {
+        if (!map[v.positionId]) map[v.positionId] = [];
+        map[v.positionId].push(v);
+      });
+      setPendingVoicesMap(map);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [currentSession?.id]);
+
+  const handleSaveVoiceResult = async (
+    posId: string,
+    spokenText: string,
+    voiceUrl?: string | null,
+    voiceKey?: string
+  ) => {
+    if (!currentSession || !posId) return;
+    if (currentSession.status === 'completed') {
+      showToast('Phiếu đã bị khóa, không thể thêm ghi chú', 'warning');
+      return;
+    }
+    const sId = String(posId);
+    const cur = inventoryResults[sId] || { checked: false, note: '' };
+    const nextNote = spokenText ? appendWarehouseVoiceText(cur.note || '', spokenText) : cur.note || '';
+    const nextVoiceUrl = appendVoiceNoteUrlApp(cur.voice_note_url, voiceUrl);
+    const nextChecked = nextNote.trim() !== '' || Boolean(nextVoiceUrl) ? true : Boolean(cur.checked);
+
+    const nextObj = { ...cur, note: nextNote, voice_note_url: nextVoiceUrl, checked: nextChecked };
+    setInventoryResults(prev => ({ ...prev, [sId]: nextObj }));
+    setAllInventoryResults(prev => ({
+      ...prev,
+      [currentSession.id]: { ...(prev[currentSession.id] || {}), [sId]: nextObj },
+    }));
+
+    try {
+      const resStr = await AsyncStorage.getItem(INVENTORY_KEYS.RESULTS);
+      const allResults = resStr ? JSON.parse(resStr) : {};
+      allResults[currentSession.id] = { ...(allResults[currentSession.id] || {}), [sId]: nextObj };
+      await AsyncStorage.setItem(INVENTORY_KEYS.RESULTS, JSON.stringify(allResults));
+      syncItemToSupabase(sId, nextChecked, nextNote, nextVoiceUrl);
+
+      if (voiceKey && (spokenText || voiceUrl)) {
+        await deleteOfflineInventoryVoiceByKeyApp(voiceKey);
+        setPendingVoicesMap(prev => {
+          const arr = prev[sId];
+          if (!arr || arr.length === 0) return prev;
+          const filtered = arr.filter(x => x.key !== voiceKey);
+          const next = { ...prev };
+          if (filtered.length > 0) next[sId] = filtered;
+          else delete next[sId];
+          return next;
+        });
+      }
+    } catch {}
+  };
+
+  const handleSaveOfflineVoice = async (posId: string, payload: AppOfflineVoicePayload) => {
+    if (!currentSession || !posId) return;
+    const sId = String(posId);
+    try {
+      const saved = await saveOfflineInventoryVoiceApp({
+        sessionId: currentSession.id,
+        positionId: sId,
+        sourceUri: payload.localUri,
+        mimeType: payload.mimeType,
+        durationSec: payload.durationSec,
+      });
+      setPendingVoicesMap(prev => ({
+        ...prev,
+        [sId]: [...(prev[sId] || []), saved],
+      }));
+
+      const cur = inventoryResults[sId] || { checked: false, note: '' };
+      const nextObj = { ...cur, checked: true };
+      setInventoryResults(prev => ({ ...prev, [sId]: nextObj }));
+      setAllInventoryResults(prev => ({
+        ...prev,
+        [currentSession.id]: { ...(prev[currentSession.id] || {}), [sId]: nextObj },
+      }));
+      const resStr = await AsyncStorage.getItem(INVENTORY_KEYS.RESULTS);
+      const allResults = resStr ? JSON.parse(resStr) : {};
+      allResults[currentSession.id] = { ...(allResults[currentSession.id] || {}), [sId]: nextObj };
+      await AsyncStorage.setItem(INVENTORY_KEYS.RESULTS, JSON.stringify(allResults));
+
+      showToast(
+        `Đã lưu ghi âm (${payload.durationSec}s) — nghe lại rồi bấm "Dịch" hoặc Đồng bộ sau!`,
+        'info'
+      );
+    } catch {
+      showToast('Không thể lưu ghi âm tạm trên máy', 'error');
+    }
+  };
+
+  const handleTranscribeOfflineVoice = async (
+    posId: string,
+    voiceKey: string,
+    positionCode?: string | null
+  ) => {
+    if (!currentSession || !posId || !voiceKey) return;
+    const sId = String(posId);
+    const pending = (pendingVoicesMap[sId] || []).find(x => x.key === voiceKey);
+    if (!pending) return;
+
+    try {
+      const net = await Network.getNetworkStateAsync();
+      const isOnline = Boolean(net.isConnected && net.isInternetReachable !== false);
+      if (!isOnline) {
+        showToast('Đang không có mạng — file vẫn được giữ an toàn trên máy để Đồng bộ sau!', 'warning');
+        return;
+      }
+    } catch {}
+
+    setTranscribingVoicesMap(prev => ({ ...prev, [voiceKey]: true }));
+    try {
+      const res = await processSingleVoiceOnlineApp({
+        localUri: pending.localUri,
+        mimeType: pending.mimeType,
+        systemCode: activeSystemCode,
+        companyId: user?.company_id || null,
+        sessionId: currentSession.id,
+        sessionName: currentSession.name || null,
+        positionId: sId,
+        positionCode: positionCode || null,
+        vocabulary: voiceVocabulary,
+      });
+
+      if (res.text || res.voiceUrl) {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+        await handleSaveVoiceResult(sId, res.text, res.voiceUrl, voiceKey);
+        showToast(res.text ? 'Đã dịch AI & lưu Drive thành công!' : 'Đã tải file ghi âm lên Drive!', 'success');
+      } else {
+        showToast('AI không nghe rõ hoặc chưa có kết nối — file vẫn giữ lại trên máy.', 'warning');
+      }
+    } catch {
+      showToast('Lỗi kết nối khi dịch AI — file vẫn được giữ an toàn trên máy.', 'error');
+    } finally {
+      setTranscribingVoicesMap(prev => {
+        const next = { ...prev };
+        delete next[voiceKey];
+        return next;
+      });
+    }
+  };
+
+  const handleDeleteOfflineVoice = async (posId: string, voiceKey: string) => {
+    if (!currentSession || !posId || !voiceKey) return;
+    const sId = String(posId);
+    await deleteOfflineInventoryVoiceByKeyApp(voiceKey);
+    setPendingVoicesMap(prev => {
+      const arr = prev[sId];
+      if (!arr) return prev;
+      const filtered = arr.filter(x => x.key !== voiceKey);
+      const next = { ...prev };
+      if (filtered.length > 0) next[sId] = filtered;
+      else delete next[sId];
+      return next;
+    });
   };
 
   const startNewSession = async (customName?: string, warehouseId?: string | null) => {
@@ -2237,6 +2567,8 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
                       <Feather name="edit-3" size={14} color={item.summaryNote ? '#fb7185' : '#64748b'} />
                       <TextInput
                         style={styles.noteInput}
+                        multiline
+                        textAlignVertical="top"
                         placeholder="Ghi chú dòng tổng (VD: thực tế có 25 LOT)..."
                         placeholderTextColor="#64748b"
                         value={item.summaryNote || ''}
@@ -2248,6 +2580,12 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
                         </TouchableOpacity>
                       ) : null}
                       <VoiceMicButton
+                        systemCode={activeSystemCode}
+                        companyId={user?.company_id || null}
+                        sessionId={currentSession?.id || null}
+                        sessionName={currentSession?.name || null}
+                        positionId={item.groupKey}
+                        vocabulary={voiceVocabulary}
                         onResult={spoken =>
                           updatePositionNote(
                             item.groupKey,
@@ -2524,8 +2862,19 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
               setSelectedSummaryGroup(null);
             }}
             inventoryResults={inventoryResults}
+            systemCode={activeSystemCode}
+            companyId={user?.company_id || null}
+            sessionId={currentSession?.id || null}
+            sessionName={currentSession?.name || null}
+            vocabulary={voiceVocabulary}
+            pendingVoicesMap={pendingVoicesMap}
+            transcribingVoicesMap={transcribingVoicesMap}
             togglePositionChecked={togglePositionChecked}
             updatePositionNote={updatePositionNote}
+            onSaveVoiceResult={handleSaveVoiceResult}
+            onSaveOfflineVoice={handleSaveOfflineVoice}
+            onDeleteOfflineVoice={handleDeleteOfflineVoice}
+            onTranscribeOfflineVoice={handleTranscribeOfflineVoice}
             bulkCheckPositions={bulkCheckPositions}
           />
         </View>
