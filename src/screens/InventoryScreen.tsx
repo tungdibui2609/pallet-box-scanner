@@ -10,6 +10,7 @@ import {
   Alert,
   KeyboardAvoidingView,
   Keyboard,
+  BackHandler,
   Platform,
   StyleSheet,
   StatusBar,
@@ -330,19 +331,33 @@ const LevelInventoryModal = ({
     }).catch(() => {});
   }, [visible, level?.slots]);
 
-  if (!level) return null;
+  const [slotsReady, setSlotsReady] = useState(false);
+
+  useEffect(() => {
+    if (!visible || !level) {
+      setSlotsReady(false);
+      return;
+    }
+    setSlotsReady(false);
+    const rafId = requestAnimationFrame(() => {
+      setSlotsReady(true);
+    });
+    return () => cancelAnimationFrame(rafId);
+  }, [visible, level?.id]);
+
+  if (!level || !visible) return null;
 
   const allSlotIds: string[] = (level.slots || []).map((s: any) => s.id);
   const allChecked = allSlotIds.length > 0 && allSlotIds.every(id => inventoryResults[id]?.checked);
 
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+    <View style={[StyleSheet.absoluteFill, { zIndex: 60 }]}>
       <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         style={{ flex: 1 }}
       >
-        <View style={styles.levelModalOverlay}>
-          <View style={styles.levelModalCard}>
+        <View style={[styles.levelModalOverlay, { paddingHorizontal: 6, paddingVertical: 6 }]}>
+          <View style={[styles.levelModalCard, { width: '100%', height: '97%', maxHeight: '97%', borderRadius: 16 }]}>
             {/* Header */}
             <View style={styles.levelModalHeader}>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 }}>
@@ -374,12 +389,19 @@ const LevelInventoryModal = ({
               </TouchableOpacity>
             </View>
 
-            {/* Danh sách vị trí trong tầng (được sắp xếp A02, B02, C02 rồi đến A01, B01, C01) */}
+            {/* Danh sách vị trí trong tầng (frame 1 hiện khung tức thì, frame 2 dựng 6 thẻ vị trí + mic) */}
             <ScrollView
-              style={{ paddingHorizontal: 16, paddingVertical: 10 }}
+              style={{ flex: 1, paddingHorizontal: 10, paddingVertical: 8 }}
               keyboardShouldPersistTaps="handled"
             >
-              {sortPositionsByDepthAndCol(level.slots || []).map((slot: any, idx: number) => {
+              {!slotsReady ? (
+                <View style={{ paddingVertical: 40, alignItems: 'center', gap: 8 }}>
+                  <ActivityIndicator size="small" color="#38bdf8" />
+                  <Text style={{ color: '#94a3b8', fontSize: 12, fontWeight: '600' }}>
+                    Đang mở {level.name}...
+                  </Text>
+                </View>
+              ) : sortPositionsByDepthAndCol(level.slots || []).map((slot: any, idx: number) => {
                 const posKey = slot.id;
                 const res = inventoryResults[posKey] || { checked: false, note: '' };
                 const isOccupied = Boolean(slot.lot_id);
@@ -669,7 +691,7 @@ const LevelInventoryModal = ({
           </View>
         </View>
       </KeyboardAvoidingView>
-    </Modal>
+    </View>
   );
 };
 
@@ -703,6 +725,7 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
 
   const [selectedWh, setSelectedWh] = useState<string | null>(null);
   const [selectedDetailZoneId, setSelectedDetailZoneId] = useState<string | null>(null);
+  const [detailContentReady, setDetailContentReady] = useState(false);
   const [selectedDetailKhuId, setSelectedDetailKhuId] = useState<string>('ALL');
   const [isGrouped, setIsGrouped] = useState(true);
 
@@ -734,6 +757,35 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
       subHide.remove();
     };
   }, []);
+
+  // Chuyển sang màn hình Chi tiết Dãy/Sảnh tức thì (frame 1 hiện header ngay, frame 2 mới mount 390 ô)
+  useEffect(() => {
+    if (!selectedDetailZoneId) {
+      setDetailContentReady(false);
+      return;
+    }
+    setDetailContentReady(false);
+    const rafId = requestAnimationFrame(() => {
+      setDetailContentReady(true);
+    });
+    return () => cancelAnimationFrame(rafId);
+  }, [selectedDetailZoneId]);
+
+  // Hỗ trợ nút Back phần cứng Android khi đang ở Chi tiết Dãy/Sảnh
+  useEffect(() => {
+    if (!selectedDetailZoneId) return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (selectedLevelInfo || selectedSummaryGroup) {
+        setSelectedLevelInfo(null);
+        setSelectedSummaryGroup(null);
+        return true;
+      }
+      setSelectedDetailZoneId(null);
+      setShowHallSummary(false);
+      return true;
+    });
+    return () => sub.remove();
+  }, [selectedDetailZoneId, selectedLevelInfo, selectedSummaryGroup]);
 
   // Cập nhật LOT ở Sảnh
   const [isHallLotModalVisible, setIsHallLotModalVisible] = useState(false);
@@ -1759,11 +1811,13 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
     }
   };
 
-  const selectSession = async (session: any) => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+  const selectSession = (session: any) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
     setCurrentSession(session);
-    await fetchSessionItems(session.id);
+    setInventoryResults(allInventoryResults[session.id] || {});
     setViewMode('detail');
+    // Cập nhật đồng bộ ngầm từ máy/server sau khi đã mở màn hình tức thì (0ms)
+    void fetchSessionItems(session.id);
   };
 
   const effectiveWhId = useMemo(() => {
@@ -1885,44 +1939,58 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
   );
 
   // Tối ưu O(N) thống kê từng khu vực
+  // Chỉ mục vị trí theo zone_id (O(1) thay vì lọc lại 7.850 vị trí mỗi lần đổi Zone/phiếu)
+  const positionsByZoneId = useMemo(() => {
+    const map = new Map<string, any[]>();
+    for (let i = 0; i < displayPositions.length; i++) {
+      const p: any = displayPositions[i];
+      if (!p.zone_id) continue;
+      let list = map.get(p.zone_id);
+      if (!list) {
+        list = [];
+        map.set(p.zone_id, list);
+      }
+      list.push(p);
+    }
+    return map;
+  }, [displayPositions]);
+
   const getZoneStats = useCallback(
     (zoneId: string) => {
-      const getDescendantIds = (pid: string): Set<string> => {
-        const set = new Set<string>([pid]);
-        const stack = [pid];
-        while (stack.length > 0) {
-          const curr = stack.pop()!;
-          const ch = childrenMap[curr] || [];
-          for (let i = 0; i < ch.length; i++) {
-            if (!set.has(ch[i].id)) {
-              set.add(ch[i].id);
-              stack.push(ch[i].id);
-            }
+      const targetZoneIds: string[] = [zoneId];
+      const seen = new Set<string>([zoneId]);
+      for (let idx = 0; idx < targetZoneIds.length; idx++) {
+        const ch = childrenMap[targetZoneIds[idx]] || [];
+        for (let i = 0; i < ch.length; i++) {
+          if (!seen.has(ch[i].id)) {
+            seen.add(ch[i].id);
+            targetZoneIds.push(ch[i].id);
           }
         }
-        return set;
-      };
+      }
 
-      const targetZoneIds = getDescendantIds(zoneId);
-      const zonePositions = displayPositions.filter((p: any) => p.zone_id && targetZoneIds.has(p.zone_id));
-
-      const total = zonePositions.length;
+      let total = 0;
       let occupied = 0;
       let checked = 0;
       let discrepancy = 0;
 
-      for (let i = 0; i < zonePositions.length; i++) {
-        const p = zonePositions[i];
-        if (p.lot_id) occupied++;
-        const r = inventoryResults[p.id];
-        if (r?.checked) checked++;
-        if (r?.note) discrepancy++;
+      for (let zIdx = 0; zIdx < targetZoneIds.length; zIdx++) {
+        const zList = positionsByZoneId.get(targetZoneIds[zIdx]);
+        if (!zList) continue;
+        total += zList.length;
+        for (let i = 0; i < zList.length; i++) {
+          const p = zList[i];
+          if (p.lot_id) occupied++;
+          const r = inventoryResults[p.id];
+          if (r?.checked) checked++;
+          if (r?.note) discrepancy++;
+        }
       }
 
       const pct = total > 0 ? Math.round((checked / total) * 100) : 0;
       return { total, occupied, checked, discrepancy, pct };
     },
-    [childrenMap, displayPositions, inventoryResults]
+    [childrenMap, positionsByZoneId, inventoryResults]
   );
 
   const summaryCards = useMemo(() => {
@@ -1961,26 +2029,28 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
 
   const detailPositions = useMemo(() => {
     if (!selectedDetailZoneId) return [];
-    const getDescendantIds = (pid: string): Set<string> => {
-      const set = new Set<string>([pid]);
-      const stack = [pid];
-      while (stack.length > 0) {
-        const curr = stack.pop()!;
-        const ch = childrenMap[curr] || [];
-        for (let i = 0; i < ch.length; i++) {
-          if (!set.has(ch[i].id)) {
-            set.add(ch[i].id);
-            stack.push(ch[i].id);
-          }
+    const rootId = selectedDetailKhuId === 'ALL' ? selectedDetailZoneId : selectedDetailKhuId;
+    const queue: string[] = [rootId];
+    const seen = new Set<string>([rootId]);
+    for (let idx = 0; idx < queue.length; idx++) {
+      const ch = childrenMap[queue[idx]] || [];
+      for (let i = 0; i < ch.length; i++) {
+        if (!seen.has(ch[i].id)) {
+          seen.add(ch[i].id);
+          queue.push(ch[i].id);
         }
       }
-      return set;
-    };
+    }
 
-    const rootId = selectedDetailKhuId === 'ALL' ? selectedDetailZoneId : selectedDetailKhuId;
-    const descendantIds = getDescendantIds(rootId);
-    return displayPositions.filter((p: any) => p.zone_id && descendantIds.has(p.zone_id));
-  }, [selectedDetailZoneId, selectedDetailKhuId, displayPositions, childrenMap]);
+    const out: any[] = [];
+    for (let i = 0; i < queue.length; i++) {
+      const zList = positionsByZoneId.get(queue[i]);
+      if (zList) {
+        for (let j = 0; j < zList.length; j++) out.push(zList[j]);
+      }
+    }
+    return out;
+  }, [selectedDetailZoneId, selectedDetailKhuId, positionsByZoneId, childrenMap]);
 
   const detailData = useMemo(() => {
     const sectionsMap: Record<string, any> = {};
@@ -2327,6 +2397,15 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
               }
 
               const isOfflineSess = String(s.id).startsWith('off-');
+              const sPct = sTotal > 0 ? Math.round((sChecked / sTotal) * 100) : 0;
+              const pendingVoices = pendingVoiceCountBySession[s.id] || 0;
+              const isTranscribingSess = Boolean(transcribingSessionRef[s.id]);
+              const sessionCardPalettes = [
+                { bg: '#151933', border: '#3730a3' }, // Tím indigo trầm
+                { bg: '#0f2136', border: '#0369a1' }, // Xanh dương đêm
+                { bg: '#0d2624', border: '#0f766e' }, // Xanh ngọc trầm
+              ];
+              const cardPalette = sessionCardPalettes[idx % sessionCardPalettes.length];
 
               return (
                 <TouchableOpacity
@@ -2335,33 +2414,28 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
                   activeOpacity={0.85}
                   style={[
                     styles.sessionCard,
-                    currentSession?.id === s.id && styles.sessionCardActive,
+                    {
+                      padding: 11,
+                      borderRadius: 14,
+                      marginBottom: 9,
+                      backgroundColor: cardPalette.bg,
+                      borderColor: cardPalette.border,
+                    },
+                    currentSession?.id === s.id && {
+                      borderColor: '#a78bfa',
+                      borderWidth: 1.5,
+                    },
                   ]}
                 >
-                  {/* Header: Tên phiếu & Trạng thái */}
-                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 10 }}>
-                    <View style={{ flex: 1, marginRight: 10 }}>
-                      <Text style={styles.sessionCardTitle}>{s.name}</Text>
-                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 4 }}>
-                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                          <Feather name="calendar" size={11} color="#94a3b8" />
-                          <Text style={styles.sessionMetaText}>
-                            {new Date(s.created_at || Date.now()).toLocaleDateString('vi-VN')}
-                          </Text>
-                        </View>
-                        <Text style={{ color: '#475569' }}>•</Text>
-                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                          <Feather name="user" size={11} color="#94a3b8" />
-                          <Text style={styles.sessionMetaText} numberOfLines={1}>
-                            {creatorName}
-                          </Text>
-                        </View>
-                      </View>
-                    </View>
-
+                  {/* Hàng 1: Tên phiếu & Trạng thái */}
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                    <Text style={[styles.sessionCardTitle, { fontSize: 15, flex: 1 }]} numberOfLines={1}>
+                      {s.name}
+                    </Text>
                     <View
                       style={[
                         styles.sessionStatusBadge,
+                        { paddingHorizontal: 8, paddingVertical: 2.5, borderRadius: 7 },
                         isOfflineSess
                           ? { backgroundColor: '#78350f', borderColor: '#f59e0b' }
                           : { backgroundColor: '#1e1b4b', borderColor: '#8b5cf6' },
@@ -2370,6 +2444,7 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
                       <Text
                         style={[
                           styles.sessionStatusText,
+                          { fontSize: 9.5 },
                           isOfflineSess ? { color: '#fcd34d' } : { color: '#c4b5fd' },
                         ]}
                       >
@@ -2378,79 +2453,116 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
                     </View>
                   </View>
 
-                  {/* Khu vực kiểm kê & Nhóm tham gia */}
-                  <View style={styles.sessionInfoBox}>
-                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                      <Feather name="map-pin" size={13} color="#a78bfa" />
-                      <Text style={styles.sessionInfoLabel}>Khu vực:</Text>
-                      <Text style={styles.sessionInfoValue} numberOfLines={1}>
+                  {/* Hàng 2: Khu vực · Ngày · Người tạo (gọn trên 1 dòng) */}
+                  <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 6, marginTop: 5 }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 3 }}>
+                      <Feather name="map-pin" size={11} color="#a78bfa" />
+                      <Text style={{ color: '#e2e8f0', fontSize: 11.5, fontWeight: '800' }} numberOfLines={1}>
                         {zonePathName}
                       </Text>
                     </View>
-
-                    {participantNames.length > 0 && (
-                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 6, paddingTop: 6, borderTopWidth: 1, borderTopColor: '#1e293b' }}>
-                        <Feather name="users" size={13} color="#fbbf24" />
-                        <Text style={styles.sessionInfoLabel}>Nhóm:</Text>
-                        <Text style={[styles.sessionInfoValue, { color: '#fde68a' }]} numberOfLines={1}>
-                          {participantNames.join(', ')}
-                        </Text>
-                      </View>
-                    )}
+                    <Text style={{ color: '#475569', fontSize: 11 }}>•</Text>
+                    <Text style={[styles.sessionMetaText, { fontSize: 11 }]}>
+                      {new Date(s.created_at || Date.now()).toLocaleDateString('vi-VN')}
+                    </Text>
+                    <Text style={{ color: '#475569', fontSize: 11 }}>•</Text>
+                    <Text style={[styles.sessionMetaText, { fontSize: 11, flexShrink: 1 }]} numberOfLines={1}>
+                      {creatorName}
+                    </Text>
                   </View>
 
-                  {/* Footer: 2 nút riêng (Dịch ghi âm + Đồng bộ lên Web) & Tiến độ */}
-                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 12, gap: 8 }}>
-                    <View style={{ flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 8, flex: 1 }}>
-                      {(pendingVoiceCountBySession[s.id] || 0) > 0 && (
+                  {participantNames.length > 0 && (
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 3 }}>
+                      <Feather name="users" size={11} color="#fbbf24" />
+                      <Text style={{ color: '#fde68a', fontSize: 11, fontWeight: '600', flex: 1 }} numberOfLines={1}>
+                        Nhóm: {participantNames.join(', ')}
+                      </Text>
+                    </View>
+                  )}
+
+                  {/* Hàng 3: Tiến độ + Thanh progress bar mảnh */}
+                  <View style={{ marginTop: 8 }}>
+                    <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+                      <Text style={{ color: '#94a3b8', fontSize: 11, fontWeight: '600' }}>
+                        Đã kiểm:{' '}
+                        <Text style={{ color: '#34d399', fontWeight: '900' }}>{sChecked}</Text>
+                        /{sTotal} vị trí ({sPct}%)
+                      </Text>
+                      {sDiff > 0 ? (
+                        <View style={{ paddingHorizontal: 6, paddingVertical: 1.5, borderRadius: 6, backgroundColor: 'rgba(244, 63, 94, 0.18)', borderWidth: 1, borderColor: 'rgba(244, 63, 94, 0.4)' }}>
+                          <Text style={{ color: '#fda4af', fontSize: 10, fontWeight: '800' }}>
+                            ⚠️ {sDiff} sai lệch
+                          </Text>
+                        </View>
+                      ) : null}
+                    </View>
+                    <View style={{ height: 4, borderRadius: 2, backgroundColor: '#0f172a', overflow: 'hidden' }}>
+                      <View style={{ height: '100%', width: `${Math.min(100, sPct)}%`, backgroundColor: '#10b981' }} />
+                    </View>
+                  </View>
+
+                  {/* Hàng 4: Các nút thao tác gọn gàng */}
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 9 }}>
+                    {pendingVoices > 0 && (
+                      <View style={{ flex: 1 }}>
                         <TouchableOpacity
-                          disabled={Boolean(transcribingSessionRef[s.id])}
+                          disabled={isTranscribingSess}
                           onPress={() => transcribeSessionVoices(s)}
-                          style={[
-                            styles.syncSessionBtn,
-                            { backgroundColor: '#d97706' },
-                            Boolean(transcribingSessionRef[s.id]) && { opacity: 0.6 },
-                          ]}
+                          activeOpacity={0.8}
+                          style={{
+                            width: '100%',
+                            height: 34,
+                            borderRadius: 9,
+                            backgroundColor: '#b45309',
+                            borderWidth: 1,
+                            borderColor: '#fbbf24',
+                            flexDirection: 'row',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            gap: 5,
+                            opacity: isTranscribingSess ? 0.6 : 1,
+                          }}
                         >
-                          {Boolean(transcribingSessionRef[s.id]) ? (
+                          {isTranscribingSess ? (
                             <ActivityIndicator size="small" color="#ffffff" />
                           ) : (
-                            <Feather name="mic" size={14} color="#ffffff" />
+                            <Feather name="mic" size={13} color="#ffffff" />
                           )}
-                          <Text style={styles.syncSessionBtnText}>
-                            {Boolean(transcribingSessionRef[s.id])
-                              ? 'Đang dịch...'
-                              : `Dịch (${pendingVoiceCountBySession[s.id]})`}
+                          <Text style={{ color: '#ffffff', fontSize: 11.5, fontWeight: '800' }} numberOfLines={1}>
+                            {isTranscribingSess ? 'Đang dịch...' : `Dịch (${pendingVoices})`}
                           </Text>
                         </TouchableOpacity>
-                      )}
+                      </View>
+                    )}
 
+                    <View style={{ flex: 1 }}>
                       <TouchableOpacity
                         disabled={isSyncing}
                         onPress={() => confirmAndSyncSession(s)}
-                        style={[styles.syncSessionBtn, isSyncing && { opacity: 0.6 }]}
+                        activeOpacity={0.8}
+                        style={{
+                          width: '100%',
+                          height: 34,
+                          borderRadius: 9,
+                          backgroundColor: '#7c3aed',
+                          borderWidth: 1,
+                          borderColor: '#a78bfa',
+                          flexDirection: 'row',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          gap: 5,
+                          opacity: isSyncing ? 0.6 : 1,
+                        }}
                       >
                         {isSyncing ? (
                           <ActivityIndicator size="small" color="#ffffff" />
                         ) : (
-                          <Feather name="upload-cloud" size={15} color="#ffffff" />
+                          <Feather name="upload-cloud" size={13} color="#ffffff" />
                         )}
-                        <Text style={styles.syncSessionBtnText}>Đồng bộ lên Web</Text>
+                        <Text style={{ color: '#ffffff', fontSize: 11.5, fontWeight: '800' }} numberOfLines={1}>
+                          Đồng bộ lên Web
+                        </Text>
                       </TouchableOpacity>
-                    </View>
-
-                    <View style={{ alignItems: 'flex-end' }}>
-                      <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 3 }}>
-                        <Text style={styles.progressBigNum}>{sChecked}</Text>
-                        <Text style={styles.progressTotalNum}>/ {sTotal} vị trí</Text>
-                      </View>
-                      {sDiff > 0 ? (
-                        <View style={styles.diffBadge}>
-                          <Text style={styles.diffBadgeText}>⚠️ {sDiff} SAI LỆCH</Text>
-                        </View>
-                      ) : (
-                        <Text style={styles.progressSubLabel}>CHẠM ĐỂ VÀO KIỂM →</Text>
-                      )}
                     </View>
                   </View>
                 </TouchableOpacity>
@@ -2701,16 +2813,18 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
         </View>
       )}
 
-      {/* ── MODAL SƠ ĐỒ KIỂM KÊ THEO Ô & TẦNG ─────────────────────── */}
-      <Modal
-        visible={!!selectedDetailZoneId}
-        animationType="slide"
-        onRequestClose={() => setSelectedDetailZoneId(null)}
-      >
-        <View style={[styles.container, { paddingBottom: insets.bottom }]}>
+      {/* ── MÀN HÌNH CHI TIẾT Ô & TẦNG (Overlay trực tiếp — mở 0ms không tạo native Modal nặng) ── */}
+      {selectedDetailZoneId ? (
+        <View
+          style={[
+            StyleSheet.absoluteFill,
+            styles.container,
+            { zIndex: 40, paddingBottom: detailKeyboardHeight > 0 ? 0 : insets.bottom },
+          ]}
+        >
           <StatusBar barStyle="light-content" />
-          {/* Header Modal với Safe Area tránh bị thanh status bar che */}
-          <View style={[styles.header, { paddingTop: topInset + 6, paddingBottom: 10 }]}>
+          {/* Header Chi tiết Zone */}
+          <View style={[styles.header, { paddingTop: 10, paddingBottom: 10 }]}>
             <TouchableOpacity
               onPress={() => {
                 setSelectedDetailZoneId(null);
@@ -2813,23 +2927,26 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
 
           {/* Nội dung Sơ đồ Tầng hoặc Thống kê Sảnh */}
           <KeyboardAvoidingView
-            style={{
-              flex: 1,
-              paddingBottom: Platform.OS === 'android' ? detailKeyboardHeight : 0,
-            }}
+            style={{ flex: 1 }}
             behavior={Platform.OS === 'ios' ? 'padding' : undefined}
           >
             <ScrollView
               ref={detailScrollRef}
               style={{ flex: 1 }}
               keyboardShouldPersistTaps="handled"
-              automaticallyAdjustKeyboardInsets
               contentContainerStyle={{
                 padding: 14,
-                paddingBottom: 32,
+                paddingBottom: 120,
               }}
             >
-            {showHallSummary && detailZone?.is_hall ? (
+            {!detailContentReady ? (
+              <View style={{ paddingVertical: 48, alignItems: 'center', gap: 10 }}>
+                <ActivityIndicator size="small" color="#a78bfa" />
+                <Text style={{ color: '#94a3b8', fontSize: 12, fontWeight: '600' }}>
+                  Đang mở {detailZone?.name || 'khu vực'}...
+                </Text>
+              </View>
+            ) : showHallSummary && detailZone?.is_hall ? (
               <View style={{ gap: 10 }}>
                 <View style={styles.hallSummaryBanner}>
                   <Feather name="bar-chart-2" size={15} color="#fb923c" />
@@ -2908,13 +3025,6 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
                           placeholderTextColor="#64748b"
                           value={item.summaryNote || ''}
                           onChangeText={val => updatePositionNote(targetPosId, val)}
-                          onFocus={() => {
-                            if (idx >= Math.max(0, hallSummary.length - 2)) {
-                              setTimeout(() => {
-                                detailScrollRef.current?.scrollToEnd({ animated: true });
-                              }, 220);
-                            }
-                          }}
                         />
                         {item.summaryNote ? (
                           <TouchableOpacity onPress={() => updatePositionNote(targetPosId, '')}>
@@ -3031,11 +3141,6 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
                             placeholderTextColor="#94a3b8"
                             value={eRes.note || ''}
                             onChangeText={val => updatePositionNote(extraPos.id, val)}
-                            onFocus={() => {
-                              setTimeout(() => {
-                                detailScrollRef.current?.scrollToEnd({ animated: true });
-                              }, 220);
-                            }}
                           />
                           {eRes.note ? (
                             <TouchableOpacity onPress={() => updatePositionNote(extraPos.id, '')}>
@@ -3377,32 +3482,34 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
             </ScrollView>
           </KeyboardAvoidingView>
 
-          {/* Modal kiểm kê từng vị trí trong Tầng */}
-          <LevelInventoryModal
-            level={selectedLevelInfo || groupLevel}
-            visible={!!selectedLevelInfo || !!selectedSummaryGroup}
-            onClose={() => {
-              setSelectedLevelInfo(null);
-              setSelectedSummaryGroup(null);
-            }}
-            inventoryResults={inventoryResults}
-            systemCode={activeSystemCode}
-            companyId={user?.company_id || null}
-            sessionId={currentSession?.id || null}
-            sessionName={currentSession?.name || null}
-            vocabulary={voiceVocabulary}
-            pendingVoicesMap={pendingVoicesMap}
-            transcribingVoicesMap={transcribingVoicesMap}
-            togglePositionChecked={togglePositionChecked}
-            updatePositionNote={updatePositionNote}
-            onSaveVoiceResult={handleSaveVoiceResult}
-            onSaveOfflineVoice={handleSaveOfflineVoice}
-            onDeleteOfflineVoice={handleDeleteOfflineVoice}
-            onTranscribeOfflineVoice={handleTranscribeOfflineVoice}
-            bulkCheckPositions={bulkCheckPositions}
-          />
+          {/* Modal kiểm kê từng vị trí trong Tầng (chỉ mount khi đang mở để tránh lag render ngầm) */}
+          {(selectedLevelInfo || selectedSummaryGroup) ? (
+            <LevelInventoryModal
+              level={selectedLevelInfo || groupLevel}
+              visible={Boolean(selectedLevelInfo || selectedSummaryGroup)}
+              onClose={() => {
+                setSelectedLevelInfo(null);
+                setSelectedSummaryGroup(null);
+              }}
+              inventoryResults={inventoryResults}
+              systemCode={activeSystemCode}
+              companyId={user?.company_id || null}
+              sessionId={currentSession?.id || null}
+              sessionName={currentSession?.name || null}
+              vocabulary={voiceVocabulary}
+              pendingVoicesMap={pendingVoicesMap}
+              transcribingVoicesMap={transcribingVoicesMap}
+              togglePositionChecked={togglePositionChecked}
+              updatePositionNote={updatePositionNote}
+              onSaveVoiceResult={handleSaveVoiceResult}
+              onSaveOfflineVoice={handleSaveOfflineVoice}
+              onDeleteOfflineVoice={handleDeleteOfflineVoice}
+              onTranscribeOfflineVoice={handleTranscribeOfflineVoice}
+              bulkCheckPositions={bulkCheckPositions}
+            />
+          ) : null}
         </View>
-      </Modal>
+      ) : null}
 
       {/* ── MODAL TẠO PHIẾU KIỂM KÊ MỚI ───────────────────────────── */}
       <Modal
