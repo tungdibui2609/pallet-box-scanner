@@ -7,7 +7,9 @@
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
     "splash": {
-      "backgroundColor": "#0f172a"
+      "image": "./assets/splash-logo.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ea580c"
     },
     "ios": {
       "supportsTablet": true
@@ -15,7 +17,7 @@
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/icon.png",
-        "backgroundColor": "#0f172a"
+        "backgroundColor": "#ea580c"
       },
       "predictiveBackGestureEnabled": false,
       "package": "com.anywarehouse.scanner",
@@ -31,6 +33,15 @@
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#ea580c",
+          "image": "./assets/splash-logo.png",
+          "imageWidth": 220,
+          "resizeMode": "contain"
+        }
+      ],
       "expo-sqlite",
       [
         "expo-camera",
