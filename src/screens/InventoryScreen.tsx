@@ -54,9 +54,66 @@ import { useThemedStyles } from '../contexts/ThemeContext';
 const INVENTORY_KEYS = {
   SESSIONS: 'offline_inventory_sessions_v1',
   RESULTS: 'offline_inventory_results_v1',
+  DIRTY: 'offline_inventory_dirty_v1',
   USERS_MAP: 'offline_inventory_users_map_v1',
   MEMBERS_MAP: 'offline_inventory_members_map_v1',
 };
+
+async function fetchAllInventoryItemsPaged(
+  client: any,
+  sessionIds: string[]
+): Promise<any[]> {
+  if (!sessionIds || sessionIds.length === 0) return [];
+  const PAGE_SIZE = 1000;
+  let all: any[] = [];
+  let from = 0;
+  while (true) {
+    const { data, error } = await client
+      .from('internal_inventory_items')
+      .select('session_id, position_id, checked, note, voice_note_url')
+      .in('session_id', sessionIds)
+      .order('id', { ascending: true })
+      .range(from, from + PAGE_SIZE - 1);
+    if (error || !data || data.length === 0) break;
+    all = [...all, ...data];
+    if (data.length < PAGE_SIZE) break;
+    from += PAGE_SIZE;
+  }
+  return all;
+}
+
+function mergeLocalAndRemotePositionResult(
+  localItem: { checked?: boolean; note?: string; voice_note_url?: string | null } | undefined,
+  remoteItem: { checked?: boolean; note?: string; voice_note_url?: string | null },
+  isDirty: boolean
+): { checked: boolean; note: string; voice_note_url: string | null } {
+  const localNote = String(localItem?.note || '').trim();
+  const remoteNote = String(remoteItem?.note || '').trim();
+  const mergedVoiceUrl = appendVoiceNoteUrlApp(
+    localItem?.voice_note_url || null,
+    remoteItem?.voice_note_url || null
+  );
+
+  if (isDirty && localItem) {
+    return {
+      checked: Boolean(localItem.checked || localNote || mergedVoiceUrl),
+      note: localNote || remoteNote,
+      voice_note_url: mergedVoiceUrl,
+    };
+  }
+
+  const finalNote = remoteNote || localNote;
+  const finalChecked =
+    remoteItem.checked !== undefined
+      ? Boolean(remoteItem.checked || finalNote || mergedVoiceUrl)
+      : Boolean(localItem?.checked || finalNote || mergedVoiceUrl);
+
+  return {
+    checked: finalChecked,
+    note: finalNote,
+    voice_note_url: mergedVoiceUrl,
+  };
+}
 
 const isUUID = (str: string) =>
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(String(str || ''));
@@ -689,11 +746,26 @@ const LevelInventoryModal = ({
                     </View>
 
                     {/* Ô nhập ghi chú sai lệch + Nút Micro nói chuyển thành text */}
-                    <View style={[styles.noteInputWrap, Boolean(res.note) && styles.noteInputWrapActive]}>
+                    <View
+                      style={[
+                        styles.noteInputWrap,
+                        Boolean(
+                          (res.note && String(res.note).trim()) ||
+                            res.voice_note_url ||
+                            (pendingVoicesMap[posKey]?.length || 0) > 0
+                        ) && styles.noteInputWrapActive,
+                      ]}
+                    >
                       <Feather
                         name="edit-3"
                         size={14}
-                        color={res.note ? '#fb7185' : '#64748b'}
+                        color={
+                          (res.note && String(res.note).trim()) ||
+                          res.voice_note_url ||
+                          (pendingVoicesMap[posKey]?.length || 0) > 0
+                            ? '#fb7185'
+                            : '#64748b'
+                        }
                       />
                       <TextInput
                         style={styles.noteInput}
@@ -1103,23 +1175,36 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
         setSessions(activeSessions);
         await AsyncStorage.setItem(INVENTORY_KEYS.SESSIONS, JSON.stringify(mergedSessions));
 
-        // Tải kết quả đã kiểm trên máy chủ cho các phiếu active
+        // Tải kết quả đã kiểm trên máy chủ cho các phiếu active (phân trang vượt mốc 1.000 vị trí)
         const activeCloudIds = activeSessions.map((s: any) => s.id).filter(isUUID);
         if (activeCloudIds.length > 0) {
-          const { data: cloudItems } = await client
-            .from('internal_inventory_items')
-            .select('session_id, position_id, checked, note, voice_note_url')
-            .in('session_id', activeCloudIds);
+          const [cloudItems, dirtyRaw] = await Promise.all([
+            fetchAllInventoryItemsPaged(client, activeCloudIds),
+            AsyncStorage.getItem(INVENTORY_KEYS.DIRTY),
+          ]);
+          const dirtyMap: Record<string, string[]> = (() => {
+            try {
+              return dirtyRaw ? JSON.parse(dirtyRaw) : {};
+            } catch {
+              return {};
+            }
+          })();
 
-          if (cloudItems) {
+          if (cloudItems.length > 0) {
             const nextAllResults = { ...allResults };
             cloudItems.forEach((item: any) => {
               if (!nextAllResults[item.session_id]) nextAllResults[item.session_id] = {};
-              nextAllResults[item.session_id][item.position_id] = {
-                checked: item.checked,
-                note: item.note || '',
-                voice_note_url: item.voice_note_url || null,
-              };
+              const dirtySet = new Set(dirtyMap[item.session_id] || []);
+              const prevLocal = nextAllResults[item.session_id][item.position_id];
+              nextAllResults[item.session_id][item.position_id] = mergeLocalAndRemotePositionResult(
+                prevLocal,
+                {
+                  checked: item.checked,
+                  note: item.note || '',
+                  voice_note_url: item.voice_note_url || null,
+                },
+                dirtySet.has(item.position_id)
+              );
             });
             setAllInventoryResults(nextAllResults);
             await AsyncStorage.setItem(INVENTORY_KEYS.RESULTS, JSON.stringify(nextAllResults));
@@ -1195,35 +1280,79 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
     }
   };
 
+  const markPositionsDirtyApp = async (sessionId: string, posIds: string[]) => {
+    const validIds = posIds.filter(id => id && !String(id).startsWith('summary|') && isUUID(String(id)));
+    if (!sessionId || validIds.length === 0) return;
+    try {
+      const raw = await AsyncStorage.getItem(INVENTORY_KEYS.DIRTY);
+      const map: Record<string, string[]> = raw ? JSON.parse(raw) : {};
+      const curSet = new Set(map[sessionId] || []);
+      validIds.forEach(id => curSet.add(String(id)));
+      map[sessionId] = Array.from(curSet);
+      await AsyncStorage.setItem(INVENTORY_KEYS.DIRTY, JSON.stringify(map));
+    } catch {}
+  };
+
+  const clearPositionsDirtyApp = async (sessionId: string, posIds?: string[]) => {
+    if (!sessionId) return;
+    try {
+      const raw = await AsyncStorage.getItem(INVENTORY_KEYS.DIRTY);
+      if (!raw) return;
+      const map: Record<string, string[]> = JSON.parse(raw);
+      if (!map[sessionId]) return;
+      if (!posIds) {
+        delete map[sessionId];
+      } else {
+        const removeSet = new Set(posIds.map(String));
+        const nextList = (map[sessionId] || []).filter(id => !removeSet.has(String(id)));
+        if (nextList.length > 0) map[sessionId] = nextList;
+        else delete map[sessionId];
+      }
+      await AsyncStorage.setItem(INVENTORY_KEYS.DIRTY, JSON.stringify(map));
+    } catch {}
+  };
+
   const fetchSessionItems = async (sessionId: string) => {
     // 1. Hiển thị ngay lập tức từ bộ nhớ máy (0ms)
-    const resStr = await AsyncStorage.getItem(INVENTORY_KEYS.RESULTS);
+    const [resStr, dirtyRaw] = await Promise.all([
+      AsyncStorage.getItem(INVENTORY_KEYS.RESULTS),
+      AsyncStorage.getItem(INVENTORY_KEYS.DIRTY),
+    ]);
     const allResults = resStr ? JSON.parse(resStr) : {};
     const localResults = allResults[sessionId] || {};
     setInventoryResults(localResults);
 
     if (!isUUID(sessionId)) return;
 
-    // 2. Đồng bộ kết quả mới nhất của phiếu này từ Supabase (nếu có mạng)
+    // 2. Đồng bộ kết quả mới nhất của phiếu này từ Supabase (phân trang & bảo vệ dữ liệu local chưa sync)
     try {
       const client = await getSupabaseClient();
-      const { data, error } = await client
-        .from('internal_inventory_items')
-        .select('*')
-        .eq('session_id', sessionId);
+      const data = await fetchAllInventoryItemsPaged(client, [sessionId]);
+      if (!data || data.length === 0) return;
 
-      if (error || !data) return;
+      const dirtyMap: Record<string, string[]> = (() => {
+        try {
+          return dirtyRaw ? JSON.parse(dirtyRaw) : {};
+        } catch {
+          return {};
+        }
+      })();
+      const dirtySet = new Set(dirtyMap[sessionId] || []);
 
-      const fetchedResults: Record<string, any> = {};
+      const mergedResults: Record<string, any> = { ...localResults };
       data.forEach((item: any) => {
-        fetchedResults[item.position_id] = {
-          checked: item.checked,
-          note: item.note || '',
-          voice_note_url: item.voice_note_url || null,
-        };
+        const prevLocal = mergedResults[item.position_id];
+        mergedResults[item.position_id] = mergeLocalAndRemotePositionResult(
+          prevLocal,
+          {
+            checked: item.checked,
+            note: item.note || '',
+            voice_note_url: item.voice_note_url || null,
+          },
+          dirtySet.has(item.position_id)
+        );
       });
 
-      const mergedResults = { ...localResults, ...fetchedResults };
       setInventoryResults(mergedResults);
 
       allResults[sessionId] = mergedResults;
@@ -1255,9 +1384,12 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
       if (voiceNoteUrl !== undefined) {
         payload.voice_note_url = voiceNoteUrl;
       }
-      await client.from('internal_inventory_items').upsert(payload, {
+      const { error } = await client.from('internal_inventory_items').upsert(payload, {
         onConflict: 'session_id,position_id',
       });
+      if (!error) {
+        await clearPositionsDirtyApp(currentSession.id, [posId]);
+      }
     } catch {}
   };
 
@@ -1288,8 +1420,10 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
     try {
       const resStr = await AsyncStorage.getItem(INVENTORY_KEYS.RESULTS);
       const allRes = resStr ? JSON.parse(resStr) : {};
-      allRes[currentSession.id] = updateWithChecked(allRes[currentSession.id] || {});
+      const updatedSessionRes = updateWithChecked(allRes[currentSession.id] || {});
+      allRes[currentSession.id] = updatedSessionRes;
       await AsyncStorage.setItem(INVENTORY_KEYS.RESULTS, JSON.stringify(allRes));
+      await markPositionsDirtyApp(currentSession.id, posIds);
 
       showToast(`Đã ${checked ? 'tích kiểm' : 'bỏ tích'} ${posIds.length} vị trí`, 'success');
 
@@ -1298,21 +1432,26 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
       const client = await getSupabaseClient();
       const itemsToUpsert = posIds.map(id => {
         const pos = displayPositions.find((p: any) => p.id === id);
+        const curItem = updatedSessionRes[id] || inventoryResults[id] || {};
         return {
           session_id: currentSession.id,
           position_id: id,
           zone_id: pos?.real_zone_id || pos?.zone_id || null,
           checked,
-          note: (inventoryResults[id] || { note: null }).note || null,
+          note: curItem.note || null,
+          voice_note_url: curItem.voice_note_url || null,
           checked_by: user.id,
           checked_at: new Date().toISOString(),
           lot_id_snapshot: pos?.lot_id || null,
         };
       });
 
-      await client
+      const { error } = await client
         .from('internal_inventory_items')
         .upsert(itemsToUpsert, { onConflict: 'session_id,position_id' });
+      if (!error) {
+        await clearPositionsDirtyApp(currentSession.id, posIds);
+      }
     } catch (e: any) {
       console.warn('Bulk check sync offline fallback:', e);
     }
@@ -1374,6 +1513,7 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
       const resStr = await AsyncStorage.getItem(INVENTORY_KEYS.RESULTS);
       const allResults = resStr ? JSON.parse(resStr) : {};
       const localResults: Record<string, any> = { ...(allResults[sessionId] || {}) };
+      const touchedPosIds: string[] = [];
 
       Object.entries(voiceSync.resultsByPos).forEach(([pid, vRes]) => {
         const cur = localResults[pid] || {};
@@ -1388,11 +1528,45 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
           note: mergedNote,
           voice_note_url: mergedVoiceUrl,
         };
+        touchedPosIds.push(pid);
       });
 
       allResults[sessionId] = localResults;
       await AsyncStorage.setItem(INVENTORY_KEYS.RESULTS, JSON.stringify(allResults));
+      await markPositionsDirtyApp(sessionId, touchedPosIds);
       setAllInventoryResults({ ...allResults });
+
+      // Tự động đẩy ngay các vị trí vừa dịch lên Supabase để an toàn tuyệt đối (không lo quên bấm Đồng bộ hay có cuộc gọi đến)
+      if (isUUID(sessionId) && touchedPosIds.length > 0 && user) {
+        try {
+          const client = await getSupabaseClient();
+          const autoUpsertRows = touchedPosIds
+            .filter(pid => !pid.startsWith('summary|') && isUUID(pid))
+            .map(pid => {
+              const pos = displayPositions.find((p: any) => p.id === pid);
+              const r = localResults[pid] || {};
+              return {
+                session_id: sessionId,
+                position_id: pid,
+                zone_id: pos?.real_zone_id || pos?.zone_id || null,
+                checked: true,
+                note: r.note || null,
+                voice_note_url: r.voice_note_url || null,
+                checked_by: user.id,
+                checked_at: new Date().toISOString(),
+                lot_id_snapshot: pos?.lot_id || null,
+              };
+            });
+          if (autoUpsertRows.length > 0) {
+            const { error: upErr } = await client
+              .from('internal_inventory_items')
+              .upsert(autoUpsertRows, { onConflict: 'session_id,position_id' });
+            if (!upErr) {
+              await clearPositionsDirtyApp(sessionId, touchedPosIds);
+            }
+          }
+        } catch {}
+      }
 
       if (currentSession?.id === sessionId) {
         setInventoryResults({ ...localResults });
@@ -1408,7 +1582,7 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
 
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       showToast(
-        `Đã dịch ${voiceSync.syncedCount} ghi âm! Hãy kiểm tra lại chữ rồi bấm "Đồng bộ lên Web".`,
+        `Đã dịch & lưu ${voiceSync.syncedCount} ghi âm lên hệ thống thành công!`,
         'success'
       );
     } catch (err: any) {
@@ -1517,7 +1691,9 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
         allResults[targetSessionId] = localResults;
         delete allResults[sessionId];
         await AsyncStorage.setItem(INVENTORY_KEYS.RESULTS, JSON.stringify(allResults));
+        await clearPositionsDirtyApp(sessionId);
       }
+      await clearPositionsDirtyApp(targetSessionId);
 
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       showToast(
@@ -1592,8 +1768,9 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
       const allResults = resStr ? JSON.parse(resStr) : {};
       allResults[currentSession.id] = updateWithCheck(allResults[currentSession.id] || {});
       await AsyncStorage.setItem(INVENTORY_KEYS.RESULTS, JSON.stringify(allResults));
+      await markPositionsDirtyApp(currentSession.id, [sId]);
 
-      syncItemToSupabase(posId, newChecked, currentItem.note);
+      syncItemToSupabase(posId, newChecked, currentItem.note, currentItem.voice_note_url);
     } catch {}
   };
 
@@ -1632,25 +1809,31 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
         const allRes = resStr ? JSON.parse(resStr) : {};
         allRes[currentSession.id] = updateWithHallNote(allRes[currentSession.id] || {});
         await AsyncStorage.setItem(INVENTORY_KEYS.RESULTS, JSON.stringify(allRes));
+        await markPositionsDirtyApp(currentSession.id, group.positionIds);
 
         if (isUUID(currentSession.id) && user) {
           const client = await getSupabaseClient();
           const itemsToUpsert = group.positionIds.map((pid: string) => {
             const pos = displayPositions.find((p: any) => p.id === pid);
+            const curItem = allRes[currentSession.id]?.[pid] || inventoryResults[pid] || {};
             return {
               session_id: currentSession.id,
               position_id: pid,
               zone_id: pos?.real_zone_id || pos?.zone_id || null,
               checked: newChecked,
               note: note || null,
+              voice_note_url: curItem.voice_note_url || null,
               checked_by: user.id,
               checked_at: new Date().toISOString(),
               lot_id_snapshot: pos?.lot_id || null,
             };
           });
-          await client
+          const { error } = await client
             .from('internal_inventory_items')
             .upsert(itemsToUpsert, { onConflict: 'session_id,position_id' });
+          if (!error) {
+            await clearPositionsDirtyApp(currentSession.id, group.positionIds);
+          }
         }
       } catch {}
       return;
@@ -1676,9 +1859,15 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
       const allResults = resStr ? JSON.parse(resStr) : {};
       allResults[currentSession.id] = updateWithNote(allResults[currentSession.id] || {});
       await AsyncStorage.setItem(INVENTORY_KEYS.RESULTS, JSON.stringify(allResults));
+      await markPositionsDirtyApp(currentSession.id, [sId]);
 
-      const finalResults = updateWithNote(inventoryResults);
-      syncItemToSupabase(posId, finalResults[sId].checked, note);
+      const finalResults = allResults[currentSession.id];
+      syncItemToSupabase(
+        posId,
+        finalResults[sId].checked,
+        note,
+        finalResults[sId].voice_note_url
+      );
     } catch {}
   };
 
@@ -1737,9 +1926,21 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
     try {
       const resStr = await AsyncStorage.getItem(INVENTORY_KEYS.RESULTS);
       const allResults = resStr ? JSON.parse(resStr) : {};
-      allResults[currentSession.id] = { ...(allResults[currentSession.id] || {}), [sId]: nextObj };
+      const existingStored = allResults[currentSession.id]?.[sId] || cur;
+      const mergedNote = spokenText
+        ? appendWarehouseVoiceText(existingStored.note || '', spokenText)
+        : existingStored.note || nextNote;
+      const mergedVoiceUrl = appendVoiceNoteUrlApp(existingStored.voice_note_url, nextVoiceUrl);
+      const finalObj = {
+        ...existingStored,
+        note: mergedNote,
+        voice_note_url: mergedVoiceUrl,
+        checked: nextChecked,
+      };
+      allResults[currentSession.id] = { ...(allResults[currentSession.id] || {}), [sId]: finalObj };
       await AsyncStorage.setItem(INVENTORY_KEYS.RESULTS, JSON.stringify(allResults));
-      syncItemToSupabase(sId, nextChecked, nextNote, nextVoiceUrl);
+      await markPositionsDirtyApp(currentSession.id, [sId]);
+      await syncItemToSupabase(sId, nextChecked, mergedNote, mergedVoiceUrl);
 
       if (voiceKey && (spokenText || voiceUrl)) {
         await deleteOfflineInventoryVoiceByKeyApp(voiceKey);
@@ -1783,6 +1984,8 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
       const allResults = resStr ? JSON.parse(resStr) : {};
       allResults[currentSession.id] = { ...(allResults[currentSession.id] || {}), [sId]: nextObj };
       await AsyncStorage.setItem(INVENTORY_KEYS.RESULTS, JSON.stringify(allResults));
+      await markPositionsDirtyApp(currentSession.id, [sId]);
+      void syncItemToSupabase(sId, true, nextObj.note || null, nextObj.voice_note_url);
 
       showToast(
         `Đã lưu ghi âm (${payload.durationSec}s) — nghe lại rồi bấm "Dịch" hoặc Đồng bộ sau!`,
@@ -2057,6 +2260,20 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
     return map;
   }, [displayPositions]);
 
+  const hasSlotNoteOrVoice = useCallback(
+    (posId: string, resMap: Record<string, any> = inventoryResults, sessionId?: string | null) => {
+      const r = resMap[posId];
+      if (r?.note && String(r.note).trim() !== '') return true;
+      if (r?.voice_note_url && String(r.voice_note_url).trim() !== '') return true;
+      const targetSessId = sessionId || currentSession?.id;
+      if (targetSessId && currentSession?.id === targetSessId) {
+        if ((pendingVoicesMap[posId]?.length || 0) > 0) return true;
+      }
+      return false;
+    },
+    [inventoryResults, currentSession?.id, pendingVoicesMap]
+  );
+
   const getZoneStats = useCallback(
     (zoneId: string) => {
       const targetZoneIds: string[] = [zoneId];
@@ -2084,15 +2301,16 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
           const p = zList[i];
           if (p.lot_id) occupied++;
           const r = inventoryResults[p.id];
-          if (r?.checked) checked++;
-          if (r?.note) discrepancy++;
+          const hasVoiceOrNote = hasSlotNoteOrVoice(p.id);
+          if (r?.checked || hasVoiceOrNote) checked++;
+          if (hasVoiceOrNote) discrepancy++;
         }
       }
 
       const pct = total > 0 ? Math.round((checked / total) * 100) : 0;
       return { total, occupied, checked, discrepancy, pct };
     },
-    [childrenMap, positionsByZoneId, inventoryResults]
+    [childrenMap, positionsByZoneId, inventoryResults, hasSlotNoteOrVoice]
   );
 
   const summaryCards = useMemo(() => {
@@ -2490,12 +2708,12 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
                 const sZoneIds = getDescendantIdsStrict(sessWhId);
                 const sPositions = displayPositions.filter((p: any) => p.zone_id && sZoneIds.has(p.zone_id));
                 sTotal = sPositions.length;
-                sChecked = sPositions.filter((p: any) => sResults[p.id]?.checked).length;
-                sDiff = sPositions.filter((p: any) => sResults[p.id]?.note).length;
+                sChecked = sPositions.filter((p: any) => sResults[p.id]?.checked || hasSlotNoteOrVoice(p.id, sResults, s.id)).length;
+                sDiff = sPositions.filter((p: any) => hasSlotNoteOrVoice(p.id, sResults, s.id)).length;
               } else {
                 sTotal = displayPositions.length;
-                sChecked = displayPositions.filter((p: any) => sResults[p.id]?.checked).length;
-                sDiff = displayPositions.filter((p: any) => sResults[p.id]?.note).length;
+                sChecked = displayPositions.filter((p: any) => sResults[p.id]?.checked || hasSlotNoteOrVoice(p.id, sResults, s.id)).length;
+                sDiff = displayPositions.filter((p: any) => hasSlotNoteOrVoice(p.id, sResults, s.id)).length;
               }
 
               const isOfflineSess = String(s.id).startsWith('off-');
@@ -3496,8 +3714,10 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
                             {row.levels.map((lvl: any, lidx: number) => {
                               const totalLvl = lvl.slots.length;
                               const occupiedLvl = lvl.slots.filter((s: any) => Boolean(s.lot_id)).length;
-                              const checkedLvl = lvl.slots.filter((s: any) => inventoryResults[s.id]?.checked).length;
-                              const hasNote = lvl.slots.some((s: any) => Boolean(inventoryResults[s.id]?.note));
+                              const checkedLvl = lvl.slots.filter(
+                                (s: any) => inventoryResults[s.id]?.checked || hasSlotNoteOrVoice(s.id)
+                              ).length;
+                              const hasNote = lvl.slots.some((s: any) => hasSlotNoteOrVoice(s.id));
                               const isFull = totalLvl > 0 && checkedLvl === totalLvl;
 
                               return (
@@ -3506,10 +3726,10 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
                                   style={[
                                     styles.levelCellBtn,
                                     detailZone?.is_hall ? { flex: 1, minWidth: '45%', paddingVertical: 12 } : { width: '18.5%' },
-                                    isFull
-                                      ? styles.levelCellBtnFull
-                                      : hasNote
+                                    hasNote
                                       ? styles.levelCellBtnNote
+                                      : isFull
+                                      ? styles.levelCellBtnFull
                                       : checkedLvl > 0
                                       ? styles.levelCellBtnPartial
                                       : null,
@@ -3566,8 +3786,8 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
                                   {/* Thanh chấm hiển thị vị trí có hàng vs đã kiểm */}
                                   <View style={{ flexDirection: 'row', gap: 2, height: 5, width: '100%' }}>
                                     {lvl.slots.map((s: any, sid: number) => {
-                                      const isSlotChecked = Boolean(inventoryResults[s.id]?.checked);
-                                      const isSlotNote = Boolean(inventoryResults[s.id]?.note);
+                                      const isSlotNote = hasSlotNoteOrVoice(s.id);
+                                      const isSlotChecked = Boolean(inventoryResults[s.id]?.checked) || isSlotNote;
                                       const isSlotOcc = Boolean(s.lot_id);
                                       const prodKey = getProductKey(s);
                                       const occColor = isMixedInRow && rowProductColorsMap[prodKey]
