@@ -76,9 +76,9 @@ export const WAREHOUSE_SEARCH_MODES: {
     id: 'tag',
     label: 'Theo Mã phụ',
     shortLabel: 'Mã phụ',
-    placeholder: 'Nhập mã phụ (tag)...',
+    placeholder: 'Nhập mã phụ (tag) hoặc tên SP để hiện các tag liên quan...',
     icon: 'pricetag-outline',
-    subHint: 'Tag đính kèm',
+    subHint: 'Tag hoặc gõ tên SP',
   },
   {
     id: 'stt',
@@ -136,6 +136,23 @@ export interface UniqueTagItem {
   totalQuantity: number;
   unitsMap: Map<string, number>;
   sampleProductName: string | null;
+  productNames?: string[];
+  skus?: string[];
+  aliasesList?: string[];
+}
+
+export interface AvailableUnitOption {
+  unit: string;
+  count: number;
+  totalQty: number;
+}
+
+export interface AvailableTagOption {
+  tag: string;
+  count: number;
+  totalQty: number;
+  unitsMap: Map<string, number>;
+  productNames: string[];
 }
 
 export interface ZoneItem {
@@ -346,6 +363,12 @@ const MobileWarehouseSearchBar = React.memo(function MobileWarehouseSearchBar({
   uniqueProducts,
   uniqueStts,
   uniqueTags = [],
+  availableUnits = [],
+  selectedUnit = 'all',
+  onSelectUnit,
+  availableTags = [],
+  selectedTag = 'all',
+  onSelectTag,
   searchQuery,
   searchMode = 'all',
   onSearchModeChange,
@@ -369,6 +392,12 @@ const MobileWarehouseSearchBar = React.memo(function MobileWarehouseSearchBar({
   uniqueProducts: UniqueProductItem[];
   uniqueStts: UniqueSttItem[];
   uniqueTags?: UniqueTagItem[];
+  availableUnits?: AvailableUnitOption[];
+  selectedUnit?: string;
+  onSelectUnit?: (unit: string) => void;
+  availableTags?: AvailableTagOption[];
+  selectedTag?: string;
+  onSelectTag?: (tag: string) => void;
   searchQuery: string;
   searchMode?: WarehouseSearchMode;
   onSearchModeChange?: (mode: WarehouseSearchMode) => void;
@@ -482,6 +511,28 @@ const MobileWarehouseSearchBar = React.memo(function MobileWarehouseSearchBar({
         score = 3200 - tItem.normTag.length;
       } else if (tItem.normTag.includes(normQ) || tItem.unaccTag.includes(unaccQ)) {
         score = 2200 - tItem.normTag.length;
+      } else if (searchMode === 'tag') {
+        // Khi ở chế độ Mã phụ: người dùng gõ tên sản phẩm / tên viết tắt / SKU -> hiện các Tag liên quan của sản phẩm đó
+        const prodNames = tItem.productNames || (tItem.sampleProductName ? [tItem.sampleProductName] : []);
+        const skus = tItem.skus || [];
+        const aliases = tItem.aliasesList || [];
+        const prodMatched =
+          prodNames.some(pn => matchSearch(pn, q)) ||
+          skus.some(s => matchSearch(s, q)) ||
+          aliases.some(al => matchSearch(al, q)) ||
+          prodNames.some(pn =>
+            matchPalletSearch(
+              {
+                product_name: pn,
+                aliases: aliases.join(', '),
+                sku: skus.join(', '),
+              },
+              q
+            )
+          );
+        if (prodMatched) {
+          score = 1800 + Math.min(tItem.positionCount, 200);
+        }
       }
 
       if (score > 0) {
@@ -489,7 +540,7 @@ const MobileWarehouseSearchBar = React.memo(function MobileWarehouseSearchBar({
       }
     }
 
-    return list.sort((a, b) => b.score - a.score).slice(0, searchMode === 'tag' ? 8 : 4);
+    return list.sort((a, b) => b.score - a.score).slice(0, searchMode === 'tag' ? 12 : 4);
   }, [inputValue, uniqueTags, searchMode]);
 
   const suggestions = useMemo(() => {
@@ -607,9 +658,16 @@ const MobileWarehouseSearchBar = React.memo(function MobileWarehouseSearchBar({
 
   const handleSelectTag = (tag: string) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    setInputValue(tag);
-    setShowSuggestions(false);
-    onExecuteSearch(tag);
+    if (onSelectTag) {
+      onSelectTag(tag);
+    }
+    if (searchMode === 'tag') {
+      setInputValue(tag);
+      setShowSuggestions(false);
+      onExecuteSearch(tag);
+    } else {
+      setShowSuggestions(false);
+    }
   };
 
   const handleSubmit = (customTerm?: string) => {
@@ -781,10 +839,142 @@ const MobileWarehouseSearchBar = React.memo(function MobileWarehouseSearchBar({
         </TouchableOpacity>
       </Modal>
 
+      {/* ── THANH CHỌN NHANH ĐƠN VỊ TÍNH (ĐVT) & MÃ PHỤ (TAG) LIÊN QUAN KHI TÌM SẢN PHẨM ── */}
+      {((searchQuery.trim().length > 0 || searchMode === 'tag' || (selectedUnit && selectedUnit !== 'all') || (selectedTag && selectedTag !== 'all')) &&
+        ((availableUnits && (availableUnits.length > 1 || (selectedUnit && selectedUnit !== 'all'))) || (availableTags && availableTags.length > 0))) && (
+        <View style={{ marginTop: 6, gap: 6, paddingTop: 6, borderTopWidth: 1, borderTopColor: '#1e293b' }}>
+          {/* 1. Dãy nút lọc Đơn vị tính (ĐVT) */}
+          {onSelectUnit && availableUnits && (availableUnits.length > 1 || (selectedUnit && selectedUnit !== 'all')) && (
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ alignItems: 'center', gap: 6 }}>
+              <Text style={[styles.activeFilterLabel, { color: '#34d399', fontWeight: '800' }]}>⚖️ ĐVT:</Text>
+              <TouchableOpacity
+                style={[
+                  styles.regionOptionPill,
+                  (!selectedUnit || selectedUnit === 'all') && styles.regionOptionPillActive
+                ]}
+                onPress={() => {
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  onSelectUnit('all');
+                }}
+              >
+                <Text
+                  style={[
+                    styles.regionOptionPillText,
+                    (!selectedUnit || selectedUnit === 'all') && styles.regionOptionPillTextActive
+                  ]}
+                >
+                  Tất cả ({availableUnits.length})
+                </Text>
+              </TouchableOpacity>
+              {availableUnits.map(u => {
+                const isSel = selectedUnit !== 'all' && normalizeSearchString(selectedUnit, true) === normalizeSearchString(u.unit, true);
+                return (
+                  <TouchableOpacity
+                    key={u.unit}
+                    style={[styles.regionOptionPill, isSel && styles.regionOptionPillActive]}
+                    onPress={() => {
+                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                      onSelectUnit(isSel ? 'all' : u.unit);
+                    }}
+                  >
+                    <Text style={[styles.regionOptionPillText, isSel && styles.regionOptionPillTextActive]}>
+                      {u.unit} ({u.count} ô · {u.totalQty.toLocaleString('vi-VN')})
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+          )}
+
+          {/* 2. Dãy nút lọc Mã phụ (Tag) liên quan đến sản phẩm đang tìm */}
+          {onSelectTag && availableTags && availableTags.length > 0 && (
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ alignItems: 'center', gap: 6 }}>
+              <Text style={[styles.activeFilterLabel, { color: '#fbbf24', fontWeight: '800' }]}>🏷️ Tag ({availableTags.length}):</Text>
+              <TouchableOpacity
+                style={[
+                  styles.regionOptionPill,
+                  (!selectedTag || selectedTag === 'all') && { backgroundColor: '#f59e0b', borderColor: '#fbbf24' }
+                ]}
+                onPress={() => {
+                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                  onSelectTag('all');
+                }}
+              >
+                <Text
+                  style={[
+                    styles.regionOptionPillText,
+                    (!selectedTag || selectedTag === 'all') && { color: '#0f172a', fontWeight: '900' }
+                  ]}
+                >
+                  Tất cả
+                </Text>
+              </TouchableOpacity>
+              {availableTags.slice(0, 20).map(t => {
+                const isSel = selectedTag !== 'all' && normalizeSearchString(selectedTag, true) === normalizeSearchString(t.tag, true);
+                return (
+                  <TouchableOpacity
+                    key={t.tag}
+                    style={[
+                      styles.regionOptionPill,
+                      isSel && { backgroundColor: '#f59e0b', borderColor: '#fbbf24' }
+                    ]}
+                    onPress={() => {
+                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                      onSelectTag(isSel ? 'all' : t.tag);
+                    }}
+                  >
+                    <Text
+                      style={[
+                        styles.regionOptionPillText,
+                        isSel && { color: '#0f172a', fontWeight: '900' }
+                      ]}
+                    >
+                      🏷️ {t.tag} ({t.count} ô · {formatUnitsSummary(t.unitsMap, { short: true })})
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+          )}
+        </View>
+      )}
+
       {/* Thanh Chip hiển thị nhanh các bộ lọc đang áp dụng (Khi đóng bảng lọc) */}
       {hasActiveFilters && !isFilterOpen && (
         <View style={styles.activeFilterChipsBar}>
           <Text style={styles.activeFilterLabel}>Đang lọc:</Text>
+          {selectedUnit && selectedUnit !== 'all' && onSelectUnit && (
+            <TouchableOpacity
+              style={styles.activeFilterChipEmerald}
+              onPress={onToggleFilterOpen}
+            >
+              <Ionicons name="scale-outline" size={11} color="#6ee7b7" />
+              <Text style={styles.activeFilterChipEmeraldText}>ĐVT: {selectedUnit}</Text>
+              <TouchableOpacity
+                onPress={() => onSelectUnit('all')}
+                hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+              >
+                <Ionicons name="close" size={12} color="#6ee7b7" />
+              </TouchableOpacity>
+            </TouchableOpacity>
+          )}
+
+          {selectedTag && selectedTag !== 'all' && onSelectTag && (
+            <TouchableOpacity
+              style={styles.activeFilterChipAmber}
+              onPress={onToggleFilterOpen}
+            >
+              <Ionicons name="pricetag" size={11} color="#fcd34d" />
+              <Text style={styles.activeFilterChipAmberText}>Tag: {selectedTag}</Text>
+              <TouchableOpacity
+                onPress={() => onSelectTag('all')}
+                hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+              >
+                <Ionicons name="close" size={12} color="#fcd34d" />
+              </TouchableOpacity>
+            </TouchableOpacity>
+          )}
+
           {(filterStartDate || filterEndDate) && (
             <TouchableOpacity
               style={styles.activeFilterChipAmber}
@@ -970,6 +1160,92 @@ const MobileWarehouseSearchBar = React.memo(function MobileWarehouseSearchBar({
               })}
             </ScrollView>
           </View>
+
+          {/* 4. Lọc theo Đơn vị tính (ĐVT) */}
+          {onSelectUnit && availableUnits && availableUnits.length > 0 && (
+            <View style={{ gap: 5, paddingTop: 6, borderTopWidth: 1, borderTopColor: '#1e293b' }}>
+              <Text style={styles.filterFieldLabel}>Đơn vị tính ({availableUnits.length}):</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6 }}>
+                <TouchableOpacity
+                  style={[
+                    styles.regionOptionPill,
+                    (!selectedUnit || selectedUnit === 'all') && styles.regionOptionPillActive
+                  ]}
+                  onPress={() => onSelectUnit('all')}
+                >
+                  <Text
+                    style={[
+                      styles.regionOptionPillText,
+                      (!selectedUnit || selectedUnit === 'all') && styles.regionOptionPillTextActive
+                    ]}
+                  >
+                    Tất cả ĐVT
+                  </Text>
+                </TouchableOpacity>
+                {availableUnits.map(u => {
+                  const isSel = selectedUnit !== 'all' && normalizeSearchString(selectedUnit, true) === normalizeSearchString(u.unit, true);
+                  return (
+                    <TouchableOpacity
+                      key={u.unit}
+                      style={[styles.regionOptionPill, isSel && styles.regionOptionPillActive]}
+                      onPress={() => onSelectUnit(isSel ? 'all' : u.unit)}
+                    >
+                      <Text style={[styles.regionOptionPillText, isSel && styles.regionOptionPillTextActive]}>
+                        {u.unit} ({u.count} ô · {u.totalQty.toLocaleString('vi-VN')})
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </ScrollView>
+            </View>
+          )}
+
+          {/* 5. Lọc theo Mã phụ (Tag) */}
+          {onSelectTag && availableTags && availableTags.length > 0 && (
+            <View style={{ gap: 5, paddingTop: 6, borderTopWidth: 1, borderTopColor: '#1e293b' }}>
+              <Text style={styles.filterFieldLabel}>Mã phụ / Tag liên quan ({availableTags.length}):</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6 }}>
+                <TouchableOpacity
+                  style={[
+                    styles.regionOptionPill,
+                    (!selectedTag || selectedTag === 'all') && { backgroundColor: '#f59e0b', borderColor: '#fbbf24' }
+                  ]}
+                  onPress={() => onSelectTag('all')}
+                >
+                  <Text
+                    style={[
+                      styles.regionOptionPillText,
+                      (!selectedTag || selectedTag === 'all') && { color: '#0f172a', fontWeight: '900' }
+                    ]}
+                  >
+                    Tất cả Tag
+                  </Text>
+                </TouchableOpacity>
+                {availableTags.slice(0, 30).map(t => {
+                  const isSel = selectedTag !== 'all' && normalizeSearchString(selectedTag, true) === normalizeSearchString(t.tag, true);
+                  return (
+                    <TouchableOpacity
+                      key={t.tag}
+                      style={[
+                        styles.regionOptionPill,
+                        isSel && { backgroundColor: '#f59e0b', borderColor: '#fbbf24' }
+                      ]}
+                      onPress={() => onSelectTag(isSel ? 'all' : t.tag)}
+                    >
+                      <Text
+                        style={[
+                          styles.regionOptionPillText,
+                          isSel && { color: '#0f172a', fontWeight: '900' }
+                        ]}
+                      >
+                        🏷️ {t.tag} ({t.count} ô)
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </ScrollView>
+            </View>
+          )}
         </View>
       )}
 
@@ -1133,11 +1409,15 @@ const MobileWarehouseSearchBar = React.memo(function MobileWarehouseSearchBar({
                       <View style={[styles.posSttBadge, { backgroundColor: '#78350f', borderColor: '#f59e0b' }]}>
                         <Text style={[styles.posSttBadgeText, { color: '#fde68a' }]}>🏷️ TAG: {tItem.item.tag}</Text>
                       </View>
-                      {tItem.item.sampleProductName && (
+                      {tItem.item.productNames && tItem.item.productNames.length > 0 ? (
+                        <Text style={[styles.suggestionTitle, { flex: 1 }]} numberOfLines={1}>
+                          {tItem.item.productNames.slice(0, 2).join(', ')}{tItem.item.productNames.length > 2 ? ` (+${tItem.item.productNames.length - 2})` : ''}
+                        </Text>
+                      ) : tItem.item.sampleProductName ? (
                         <Text style={[styles.suggestionTitle, { flex: 1 }]} numberOfLines={1}>
                           {tItem.item.sampleProductName}
                         </Text>
-                      )}
+                      ) : null}
                     </View>
                     <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginTop: 3 }}>
                       <Text style={styles.suggestionCountBadge}>
@@ -1269,11 +1549,13 @@ export default function WarehouseMapScreen({
   const [expandedBreakdownTierIds, setExpandedBreakdownTierIds] = useState<Set<string>>(new Set());
   const [highlightedPosId, setHighlightedPosId] = useState<string | null>(null);
 
-  // Advanced Filter State: Date Range & Material Region (Chuẩn Web /scanner)
+  // Advanced Filter State: Date Range, Material Region, Unit & Tag (Chuẩn Web /scanner)
   const [filterDateType, setFilterDateType] = useState<DateFilterType>('packaging_date');
   const [filterStartDate, setFilterStartDate] = useState<string>('');
   const [filterEndDate, setFilterEndDate] = useState<string>('');
   const [filterRegion, setFilterRegion] = useState<string>('all');
+  const [selectedUnit, setSelectedUnit] = useState<string>('all');
+  const [selectedTag, setSelectedTag] = useState<string>('all');
   const [isFilterOpen, setIsFilterOpen] = useState<boolean>(false);
 
   // Modal detail
@@ -1834,14 +2116,24 @@ export default function WarehouseMapScreen({
     return Array.from(sttMap.values());
   }, [positions]);
 
-  // ── Danh sách Mã phụ (Tags) duy nhất đang có trong kho (Pre-indexed cho gợi ý 0ms) ──────────────
+  // ── Danh sách Mã phụ (Tags) duy nhất đang có trong kho (Pre-indexed cho gợi ý 0ms theo tên SP) ──────────────
   const uniqueTags = useMemo(() => {
-    const tagMap = new Map<string, UniqueTagItem>();
+    const tagMap = new Map<
+      string,
+      UniqueTagItem & {
+        prodSet: Set<string>;
+        skuSet: Set<string>;
+        aliasSet: Set<string>;
+      }
+    >();
 
     for (let i = 0; i < positions.length; i++) {
       const p = positions[i];
       if (!p.lot_id) continue;
       const tags = p.tags && Array.isArray(p.tags) ? p.tags : [];
+      if (tags.length === 0) continue;
+
+      const subItems = getPositionProductItems(p);
 
       for (let j = 0; j < tags.length; j++) {
         const rawTag = String(tags[j] || '').trim();
@@ -1858,9 +2150,28 @@ export default function WarehouseMapScreen({
           if (!existing.sampleProductName && p.product_name) {
             existing.sampleProductName = p.product_name;
           }
+          if (p.product_name) existing.prodSet.add(p.product_name);
+          if (p.sku) existing.skuSet.add(p.sku);
+          if (p.aliases) existing.aliasSet.add(p.aliases);
+          subItems.forEach(sub => {
+            if (sub.name) existing.prodSet.add(sub.name);
+            if (sub.sku) existing.skuSet.add(sub.sku);
+            if (sub.aliases) existing.aliasSet.add(sub.aliases);
+          });
         } else {
           const uMap = new Map<string, number>();
           if (qty > 0) uMap.set(uCat, qty);
+          const prodSet = new Set<string>();
+          const skuSet = new Set<string>();
+          const aliasSet = new Set<string>();
+          if (p.product_name) prodSet.add(p.product_name);
+          if (p.sku) skuSet.add(p.sku);
+          if (p.aliases) aliasSet.add(p.aliases);
+          subItems.forEach(sub => {
+            if (sub.name) prodSet.add(sub.name);
+            if (sub.sku) skuSet.add(sub.sku);
+            if (sub.aliases) aliasSet.add(sub.aliases);
+          });
           tagMap.set(key, {
             tag: rawTag,
             normTag: normalizeSearchString(rawTag),
@@ -1869,12 +2180,22 @@ export default function WarehouseMapScreen({
             totalQuantity: qty,
             unitsMap: uMap,
             sampleProductName: p.product_name || null,
+            prodSet,
+            skuSet,
+            aliasSet,
           });
         }
       }
     }
 
-    return Array.from(tagMap.values()).sort((a, b) => b.positionCount - a.positionCount);
+    return Array.from(tagMap.values())
+      .map(({ prodSet, skuSet, aliasSet, ...rest }) => ({
+        ...rest,
+        productNames: Array.from(prodSet),
+        skus: Array.from(skuSet),
+        aliasesList: Array.from(aliasSet),
+      }))
+      .sort((a, b) => b.positionCount - a.positionCount);
   }, [positions]);
 
   // ── Danh sách các Vùng miền / Vùng nguyên liệu đang có trong kho ─────────
@@ -1900,8 +2221,14 @@ export default function WarehouseMapScreen({
   }, [positions]);
 
   const hasActiveFilters = useMemo(() => {
-    return !!(filterStartDate || filterEndDate || (filterRegion && filterRegion !== 'all'));
-  }, [filterStartDate, filterEndDate, filterRegion]);
+    return !!(
+      filterStartDate ||
+      filterEndDate ||
+      (filterRegion && filterRegion !== 'all') ||
+      (selectedUnit && selectedUnit !== 'all') ||
+      (selectedTag && selectedTag !== 'all')
+    );
+  }, [filterStartDate, filterEndDate, filterRegion, selectedUnit, selectedTag]);
 
   const handleSetDatePreset = useCallback((preset: 'today' | 3 | 7 | 'this_month' | 'clear') => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -1935,6 +2262,8 @@ export default function WarehouseMapScreen({
     setFilterStartDate('');
     setFilterEndDate('');
     setFilterRegion('all');
+    setSelectedUnit('all');
+    setSelectedTag('all');
   }, []);
 
   const handleClearAllSearchAndFilters = useCallback(() => {
@@ -1944,6 +2273,8 @@ export default function WarehouseMapScreen({
     setFilterStartDate('');
     setFilterEndDate('');
     setFilterRegion('all');
+    setSelectedUnit('all');
+    setSelectedTag('all');
     setSearchTab('breakdown');
   }, []);
 
@@ -2045,8 +2376,10 @@ export default function WarehouseMapScreen({
     const hasQuery = q.length > 0;
     const hasDateFilter = !!(filterStartDate || filterEndDate);
     const hasRegionFilter = !!(filterRegion && filterRegion !== 'all');
+    const hasUnitFilter = !!(selectedUnit && selectedUnit !== 'all');
+    const hasTagFilter = !!(selectedTag && selectedTag !== 'all');
 
-    if (!hasQuery && !hasDateFilter && !hasRegionFilter) return [];
+    if (!hasQuery && !hasDateFilter && !hasRegionFilter && !hasUnitFilter && !hasTagFilter) return [];
 
     // Fast-path flags tính 1 lần duy nhất bên ngoài vòng lặp 7.820 vị trí
     const isExactProductQuery = hasQuery && exactProductNamesSet.has(q);
@@ -2056,13 +2389,15 @@ export default function WarehouseMapScreen({
       : '';
     const isLikelyPositionCodeQuery = hasQuery && /^k\d/i.test(q);
     const normRegionFilter = hasRegionFilter ? normalizeSearchString(filterRegion, true) : '';
+    const normUnitFilter = hasUnitFilter ? normalizeSearchString(selectedUnit, true) : '';
+    const normTagFilter = hasTagFilter ? normalizeSearchString(selectedTag, true) : '';
 
     const matched: { pos: PositionItem; score: number }[] = [];
     for (let i = 0; i < positions.length; i++) {
       const p = positions[i];
 
-      // Nếu đang lọc ngày/vùng hoặc tìm sản phẩm/STT (không phải gõ mã vị trí K1...) -> bỏ qua ngay 5.800 ô trống!
-      if (!p.lot_id && (hasDateFilter || hasRegionFilter || !isLikelyPositionCodeQuery)) {
+      // Nếu đang lọc ngày/vùng/ĐVT/tag hoặc tìm sản phẩm/STT (không phải gõ mã vị trí K1...) -> bỏ qua ngay 5.800 ô trống!
+      if (!p.lot_id && (hasDateFilter || hasRegionFilter || hasUnitFilter || hasTagFilter || !isLikelyPositionCodeQuery)) {
         continue;
       }
 
@@ -2091,13 +2426,45 @@ export default function WarehouseMapScreen({
         if (!matchedRegion) continue;
       }
 
+      // 2.5 Lọc theo Mã phụ (Tag)
+      if (hasTagFilter) {
+        const pTags = p.tags && Array.isArray(p.tags) ? p.tags : [];
+        const hasMatchedTag = pTags.some(
+          t => t && !String(t).startsWith('MERGED_') && normalizeSearchString(String(t), true) === normTagFilter
+        );
+        if (!hasMatchedTag) continue;
+      }
+
+      // 2.6 Lọc theo Đơn vị tính (ĐVT)
+      if (hasUnitFilter) {
+        const subItems = getPositionProductItems(p);
+        const hasMatchedUnit =
+          subItems.some(sub => {
+            if (normalizeSearchString(sub.unit, true) !== normUnitFilter) return false;
+            if (hasQuery && isExactProductQuery) return sub.name === q;
+            if (hasQuery && (searchMode === 'name' || searchMode === 'all')) {
+              return matchSearch({ name: sub.name, aliases: sub.aliases || p.aliases, sku: sub.sku }, q);
+            }
+            return true;
+          }) ||
+          (subItems.length === 0 && normalizeSearchString(getCleanUnitCategory(p.unit), true) === normUnitFilter) ||
+          (p.items && p.items.some(it => normalizeSearchString(it.unit || p.unit || '', true) === normUnitFilter));
+        if (!hasMatchedUnit) continue;
+      }
+
       // 3. Lọc theo Từ khóa tìm kiếm
       if (hasQuery) {
         if (searchMode === 'name') {
           // CHẾ ĐỘ: THEO TÊN (HỖ TRỢ ĐẦY ĐỦ TÊN VIẾT TẮT / ALIASES)
           if (isExactProductQuery) {
             const subItems = getPositionProductItems(p);
-            if (subItems.some(sub => sub.name === q)) {
+            if (
+              subItems.some(
+                sub =>
+                  sub.name === q &&
+                  (!hasUnitFilter || normalizeSearchString(sub.unit, true) === normUnitFilter)
+              )
+            ) {
               matched.push({ pos: p, score: 2000 });
             }
             continue;
@@ -2109,6 +2476,7 @@ export default function WarehouseMapScreen({
 
           for (let sIdx = 0; sIdx < subItems.length; sIdx++) {
             const sub = subItems[sIdx];
+            if (hasUnitFilter && normalizeSearchString(sub.unit, true) !== normUnitFilter) continue;
             const nameObj = {
               name: sub.name,
               aliases: sub.aliases || p.aliases,
@@ -2120,7 +2488,7 @@ export default function WarehouseMapScreen({
             }
           }
 
-          if (!isNameMatch && p.product_name) {
+          if (!isNameMatch && p.product_name && !hasUnitFilter) {
             const palletNameObj = {
               name: p.product_name,
               aliases: p.aliases,
@@ -2178,15 +2546,16 @@ export default function WarehouseMapScreen({
             matched.push({ pos: p, score });
           }
         } else if (searchMode === 'tag') {
-          // CHẾ ĐỘ: THEO MÃ PHỤ (TAG)
+          // CHẾ ĐỘ: THEO MÃ PHỤ (TAG) - Hỗ trợ gõ trực tiếp Mã phụ HOẶC gõ Tên sản phẩm để lọc các vị trí có Tag của sản phẩm đó
           const qTagNorm = normalizeSearchString(q, true);
-          const tags = p.tags && Array.isArray(p.tags) ? p.tags : [];
+          const tags = (p.tags && Array.isArray(p.tags) ? p.tags : []).filter(
+            t => t && !String(t).startsWith('MERGED_')
+          );
           let isTagMatch = false;
           let score = 0;
 
           for (let tIdx = 0; tIdx < tags.length; tIdx++) {
             const rawTag = String(tags[tIdx] || '').trim();
-            if (!rawTag || rawTag.startsWith('MERGED_')) continue;
             const tagNorm = normalizeSearchString(rawTag, true);
             if (tagNorm === qTagNorm) {
               isTagMatch = true;
@@ -2195,6 +2564,14 @@ export default function WarehouseMapScreen({
             } else if (tagNorm.includes(qTagNorm)) {
               isTagMatch = true;
               score = 3000;
+            }
+          }
+
+          // Nếu không khớp trực tiếp chuỗi tag nhưng lô này CÓ tag và khớp Tên sản phẩm / Tên viết tắt / SKU
+          if (!isTagMatch && tags.length > 0) {
+            if (matchPalletSearch(p, q)) {
+              isTagMatch = true;
+              score = 2000;
             }
           }
 
@@ -2220,7 +2597,11 @@ export default function WarehouseMapScreen({
           // CHẾ ĐỘ: TỔNG HỢP (HỖ TRỢ ĐẦY ĐỦ TÊN VIẾT TẮT, MÃ, MÃ PHỤ, STT, VỊ TRÍ)
           if (isExactProductQuery) {
             const subItems = getPositionProductItems(p);
-            const hasExact = subItems.some(sub => sub.name === q);
+            const hasExact = subItems.some(
+              sub =>
+                sub.name === q &&
+                (!hasUnitFilter || normalizeSearchString(sub.unit, true) === normUnitFilter)
+            );
             if (hasExact) {
               matched.push({ pos: p, score: 2000 });
             }
@@ -2258,7 +2639,178 @@ export default function WarehouseMapScreen({
       matched.sort((a, b) => b.score - a.score);
     }
     return matched.map(m => m.pos);
-  }, [positions, searchQuery, searchMode, filterDateType, filterStartDate, filterEndDate, filterRegion, exactProductNamesSet]);
+  }, [positions, searchQuery, searchMode, filterDateType, filterStartDate, filterEndDate, filterRegion, selectedUnit, selectedTag, exactProductNamesSet]);
+
+  // ── Danh sách Đơn vị tính (ĐVT) & Mã phụ (Tag) liên quan đến kết quả tìm kiếm hiện tại ──
+  const { availableUnits, availableTags } = useMemo(() => {
+    const unitMap = new Map<string, { unit: string; count: number; totalQty: number; posSet: Set<string> }>();
+    const tagMap = new Map<string, { tag: string; count: number; totalQty: number; unitsMap: Map<string, number>; prodSet: Set<string> }>();
+
+    const q = searchQuery.trim();
+    const hasQuery = q.length > 0;
+    const hasDateFilter = !!(filterStartDate || filterEndDate);
+    const hasRegionFilter = !!(filterRegion && filterRegion !== 'all');
+    const isExactProductQuery = hasQuery && exactProductNamesSet.has(q);
+    const normRegionFilter = hasRegionFilter ? normalizeSearchString(filterRegion, true) : '';
+    const normSelectedUnit = selectedUnit && selectedUnit !== 'all' ? normalizeSearchString(selectedUnit, true) : '';
+    const normSelectedTag = selectedTag && selectedTag !== 'all' ? normalizeSearchString(selectedTag, true) : '';
+
+    for (let i = 0; i < positions.length; i++) {
+      const p = positions[i];
+      if (!p.lot_id) continue;
+
+      if (hasDateFilter) {
+        const posDate = p[filterDateType];
+        if (!posDate) continue;
+        if (filterStartDate && posDate < filterStartDate) continue;
+        if (filterEndDate && posDate > filterEndDate) continue;
+      }
+
+      if (hasRegionFilter) {
+        const pZones =
+          p.material_zones && p.material_zones.length > 0
+            ? p.material_zones
+            : p.material_zone
+              ? p.material_zone.split(',').map(s => s.trim()).filter(Boolean)
+              : [];
+        if (pZones.length === 0) continue;
+        const matchedRegion = pZones.some(z => {
+          const normZ = normalizeSearchString(z, true);
+          return normZ.includes(normRegionFilter) || normRegionFilter.includes(normZ);
+        });
+        if (!matchedRegion) continue;
+      }
+
+      if (hasQuery) {
+        if (isExactProductQuery) {
+          const subItems = getPositionProductItems(p);
+          if (!subItems.some(sub => sub.name === q)) continue;
+        } else if (!matchPalletSearch(p, q)) {
+          continue;
+        }
+      }
+
+      const subItems = getPositionProductItems(p);
+      const pTags = (p.tags && Array.isArray(p.tags) ? p.tags : []).filter(
+        t => t && !String(t).startsWith('MERGED_')
+      );
+      const posMatchesSelectedTag =
+        !normSelectedTag ||
+        pTags.some(t => normalizeSearchString(String(t), true) === normSelectedTag);
+
+      // 1. Gom Đơn vị tính (ĐVT)
+      if (posMatchesSelectedTag) {
+        const matchedSubsForQuery =
+          hasQuery && subItems.length > 1
+            ? isExactProductQuery
+              ? subItems.filter(s => s.name === q)
+              : subItems.filter(s =>
+                  matchSearch({ name: s.name, aliases: s.aliases || p.aliases, sku: s.sku }, q)
+                )
+            : subItems;
+        const effectiveSubs = matchedSubsForQuery.length > 0 ? matchedSubsForQuery : subItems;
+
+        effectiveSubs.forEach(sub => {
+          const rawU = (sub.unit || getCleanUnitCategory(p.unit)).trim();
+          if (!rawU) return;
+          const uKey = normalizeSearchString(rawU, true);
+          const existing = unitMap.get(uKey);
+          if (existing) {
+            if (!existing.posSet.has(p.id)) {
+              existing.posSet.add(p.id);
+              existing.count++;
+            }
+            existing.totalQty += sub.quantity || 0;
+          } else {
+            unitMap.set(uKey, {
+              unit: rawU,
+              count: 1,
+              totalQty: sub.quantity || 0,
+              posSet: new Set([p.id]),
+            });
+          }
+        });
+      }
+
+      // 2. Gom Mã phụ (Tags) liên quan
+      if (pTags.length > 0) {
+        const subsForUnit = subItems.filter(sub => {
+          if (hasQuery && isExactProductQuery && sub.name !== q) return false;
+          if (
+            hasQuery &&
+            subItems.length > 1 &&
+            !isExactProductQuery &&
+            !matchSearch({ name: sub.name, aliases: sub.aliases || p.aliases, sku: sub.sku }, q)
+          ) {
+            return false;
+          }
+          if (normSelectedUnit && normalizeSearchString(sub.unit, true) !== normSelectedUnit) {
+            return false;
+          }
+          return true;
+        });
+
+        if (subsForUnit.length > 0 || (subItems.length === 0 && (!normSelectedUnit || normalizeSearchString(getCleanUnitCategory(p.unit), true) === normSelectedUnit))) {
+          const posQty =
+            subsForUnit.length > 0
+              ? subsForUnit.reduce((s, it) => s + (it.quantity || 0), 0)
+              : p.quantity || 0;
+          const posUnit =
+            subsForUnit.length > 0 ? subsForUnit[0].unit : getCleanUnitCategory(p.unit);
+
+          pTags.forEach(rawTag => {
+            const cleanT = String(rawTag).trim();
+            if (!cleanT) return;
+            const tKey = cleanT.toUpperCase();
+            const existing = tagMap.get(tKey);
+            if (existing) {
+              existing.count++;
+              existing.totalQty += posQty;
+              existing.unitsMap.set(posUnit, (existing.unitsMap.get(posUnit) || 0) + posQty);
+              if (p.product_name) existing.prodSet.add(p.product_name);
+            } else {
+              const uMap = new Map<string, number>();
+              if (posQty > 0) uMap.set(posUnit, posQty);
+              const prodSet = new Set<string>();
+              if (p.product_name) prodSet.add(p.product_name);
+              tagMap.set(tKey, {
+                tag: cleanT,
+                count: 1,
+                totalQty: posQty,
+                unitsMap: uMap,
+                prodSet,
+              });
+            }
+          });
+        }
+      }
+    }
+
+    return {
+      availableUnits: Array.from(unitMap.values())
+        .map(({ unit, count, totalQty }) => ({ unit, count, totalQty }))
+        .sort((a, b) => b.count - a.count) as AvailableUnitOption[],
+      availableTags: Array.from(tagMap.values())
+        .map(({ tag, count, totalQty, unitsMap, prodSet }) => ({
+          tag,
+          count,
+          totalQty,
+          unitsMap,
+          productNames: Array.from(prodSet),
+        }))
+        .sort((a, b) => b.count - a.count) as AvailableTagOption[],
+    };
+  }, [
+    positions,
+    searchQuery,
+    filterDateType,
+    filterStartDate,
+    filterEndDate,
+    filterRegion,
+    selectedUnit,
+    selectedTag,
+    exactProductNamesSet,
+  ]);
 
   const matchingPosIds = useMemo(() => {
     return new Set(matchingPositions.map(p => p.id));
@@ -2327,6 +2879,7 @@ export default function WarehouseMapScreen({
 
     const qClean = searchQuery.trim();
     const isExactProduct = exactProductNamesSet.has(qClean);
+    const normUnitFilter = selectedUnit && selectedUnit !== 'all' ? normalizeSearchString(selectedUnit, true) : '';
 
     matchingPositions.forEach(p => {
       const subItems = getPositionProductItems(p);
@@ -2334,20 +2887,22 @@ export default function WarehouseMapScreen({
       let qty = p.quantity || 0;
       let unitCat = getCleanUnitCategory(p.unit);
 
-      // Nếu pallet hỗn hợp nhiều dòng sản phẩm và đang có từ khóa tìm kiếm -> chỉ tính số lượng của sản phẩm khớp
-      if (subItems.length > 1 && qClean) {
-        if (isExactProduct) {
-          const matchedSub = subItems.find(s => s.name === qClean);
-          if (matchedSub) {
-            qty = matchedSub.quantity;
-            unitCat = matchedSub.unit;
-          }
-        } else {
-          const matchedSubs = subItems.filter(s => matchSearch(s.name, qClean) || (s.sku && matchSearch(s.sku, qClean)));
-          if (matchedSubs.length > 0) {
-            qty = matchedSubs.reduce((sum, s) => sum + s.quantity, 0);
-            unitCat = matchedSubs[0].unit;
-          }
+      // Nếu pallet hỗn hợp nhiều dòng sản phẩm và đang có từ khóa tìm kiếm hoặc lọc ĐVT -> chỉ tính số lượng của sản phẩm / ĐVT khớp
+      if (subItems.length > 1 && (qClean || normUnitFilter)) {
+        const matchedSubs = subItems.filter(s => {
+          if (normUnitFilter && normalizeSearchString(s.unit, true) !== normUnitFilter) return false;
+          if (!qClean) return true;
+          if (isExactProduct) return s.name === qClean;
+          return matchSearch(s.name, qClean) || Boolean(s.sku && matchSearch(s.sku, qClean));
+        });
+        if (matchedSubs.length > 0) {
+          qty = matchedSubs.reduce((sum, s) => sum + s.quantity, 0);
+          unitCat = matchedSubs[0].unit;
+        }
+      } else if (normUnitFilter && subItems.length === 1) {
+        if (normalizeSearchString(subItems[0].unit, true) === normUnitFilter) {
+          qty = subItems[0].quantity;
+          unitCat = subItems[0].unit;
         }
       }
 
@@ -2460,7 +3015,7 @@ export default function WarehouseMapScreen({
       totalPositions: matchingPositions.length,
       warehouses: sortedWhs
     };
-  }, [isSearchActive, matchingPositions, zoneHierarchyMap, exactProductNamesSet, searchQuery]);
+  }, [isSearchActive, matchingPositions, zoneHierarchyMap, exactProductNamesSet, searchQuery, selectedUnit]);
 
   // Mặc định THU GỌN HẾT các kho khi tìm kiếm (gọn gàng, dễ nhìn theo từng thẻ Kho)
   useEffect(() => {
@@ -3038,6 +3593,12 @@ export default function WarehouseMapScreen({
         uniqueProducts={uniqueProducts}
         uniqueStts={uniqueStts}
         uniqueTags={uniqueTags}
+        availableUnits={availableUnits}
+        selectedUnit={selectedUnit}
+        onSelectUnit={setSelectedUnit}
+        availableTags={availableTags}
+        selectedTag={selectedTag}
+        onSelectTag={setSelectedTag}
         searchQuery={searchQuery}
         searchMode={searchMode}
         onSearchModeChange={setSearchMode}
