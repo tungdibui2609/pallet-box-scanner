@@ -263,6 +263,8 @@ const LevelInventoryModal = ({
   onDeleteOfflineVoice,
   onTranscribeOfflineVoice,
   bulkCheckPositions,
+  keyboardHeight = 0,
+  bottomInset = 0,
 }: {
   level: any;
   visible: boolean;
@@ -282,6 +284,8 @@ const LevelInventoryModal = ({
   onDeleteOfflineVoice: (posId: string, voiceKey: string) => void;
   onTranscribeOfflineVoice: (posId: string, voiceKey: string, positionCode?: string | null) => void;
   bulkCheckPositions: (posIds: string[], checked: boolean) => void;
+  keyboardHeight?: number;
+  bottomInset?: number;
 }) => {
   const styles = useThemedStyles(baseStyles);
   const [fetchedLotItemsMap, setFetchedLotItemsMap] = useState<Record<string, any[]>>({});
@@ -332,10 +336,28 @@ const LevelInventoryModal = ({
   }, [visible, level?.slots]);
 
   const [slotsReady, setSlotsReady] = useState(false);
+  const [overlayHeight, setOverlayHeight] = useState(0);
+  const baseOverlayHeightRef = useRef(0);
+  const levelScrollRef = useRef<any>(null);
+  const slotCardYRef = useRef<Record<string, number>>({});
+  const focusedPosKeyRef = useRef<string | null>(null);
+
+  const scrollFocusedCardIntoView = useCallback((posKey: string | null) => {
+    if (!posKey) return;
+    const cardY = slotCardYRef.current[posKey];
+    if (typeof cardY !== 'number') return;
+    setTimeout(() => {
+      levelScrollRef.current?.scrollTo?.({
+        y: Math.max(0, cardY - 12),
+        animated: true,
+      });
+    }, 100);
+  }, []);
 
   useEffect(() => {
     if (!visible || !level) {
       setSlotsReady(false);
+      focusedPosKeyRef.current = null;
       return;
     }
     setSlotsReady(false);
@@ -345,19 +367,59 @@ const LevelInventoryModal = ({
     return () => cancelAnimationFrame(rafId);
   }, [visible, level?.id]);
 
+  useEffect(() => {
+    if (keyboardHeight > 0 && focusedPosKeyRef.current) {
+      scrollFocusedCardIntoView(focusedPosKeyRef.current);
+    }
+  }, [keyboardHeight, scrollFocusedCardIntoView]);
+
   if (!level || !visible) return null;
 
   const allSlotIds: string[] = (level.slots || []).map((s: any) => s.id);
   const allChecked = allSlotIds.length > 0 && allSlotIds.every(id => inventoryResults[id]?.checked);
+  const alreadyShrunk =
+    keyboardHeight > 0 && baseOverlayHeightRef.current > 0 && overlayHeight > 0
+      ? Math.max(0, baseOverlayHeightRef.current - overlayHeight)
+      : 0;
+  // Trên Android e.endCoordinates.height không tính thanh điều hướng hệ thống, chỉ cần trừ đúng chiều cao bottomNav (58px) của App.tsx
+  const effectiveKbPadding =
+    Platform.OS === 'android' && keyboardHeight > 0
+      ? Math.max(0, keyboardHeight - alreadyShrunk - 58)
+      : 0;
 
   return (
-    <View style={[StyleSheet.absoluteFill, { zIndex: 60 }]}>
+    <View
+      style={[StyleSheet.absoluteFill, { zIndex: 60 }]}
+      onLayout={e => {
+        const h = e.nativeEvent.layout.height;
+        if (h > 0) {
+          setOverlayHeight(h);
+          if (keyboardHeight === 0) {
+            baseOverlayHeightRef.current = h;
+          }
+        }
+      }}
+    >
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         style={{ flex: 1 }}
       >
-        <View style={[styles.levelModalOverlay, { paddingHorizontal: 6, paddingVertical: 6 }]}>
-          <View style={[styles.levelModalCard, { width: '100%', height: '97%', maxHeight: '97%', borderRadius: 16 }]}>
+        <View
+          style={[
+            styles.levelModalOverlay,
+            {
+              paddingHorizontal: 6,
+              paddingTop: 6,
+              paddingBottom: effectiveKbPadding > 0 ? effectiveKbPadding + 4 : 6,
+            },
+          ]}
+        >
+          <View
+            style={[
+              styles.levelModalCard,
+              { width: '100%', flex: 1, maxHeight: '100%', borderRadius: 16 },
+            ]}
+          >
             {/* Header */}
             <View style={styles.levelModalHeader}>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 }}>
@@ -391,6 +453,7 @@ const LevelInventoryModal = ({
 
             {/* Danh sách vị trí trong tầng (frame 1 hiện khung tức thì, frame 2 dựng 6 thẻ vị trí + mic) */}
             <ScrollView
+              ref={levelScrollRef}
               style={{ flex: 1, paddingHorizontal: 10, paddingVertical: 8 }}
               keyboardShouldPersistTaps="handled"
             >
@@ -425,7 +488,13 @@ const LevelInventoryModal = ({
                   : '#f59e0b';
 
                 return (
-                  <View key={`slot-${posKey || idx}`} style={styles.slotCheckCard}>
+                  <View
+                    key={`slot-${posKey || idx}`}
+                    style={styles.slotCheckCard}
+                    onLayout={e => {
+                      slotCardYRef.current[posKey] = e.nativeEvent.layout.y;
+                    }}
+                  >
                     <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8, gap: 10 }}>
                       <View style={{ flex: 1 }}>
                         {/* Hàng 1: Mã vị trí + Ô thực + STT + LOT + Mã phụ */}
@@ -633,6 +702,15 @@ const LevelInventoryModal = ({
                         placeholder="Ghi chú sai lệch (gõ hoặc bấm Micro)..."
                         placeholderTextColor="#64748b"
                         value={res.note || ''}
+                        onFocus={() => {
+                          focusedPosKeyRef.current = posKey;
+                          scrollFocusedCardIntoView(posKey);
+                        }}
+                        onBlur={() => {
+                          if (focusedPosKeyRef.current === posKey) {
+                            focusedPosKeyRef.current = null;
+                          }
+                        }}
                         onChangeText={val => updatePositionNote(posKey, val)}
                       />
                       {res.note ? (
@@ -682,12 +760,14 @@ const LevelInventoryModal = ({
               <View style={{ height: 12 }} />
             </ScrollView>
 
-            {/* Footer */}
-            <View style={{ padding: 14, borderTopWidth: 1, borderTopColor: '#1e293b' }}>
-              <TouchableOpacity onPress={onClose} style={styles.doneModalBtn}>
-                <Text style={styles.doneModalBtnText}>HOÀN TẤT</Text>
-              </TouchableOpacity>
-            </View>
+            {/* Footer (tạm ẩn khi mở bàn phím để nhường thêm chỗ cho ô nhập ghi chú) */}
+            {keyboardHeight === 0 ? (
+              <View style={{ padding: 12, borderTopWidth: 1, borderTopColor: '#1e293b' }}>
+                <TouchableOpacity onPress={onClose} style={styles.doneModalBtn}>
+                  <Text style={styles.doneModalBtnText}>HOÀN TẤT</Text>
+                </TouchableOpacity>
+              </View>
+            ) : null}
           </View>
         </View>
       </KeyboardAvoidingView>
@@ -741,7 +821,23 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
   const [expandedRowKeys, setExpandedRowKeys] = useState<Set<string>>(new Set());
   const [addedHallExtraIds, setAddedHallExtraIds] = useState<string[]>([]);
   const [detailKeyboardHeight, setDetailKeyboardHeight] = useState(0);
+  const [detailOverlayHeight, setDetailOverlayHeight] = useState(0);
+  const baseDetailOverlayHeightRef = useRef(0);
   const detailScrollRef = useRef<any>(null);
+  const hallCardYRef = useRef<Record<string, number>>({});
+  const focusedHallKeyRef = useRef<string | null>(null);
+
+  const scrollFocusedHallCardIntoView = useCallback((cardKey: string | null) => {
+    if (!cardKey) return;
+    const cardY = hallCardYRef.current[cardKey];
+    if (typeof cardY !== 'number') return;
+    setTimeout(() => {
+      detailScrollRef.current?.scrollTo?.({
+        y: Math.max(0, cardY - 12),
+        animated: true,
+      });
+    }, 100);
+  }, []);
 
   useEffect(() => {
     const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
@@ -757,6 +853,12 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
       subHide.remove();
     };
   }, []);
+
+  useEffect(() => {
+    if (detailKeyboardHeight > 0 && focusedHallKeyRef.current && !selectedLevelInfo && !selectedSummaryGroup) {
+      scrollFocusedHallCardIntoView(focusedHallKeyRef.current);
+    }
+  }, [detailKeyboardHeight, selectedLevelInfo, selectedSummaryGroup, scrollFocusedHallCardIntoView]);
 
   // Chuyển sang màn hình Chi tiết Dãy/Sảnh tức thì (frame 1 hiện header ngay, frame 2 mới mount 390 ô)
   useEffect(() => {
@@ -2814,12 +2916,31 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
       )}
 
       {/* ── MÀN HÌNH CHI TIẾT Ô & TẦNG (Overlay trực tiếp — mở 0ms không tạo native Modal nặng) ── */}
-      {selectedDetailZoneId ? (
+      {selectedDetailZoneId ? (() => {
+        const detailAlreadyShrunk =
+          detailKeyboardHeight > 0 && baseDetailOverlayHeightRef.current > 0 && detailOverlayHeight > 0
+            ? Math.max(0, baseDetailOverlayHeightRef.current - detailOverlayHeight)
+            : 0;
+        const isSubModalOpen = Boolean(selectedLevelInfo || selectedSummaryGroup);
+        const effectiveDetailKbPadding =
+          Platform.OS === 'android' && detailKeyboardHeight > 0 && !isSubModalOpen
+            ? Math.max(0, detailKeyboardHeight - detailAlreadyShrunk - 58)
+            : 0;
+        return (
         <View
+          onLayout={e => {
+            const h = e.nativeEvent.layout.height;
+            if (h > 0) {
+              setDetailOverlayHeight(h);
+              if (detailKeyboardHeight === 0) {
+                baseDetailOverlayHeightRef.current = h;
+              }
+            }
+          }}
           style={[
             StyleSheet.absoluteFill,
             styles.container,
-            { zIndex: 40, paddingBottom: detailKeyboardHeight > 0 ? 0 : insets.bottom },
+            { zIndex: 40, paddingBottom: effectiveDetailKbPadding },
           ]}
         >
           <StatusBar barStyle="light-content" />
@@ -2936,7 +3057,7 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
               keyboardShouldPersistTaps="handled"
               contentContainerStyle={{
                 padding: 14,
-                paddingBottom: 120,
+                paddingBottom: 28,
               }}
             >
             {!detailContentReady ? (
@@ -2958,10 +3079,17 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
                 {hallSummary.map((item: any, idx: number) => {
                   const targetPosId = item.primaryPosId;
                   const targetPosCode = item.primaryPosCode;
+                  const cardKey = `sum-${targetPosId || idx}`;
                   const savedVoices = parseVoiceNoteUrlsApp(item.summaryVoiceUrl);
                   const pendingList = pendingVoicesMap[targetPosId] || [];
                   return (
-                  <View key={`sum-${idx}`} style={styles.hallGroupCard}>
+                  <View
+                    key={cardKey}
+                    style={styles.hallGroupCard}
+                    onLayout={e => {
+                      hallCardYRef.current[cardKey] = e.nativeEvent.layout.y;
+                    }}
+                  >
                     <TouchableOpacity
                       onPress={() => setSelectedSummaryGroup(item)}
                       activeOpacity={0.8}
@@ -3024,6 +3152,15 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
                           placeholder="Ghi chú dòng tổng (VD: thực tế có 25 LOT)..."
                           placeholderTextColor="#64748b"
                           value={item.summaryNote || ''}
+                          onFocus={() => {
+                            focusedHallKeyRef.current = cardKey;
+                            scrollFocusedHallCardIntoView(cardKey);
+                          }}
+                          onBlur={() => {
+                            if (focusedHallKeyRef.current === cardKey) {
+                              focusedHallKeyRef.current = null;
+                            }
+                          }}
                           onChangeText={val => updatePositionNote(targetPosId, val)}
                         />
                         {item.summaryNote ? (
@@ -3080,9 +3217,13 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
                   const eRes = inventoryResults[extraPos.id] || { checked: false, note: '' };
                   const eSavedVoices = parseVoiceNoteUrlsApp(eRes.voice_note_url);
                   const ePendingList = pendingVoicesMap[extraPos.id] || [];
+                  const extraCardKey = `hall-extra-${extraPos.id}`;
                   return (
                     <View
-                      key={`hall-extra-${extraPos.id}`}
+                      key={extraCardKey}
+                      onLayout={e => {
+                        hallCardYRef.current[extraCardKey] = e.nativeEvent.layout.y;
+                      }}
                       style={[
                         styles.hallGroupCard,
                         { borderColor: 'rgba(245, 158, 11, 0.45)', backgroundColor: 'rgba(245, 158, 11, 0.06)' },
@@ -3140,6 +3281,15 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
                             placeholder="Ghi chú hoặc bấm Micro đọc hàng dư / ngoài danh sách..."
                             placeholderTextColor="#94a3b8"
                             value={eRes.note || ''}
+                            onFocus={() => {
+                              focusedHallKeyRef.current = extraCardKey;
+                              scrollFocusedHallCardIntoView(extraCardKey);
+                            }}
+                            onBlur={() => {
+                              if (focusedHallKeyRef.current === extraCardKey) {
+                                focusedHallKeyRef.current = null;
+                              }
+                            }}
                             onChangeText={val => updatePositionNote(extraPos.id, val)}
                           />
                           {eRes.note ? (
@@ -3506,10 +3656,13 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
               onDeleteOfflineVoice={handleDeleteOfflineVoice}
               onTranscribeOfflineVoice={handleTranscribeOfflineVoice}
               bulkCheckPositions={bulkCheckPositions}
+              keyboardHeight={detailKeyboardHeight}
+              bottomInset={insets.bottom}
             />
           ) : null}
         </View>
-      ) : null}
+        );
+      })() : null}
 
       {/* ── MODAL TẠO PHIẾU KIỂM KÊ MỚI ───────────────────────────── */}
       <Modal
