@@ -1319,25 +1319,36 @@ export async function syncWarehouseMapOffline(): Promise<{
 
             const allItems = l.lot_items || [];
             const fallbackLotProd = l.product_id ? prodCacheMap.get(l.product_id) : null;
-            const allProdNames = Array.from(new Set([
-              l.products?.name || fallbackLotProd?.name,
-              ...allItems.map((it: any) => it.products?.name || (it.product_id ? prodCacheMap.get(it.product_id)?.name : null)),
-              l.metadata?.product_name
-            ].filter(Boolean))) as string[];
+            const itemProdNames = allItems
+              .map((it: any) => it.products?.name || (it.product_id ? prodCacheMap.get(it.product_id)?.name : null))
+              .filter(Boolean);
+            const allProdNames = Array.from(new Set(
+              itemProdNames.length > 0
+                ? itemProdNames
+                : [l.products?.name || fallbackLotProd?.name, l.metadata?.product_name].filter(Boolean)
+            )) as string[];
             const prodName = allProdNames.length > 0
               ? allProdNames.join(', ')
               : (tagsStr ? `Hàng ${tagsStr}` : 'Hàng đông lạnh');
 
-            const allSkus = Array.from(new Set([
-              l.products?.sku || fallbackLotProd?.sku,
-              ...allItems.map((it: any) => it.products?.sku || (it.product_id ? prodCacheMap.get(it.product_id)?.sku : null))
-            ].filter(Boolean))) as string[];
+            const itemSkus = allItems
+              .map((it: any) => it.products?.sku || (it.product_id ? prodCacheMap.get(it.product_id)?.sku : null))
+              .filter(Boolean);
+            const allSkus = Array.from(new Set(
+              itemSkus.length > 0
+                ? itemSkus
+                : [l.products?.sku || fallbackLotProd?.sku].filter(Boolean)
+            )) as string[];
             const sku = allSkus.length > 0 ? allSkus.join(', ') : (tags.length > 0 ? tags[0] : '---');
 
-            const allAliases = Array.from(new Set([
-              l.products?.aliases || fallbackLotProd?.aliases,
-              ...allItems.map((it: any) => it.products?.aliases || (it.product_id ? prodCacheMap.get(it.product_id)?.aliases : null))
-            ].filter(Boolean))) as string[];
+            const itemAliases = allItems
+              .map((it: any) => it.products?.aliases || (it.product_id ? prodCacheMap.get(it.product_id)?.aliases : null))
+              .filter(Boolean);
+            const allAliases = Array.from(new Set(
+              itemAliases.length > 0
+                ? itemAliases
+                : [l.products?.aliases || fallbackLotProd?.aliases].filter(Boolean)
+            )) as string[];
             const aliases = allAliases.length > 0 ? allAliases.join(', ') : null;
 
             const itemUnit = allItems.map((it: any) => it.unit).find(Boolean);
