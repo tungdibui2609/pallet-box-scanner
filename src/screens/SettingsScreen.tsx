@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
+import appJson from '../../app.json';
+const APP_VERSION = appJson?.expo?.version || '1.0.86';
 import {
   View, Text, TextInput, TouchableOpacity,
   Alert, ActivityIndicator, ScrollView, Switch, Modal, Platform
@@ -1058,7 +1060,7 @@ export default function SettingsScreen({ onBack }: { onBack: () => void }) {
           style={{ alignItems: 'center', paddingVertical: 8 }}
         >
           <Text style={{ color: colors.textMuted, fontSize: 12, fontWeight: '600' }}>
-            Phiên bản v1.0.82 · Chánh Thu WMS
+            Phiên bản v{APP_VERSION} · Chánh Thu WMS
           </Text>
           {showAdvancedConfig && (
             <Text style={{ color: '#d97706', fontSize: 11, fontWeight: '700', marginTop: 2 }}>
