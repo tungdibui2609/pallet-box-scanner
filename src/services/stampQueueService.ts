@@ -327,6 +327,9 @@ export async function getStampDriveWebhookUrl(): Promise<string | null> {
   return null;
 }
 
+// Hàng đợi tuần tự cho upload ảnh con dấu lên Google Drive (tránh 2 ảnh chụp liên tiếp đụng độ lock trên Google Apps Script)
+let stampDriveUploadChain: Promise<any> = Promise.resolve();
+
 /**
  * Tải ảnh con dấu từ điện thoại lên Google Drive (Apps Script CON_DAU)
  * Hỗ trợ cả chế độ quét thường và chế độ gửi duyệt AI
@@ -340,89 +343,114 @@ export async function uploadMobileStampImageToGoogleDrive(
   viewUrl?: string | null;
   imageUrl?: string | null;
 }> {
-  try {
-    const cleanStt = (palletStt || '').trim().toUpperCase() || 'PALLET';
-    const client = await getSupabaseClient();
+  const runTask = async (): Promise<{
+    success: boolean;
+    fileId?: string | null;
+    viewUrl?: string | null;
+    imageUrl?: string | null;
+  }> => {
+    try {
+      const cleanStt = (palletStt || '').trim().toUpperCase() || 'PALLET';
+      const client = await getSupabaseClient();
 
-    // 1. Nén ảnh và chuyển sang Base64
-    const manipulated = await ImageManipulator.manipulateAsync(
-      photoUri,
-      [{ resize: { width: 1400 } }],
-      { compress: 0.85, format: ImageManipulator.SaveFormat.JPEG, base64: true }
-    );
+      // 1. Nén ảnh và chuyển sang Base64
+      const manipulated = await ImageManipulator.manipulateAsync(
+        photoUri,
+        [{ resize: { width: 1400 } }],
+        { compress: 0.85, format: ImageManipulator.SaveFormat.JPEG, base64: true }
+      );
 
-    const base64Data = manipulated.base64;
-    if (!base64Data) {
-      return { success: false };
-    }
+      const base64Data = manipulated.base64;
+      if (!base64Data) {
+        return { success: false };
+      }
 
-    // 2. Lấy Webhook URL
-    const webhookUrl = await getStampDriveWebhookUrl();
-    let finalImageUrl = '';
-    let driveFileId: string | null = null;
-    let driveViewUrl: string | null = null;
+      // 2. Lấy Webhook URL
+      const webhookUrl = await getStampDriveWebhookUrl();
+      let finalImageUrl = '';
+      let driveFileId: string | null = null;
+      let driveViewUrl: string | null = null;
 
-    if (webhookUrl) {
-      try {
-        const now = new Date();
-        const yearMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-        const filename = `STT_${cleanStt}_${Date.now()}.jpg`;
+      if (webhookUrl) {
+        for (let attempt = 1; attempt <= 2; attempt++) {
+          try {
+            const now = new Date();
+            const yearMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+            const filename = `STT_${cleanStt}_${Date.now()}.jpg`;
 
-        const driveRes = await fetch(webhookUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-          body: JSON.stringify({
-            action: 'upload',
-            base64: base64Data,
-            palletStt: cleanStt,
-            yearMonth,
-            filename,
-            mimeType: 'image/jpeg',
-          }),
-        });
+            const driveRes = await fetch(webhookUrl, {
+              method: 'POST',
+              headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+              body: JSON.stringify({
+                action: 'upload',
+                base64: base64Data,
+                palletStt: cleanStt,
+                yearMonth,
+                filename,
+                mimeType: 'image/jpeg',
+              }),
+            });
 
-        if (driveRes.ok) {
-          const driveData: any = await driveRes.json();
-          if (driveData.success && driveData.fileId) {
-            driveFileId = driveData.fileId;
-            driveViewUrl = driveData.viewUrl || null;
-            finalImageUrl = driveData.thumbnailUrl || driveData.viewUrl || `https://drive.google.com/thumbnail?id=${driveData.fileId}&sz=w1000`;
+            if (driveRes.ok) {
+              const driveData: any = await driveRes.json();
+              if (driveData.success && driveData.fileId) {
+                driveFileId = driveData.fileId;
+                driveViewUrl = driveData.viewUrl || `https://drive.google.com/file/d/${driveData.fileId}/view?usp=drivesdk`;
+                finalImageUrl =
+                  driveData.thumbnailUrl ||
+                  driveViewUrl ||
+                  `https://drive.google.com/thumbnail?id=${driveData.fileId}&sz=w1000`;
+                break;
+              }
+            }
+          } catch (driveErr) {
+            console.warn(`[StampDrive] Upload Google Drive lần ${attempt} lỗi:`, driveErr);
+          }
+          if (attempt < 2) {
+            await new Promise(r => setTimeout(r, 1000));
           }
         }
-      } catch (driveErr) {
-        console.warn('[StampDrive] Upload Google Drive lỗi, fallback sang Storage:', driveErr);
       }
-    }
 
-    // Fallback sang Supabase Storage nếu Drive lỗi hoặc chưa có webhook
-    if (!finalImageUrl) {
-      try {
-        const rawBytes = decodeBase64ToArrayBuffer(base64Data);
-        const filePath = `stamp-queue/${cleanStt}_${Date.now()}.jpg`;
+      // Fallback sang Supabase Storage nếu Drive lỗi hoặc chưa có webhook
+      if (!finalImageUrl) {
+        try {
+          const rawBytes = decodeBase64ToArrayBuffer(base64Data);
+          const ts = Date.now();
+          const filePath = `stamp-queue/${cleanStt}_${ts}.jpg`;
 
-        const { error: uploadErr } = await client.storage
-          .from('operation-images')
-          .upload(filePath, rawBytes, { contentType: 'image/jpeg', upsert: true });
-
-        if (!uploadErr) {
-          const { data: pubData } = client.storage
+          const { error: uploadErr } = await client.storage
             .from('operation-images')
-            .getPublicUrl(filePath);
-          finalImageUrl = pubData?.publicUrl || '';
-        }
-      } catch {}
-    }
+            .upload(filePath, rawBytes, { contentType: 'image/jpeg', upsert: true });
 
-    return {
-      success: !!finalImageUrl,
-      fileId: driveFileId,
-      viewUrl: driveViewUrl || finalImageUrl,
-      imageUrl: finalImageUrl,
-    };
-  } catch (e) {
-    console.warn('[uploadMobileStampImageToGoogleDrive] Error:', e);
-    return { success: false };
-  }
+          if (!uploadErr) {
+            const { data: pubData } = client.storage
+              .from('operation-images')
+              .getPublicUrl(filePath);
+            finalImageUrl = normalizeStorageUrl(pubData?.publicUrl) || pubData?.publicUrl || '';
+            if (finalImageUrl && !driveFileId) {
+              driveFileId = `storage_${cleanStt}_${ts}`;
+              driveViewUrl = finalImageUrl;
+            }
+          }
+        } catch {}
+      }
+
+      return {
+        success: !!finalImageUrl,
+        fileId: driveFileId,
+        viewUrl: driveViewUrl || finalImageUrl,
+        imageUrl: finalImageUrl,
+      };
+    } catch (e) {
+      console.warn('[uploadMobileStampImageToGoogleDrive] Error:', e);
+      return { success: false };
+    }
+  };
+
+  const next = stampDriveUploadChain.then(runTask, runTask);
+  stampDriveUploadChain = next.catch(() => {});
+  return next;
 }
 
 /**

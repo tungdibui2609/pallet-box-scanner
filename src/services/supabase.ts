@@ -6,7 +6,7 @@ import {
   markPalletSynced, markPalletSyncError, replacePalletBoxesFromCloud,
   saveStampDictionaries, saveStampFormats, saveCloudPalletsToCache,
   getCloudPalletsFromCache, saveProductsToCache, getProductsFromCache,
-  saveCloudBoxesToCache, getCloudBoxesFromCache
+  saveCloudBoxesToCache, getCloudBoxesFromCache, getBoxesByPallet, getDb
 } from './database';
 import { DEFAULT_STAMP_DICTIONARY } from './stampParser';
 import { formatMaterialZoneList } from '../utils/provinces';
@@ -201,8 +201,67 @@ export async function syncPalletToSupabase(pallet: Pallet, boxes: BoxLabel[]): P
       }
     }
 
+    // 1.9. Đảm bảo tất cả các đợt ảnh con dấu trong Pallet (đặc biệt khi quét 2+ tấm hình) đều đã được tải lên Google Drive / Storage trước khi gửi box_labels
+    try {
+      const freshLocalBoxes = await getBoxesByPallet(pallet.id);
+      if (freshLocalBoxes && freshLocalBoxes.length === boxes.length) {
+        boxes = freshLocalBoxes;
+      }
+      const pendingPhotoMap = new Map<string, BoxLabel[]>();
+      for (const b of boxes) {
+        const hasRemoteUrl =
+          (b.drive_view_url && /^https?:\/\//i.test(b.drive_view_url)) ||
+          (b.stamp_image_url && /^https?:\/\//i.test(b.stamp_image_url));
+        if (hasRemoteUrl && b.drive_file_id) continue;
+
+        let localUri: string | null = null;
+        if (b.stamp_image_url && b.stamp_image_url.startsWith('file://')) {
+          localUri = b.stamp_image_url;
+        } else if (b.raw_text && b.raw_text.startsWith('{')) {
+          try {
+            const parsed = JSON.parse(b.raw_text);
+            if (parsed?.photo_uri && String(parsed.photo_uri).startsWith('file://')) {
+              localUri = String(parsed.photo_uri);
+            }
+          } catch {}
+        }
+        if (localUri) {
+          if (!pendingPhotoMap.has(localUri)) pendingPhotoMap.set(localUri, []);
+          pendingPhotoMap.get(localUri)!.push(b);
+        }
+      }
+
+      if (pendingPhotoMap.size > 0) {
+        const { uploadMobileStampImageToGoogleDrive } = await import('./stampQueueService');
+        const db = await getDb();
+        for (const [localUri, groupBoxes] of pendingPhotoMap.entries()) {
+          const upRes = await uploadMobileStampImageToGoogleDrive(localUri, sttCode);
+          const remoteUrl = upRes.viewUrl || upRes.imageUrl || null;
+          if (upRes.success && (upRes.fileId || remoteUrl)) {
+            for (const gb of groupBoxes) {
+              gb.drive_file_id = upRes.fileId || undefined;
+              gb.drive_view_url = remoteUrl || undefined;
+              gb.stamp_image_url = remoteUrl || undefined;
+              await db.runAsync(
+                `UPDATE boxes SET drive_file_id = ?, drive_view_url = ?, stamp_image_url = ? WHERE id = ?`,
+                [upRes.fileId || null, remoteUrl, remoteUrl, gb.id]
+              );
+            }
+          }
+        }
+      }
+    } catch (upErr) {
+      console.warn('[syncPalletToSupabase] Cảnh báo đồng bộ bù ảnh con dấu:', upErr);
+    }
+
     // 2. Chuẩn bị danh sách tem thùng (box_labels)
     const boxRows = boxes.map(b => {
+      const validStampImg =
+        b.stamp_image_url && !b.stamp_image_url.startsWith('file://')
+          ? b.stamp_image_url
+          : b.drive_view_url && !b.drive_view_url.startsWith('file://')
+          ? b.drive_view_url
+          : null;
       const cleanSku = (b.sku || 'SKU').replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
       const cleanLot = (b.lot_code || 'LOT').replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
       const idxStr = String(b.box_index || '0').padStart(3, '0');
@@ -251,8 +310,8 @@ export async function syncPalletToSupabase(pallet: Pallet, boxes: BoxLabel[]): P
           raw_material_date: b.scan_type === 'stamp' ? (b.raw_material_date || null) : null,
           // Đính kèm ảnh con dấu Google Drive của đợt quét này
           drive_file_id: b.drive_file_id || null,
-          drive_view_url: b.drive_view_url || null,
-          stamp_image_url: b.stamp_image_url || b.drive_view_url || null,
+          drive_view_url: b.drive_view_url && !b.drive_view_url.startsWith('file://') ? b.drive_view_url : validStampImg,
+          stamp_image_url: validStampImg,
         }
       };
       if (companyId) row.company_id = companyId;

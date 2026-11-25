@@ -719,14 +719,20 @@ export default function StampScannerScreen({ onNavigateToPallets }: { onNavigate
       if (capturedPhotoUri && createdBoxIds.length > 0) {
         uploadMobileStampImageToGoogleDrive(capturedPhotoUri, palletCode)
           .then(async upRes => {
-            if (upRes.success && upRes.fileId) {
+            const remoteUrl = upRes.viewUrl || upRes.imageUrl || null;
+            if (upRes.success && (upRes.fileId || remoteUrl)) {
               const db = await getDb();
               for (const bxId of createdBoxIds) {
                 await db.runAsync(
                   `UPDATE boxes SET drive_file_id = ?, drive_view_url = ?, stamp_image_url = ? WHERE id = ?`,
-                  [upRes.fileId, upRes.viewUrl || null, upRes.viewUrl || null, bxId]
+                  [upRes.fileId || null, remoteUrl, remoteUrl, bxId]
                 );
               }
+              // Cập nhật cả các thùng vừa được nhân bản (clone) từ cùng tấm ảnh local này trên Pallet
+              await db.runAsync(
+                `UPDATE boxes SET drive_file_id = ?, drive_view_url = ?, stamp_image_url = ? WHERE pallet_id = ? AND stamp_image_url = ?`,
+                [upRes.fileId || null, remoteUrl, remoteUrl, palletId, capturedPhotoUri]
+              );
             }
           })
           .catch(e => console.warn('[StampScanner] Tải ảnh lên Google Drive ngầm:', e));

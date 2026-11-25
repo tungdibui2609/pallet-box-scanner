@@ -620,14 +620,16 @@ export async function cloneBoxToPallet(
       `INSERT INTO boxes (
         id, pallet_id, sku, lot_code, product_name, box_index, weight, unit,
         shift_group, region, production_date, packaging_date, spec, raw_text,
-        scan_type, stamp_line1, stamp_line2, sync_status, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`,
+        scan_type, stamp_line1, stamp_line2, drive_file_id, drive_view_url, stamp_image_url,
+        sync_status, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`,
       [
         newId, palletId, sampleBox.sku || 'UNKNOWN', sampleBox.lot_code || 'UNKNOWN',
         sampleBox.product_name, newIdx, sampleBox.weight || 20, sampleBox.unit || 'Kg',
         sampleBox.shift_group || '', sampleBox.region || '', sampleBox.production_date || '',
         sampleBox.packaging_date || '', sampleBox.spec || '', sampleBox.raw_text || '',
         sampleBox.scan_type || 'label', sampleBox.stamp_line1 || null, sampleBox.stamp_line2 || null,
+        sampleBox.drive_file_id || null, sampleBox.drive_view_url || null, sampleBox.stamp_image_url || null,
         now
       ]
     );
