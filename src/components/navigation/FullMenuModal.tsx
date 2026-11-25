@@ -21,6 +21,7 @@ export type AppTab =
   | 'operations'
   | 'inventory'
   | 'warehouse_map'
+  | 'work'
   | 'pallets'
   | 'settings';
 
@@ -101,6 +102,15 @@ export const FullMenuModal: React.FC<FullMenuModalProps> = ({
           icon: 'map',
           color: '#06b6d4',
           bgColor: 'rgba(6, 182, 212, 0.15)',
+          isPrimary: true,
+        },
+        {
+          tab: 'work',
+          label: 'Công Việc (Lệnh Xuất)',
+          desc: 'Thực thi lệnh xuất kho, hạ sảnh & thống kê kệ lấy hàng',
+          icon: 'briefcase',
+          color: '#3b82f6',
+          bgColor: 'rgba(59, 130, 246, 0.15)',
           isPrimary: true,
         },
       ],

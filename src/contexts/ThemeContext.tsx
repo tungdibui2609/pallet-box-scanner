@@ -9,6 +9,7 @@ export type ThemeTabKey =
   | 'operations'
   | 'pallets'
   | 'warehouse_map'
+  | 'work'
   | 'scanner'
   | 'inventory'
   | 'settings';
@@ -51,6 +52,13 @@ export const THEME_TAB_META: {
     color: '#059669',
   },
   {
+    key: 'work',
+    label: 'Công Việc (Lệnh Xuất)',
+    desc: 'Lệnh xuất kho, hạ sảnh & thống kê vị trí lấy hàng',
+    icon: 'briefcase',
+    color: '#2563eb',
+  },
+  {
     key: 'scanner',
     label: 'Quét Tem Thùng',
     desc: 'Quét barcode tem thùng và đóng pallet',
@@ -78,6 +86,7 @@ export const DEFAULT_TAB_THEMES: TabThemesMap = {
   operations: 'light',
   pallets: 'light',
   warehouse_map: 'light',
+  work: 'light',
   scanner: 'light',
   inventory: 'light',
   settings: 'light',
@@ -312,6 +321,7 @@ export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         operations: nextMode,
         pallets: nextMode,
         warehouse_map: nextMode,
+        work: nextMode,
         scanner: nextMode,
         inventory: nextMode,
         settings: nextMode,

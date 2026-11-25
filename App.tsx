@@ -8,6 +8,7 @@ import PalletListScreen from './src/screens/PalletListScreen';
 import WarehouseMapScreen from './src/screens/WarehouseMapScreen';
 import InventoryScreen from './src/screens/InventoryScreen';
 import OperationsDataScreen from './src/screens/OperationsDataScreen';
+import WorkScreen from './src/screens/WorkScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
 import LoginScreen from './src/screens/LoginScreen';
 import { AuthProvider, useAuth } from './src/contexts/AuthContext';
@@ -16,7 +17,7 @@ import { triggerBackgroundAutoSync } from './src/services/autoSync';
 import { FullMenuModal } from './src/components/navigation/FullMenuModal';
 import OperationWatermarkOverlay from './src/components/operations/OperationWatermarkOverlay';
 
-type AppTab = 'scanner' | 'stamp_scanner' | 'operations' | 'inventory' | 'warehouse_map' | 'pallets' | 'settings';
+type AppTab = 'scanner' | 'stamp_scanner' | 'operations' | 'inventory' | 'warehouse_map' | 'work' | 'pallets' | 'settings';
 
 // Màu nhấn của từng tab trên thanh Menu thương hiệu (nền indigo đậm ở cả 2 theme)
 const NAV_ACTIVE = {
@@ -39,6 +40,7 @@ function AppContent() {
     stamp_scanner: true,
     operations: false,
     warehouse_map: false,
+    work: false,
     inventory: false,
     pallets: false,
   });
@@ -218,6 +220,16 @@ function AppContent() {
             <TabThemeScope tab="inventory">
               <InventoryScreen
                 isActive={currentTab === 'inventory'}
+              />
+            </TabThemeScope>
+          )}
+        </View>
+        {/* Keep-Alive cho Công Việc (Lệnh Xuất) */}
+        <View style={[styles.tabKeepAlive, currentTab !== 'work' && styles.tabHidden]}>
+          {visitedTabs.work && (
+            <TabThemeScope tab="work">
+              <WorkScreen
+                isActive={currentTab === 'work'}
               />
             </TabThemeScope>
           )}
