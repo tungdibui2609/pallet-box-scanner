@@ -1010,128 +1010,156 @@ export default function WorkScreen({ isActive = true }: WorkScreenProps) {
         }
 
         const client = await getSupabaseClient();
-        let query = client
-          .from('export_tasks')
-          .select(
-            `
-            id,
-            code,
-            status,
-            system_code,
-            notes,
-            created_at,
-            created_by,
-            export_task_items (
+        // 2. Tải danh sách export_tasks chuẩn theo Web Scanner (tránh lỗi embed/cột không tồn tại)
+        const { data: tasksData, error: tErr } = await withTimeout(
+          client
+            .from('export_tasks')
+            .select('*')
+            .eq('system_code', sysCode)
+            .in('status', ['Pending', 'In Progress', 'Processing'])
+            .order('created_at', { ascending: false }),
+          10000,
+          'Quá thời gian tải lệnh xuất'
+        );
+        if (tErr) throw tErr;
+
+        const taskList = Array.isArray(tasksData) ? tasksData : [];
+        if (taskList.length === 0) {
+          setExportTasks([]);
+          await AsyncStorage.setItem(cacheKey, JSON.stringify([]));
+          return;
+        }
+
+        const taskIds = taskList.map((t: any) => t.id).filter(Boolean);
+        const { data: itemsData, error: iErr } = await withTimeout(
+          client
+            .from('export_task_items')
+            .select(
+              `
               id,
               task_id,
               lot_id,
               product_id,
               position_id,
               quantity,
-              exported_quantity,
               unit,
               status,
               priority,
-              lots (id, code, daily_seq, notes, status, production_code, lot_tags(tag)),
-              products (id, name, sku),
-              positions (id, code)
+              positions:positions!export_task_items_position_id_fkey (id, code),
+              lots (
+                id,
+                code,
+                daily_seq,
+                notes,
+                status,
+                production_code,
+                lot_tags (tag),
+                positions!positions_lot_id_fkey (id, code)
+              ),
+              products (id, name, sku)
+            `
             )
-          `
-          )
-          .eq('system_code', sysCode)
-          .in('status', ['Pending', 'In Progress', 'Processing'])
-          .order('created_at', { ascending: false });
+            .in('task_id', taskIds),
+          12000,
+          'Quá thời gian tải chi tiết lệnh xuất'
+        );
+        if (iErr) throw iErr;
 
-        if (user?.company_id) {
-          query = query.eq('company_id', user.company_id);
+        const allRawItems = Array.isArray(itemsData) ? itemsData : [];
+        const itemsByTaskId = new Map<string, any[]>();
+        for (const rawIt of allRawItems) {
+          const tid = rawIt.task_id;
+          if (!tid) continue;
+          const arr = itemsByTaskId.get(tid);
+          if (arr) arr.push(rawIt);
+          else itemsByTaskId.set(tid, [rawIt]);
         }
 
-        const { data, error } = await withTimeout(query, 10000, 'Quá thời gian tải lệnh xuất');
-        if (error) throw error;
-
-        if (data) {
-          const formatted: WorkExportTask[] = data
-            .map((t: any) => {
-              const rawItems = Array.isArray(t.export_task_items) ? t.export_task_items : [];
-              const items: WorkExportTaskItem[] = rawItems
-                .filter((it: any) => it.status !== 'Exported' && it.lots?.status !== 'exported')
-                .map((it: any) => {
-                  const lotLivePos = it.lot_id ? posByLotId.get(it.lot_id) : undefined;
-                  const posId = lotLivePos?.id || it.position_id || it.positions?.id || null;
-                  const posCode = lotLivePos?.code || it.positions?.code || null;
-                  const isAtHall = Boolean(lotLivePos?.isHall);
-                  const displayStatus =
-                    it.status === 'Exported'
-                      ? 'Exported'
-                      : isAtHall
-                        ? 'Moved to Hall'
-                        : it.status || 'Pending';
-
-                  return {
-                    id: it.id,
-                    task_id: it.task_id || t.id,
-                    lot_id: it.lot_id,
-                    product_id: it.product_id || it.products?.id || null,
-                    position_id: posId,
-                    quantity: it.quantity ?? null,
-                    exported_quantity: it.exported_quantity ?? null,
-                    unit: it.unit || 'Thùng',
-                    status: it.status || 'Pending',
-                    priority: Number(it.priority) || 0,
-                    lot_code: it.lots?.code || null,
-                    lot_stt: it.lots?.daily_seq ?? null,
-                    production_code: it.lots?.production_code || null,
-                    tags: Array.isArray(it.lots?.lot_tags)
-                      ? Array.from(
-                          new Set(
-                            it.lots.lot_tags
-                              .map((lt: any) => (lt?.tag || '').trim())
-                              .filter(Boolean)
-                          )
-                        )
-                      : [],
-                    lot_notes: it.lots?.notes || null,
-                    product_name: it.products?.name || null,
-                    product_sku: it.products?.sku || null,
-                    position_code: posCode,
-                    display_status: displayStatus,
-                  };
-                });
+        const formatted: WorkExportTask[] = taskList.map((t: any) => {
+          const rawItems = itemsByTaskId.get(t.id) || [];
+          const items: WorkExportTaskItem[] = rawItems
+            .filter((it: any) => it.status !== 'Exported' && it.lots?.status !== 'exported')
+            .map((it: any) => {
+              const lotLivePos = it.lot_id ? posByLotId.get(it.lot_id) : undefined;
+              const lotPositions = it.lots?.positions;
+              const livePosFromLot = Array.isArray(lotPositions) ? lotPositions[0] : lotPositions;
+              const origPosCode = it.positions?.code || null;
+              const posId = lotLivePos?.id || livePosFromLot?.id || it.position_id || it.positions?.id || null;
+              const posCode = lotLivePos?.code || livePosFromLot?.code || origPosCode || null;
+              const isAtHall = Boolean(
+                lotLivePos?.isHall ||
+                  (origPosCode && posCode && origPosCode !== posCode)
+              );
+              const displayStatus =
+                it.status === 'Exported'
+                  ? 'Exported'
+                  : isAtHall
+                    ? 'Moved to Hall'
+                    : it.status || 'Pending';
 
               return {
-                id: t.id,
-                code: t.code,
-                status: t.status,
-                system_code: t.system_code,
-                notes: t.notes || null,
-                created_at: t.created_at,
-                created_by: t.created_by || null,
-                items,
+                id: it.id,
+                task_id: it.task_id || t.id,
+                lot_id: it.lot_id,
+                product_id: it.product_id || it.products?.id || null,
+                position_id: posId,
+                quantity: it.quantity ?? null,
+                exported_quantity: it.exported_quantity ?? null,
+                unit: it.unit || 'Thùng',
+                status: it.status || 'Pending',
+                priority: Number(it.priority) || 0,
+                lot_code: it.lots?.code || null,
+                lot_stt: it.lots?.daily_seq ?? null,
+                production_code: it.lots?.production_code || null,
+                tags: Array.isArray(it.lots?.lot_tags)
+                  ? Array.from(
+                      new Set(
+                        it.lots.lot_tags
+                          .map((lt: any) => (lt?.tag || '').trim())
+                          .filter(Boolean)
+                      )
+                    )
+                  : [],
+                lot_notes: it.lots?.notes || null,
+                product_name: it.products?.name || null,
+                product_sku: it.products?.sku || null,
+                position_code: posCode,
+                display_status: displayStatus,
               };
-            })
-            .filter((t: WorkExportTask) => t.items.length > 0);
+            });
 
-          setExportTasks(formatted);
-          await AsyncStorage.setItem(cacheKey, JSON.stringify(formatted));
+          return {
+            id: t.id,
+            code: t.code,
+            status: t.status,
+            system_code: t.system_code,
+            notes: t.notes || null,
+            created_at: t.created_at,
+            created_by: t.created_by || null,
+            items,
+          };
+        });
 
-          // Nếu đang mở 1 lệnh xuất thì đồng bộ danh sách items mới
-          setSelectedTask(prev => {
-            if (!prev) return null;
-            const updated = formatted.find(f => f.id === prev.id);
-            if (updated) {
-              setTaskItems(updated.items);
-              return updated;
-            }
-            return prev;
-          });
-        }
-      } catch (err) {
-        console.warn('Đang dùng dữ liệu Lệnh Xuất ngoại tuyến:', err);
+        setExportTasks(formatted);
+        await AsyncStorage.setItem(cacheKey, JSON.stringify(formatted));
+
+        // Nếu đang mở 1 lệnh xuất thì đồng bộ danh sách items mới
+        setSelectedTask(prev => {
+          if (!prev) return null;
+          const updated = formatted.find(f => f.id === prev.id);
+          if (updated) {
+            setTaskItems(updated.items);
+            return updated;
+          }
+          return prev;
+        });
+      } catch (err: any) {
+        console.warn('Lỗi tải danh sách Lệnh Xuất:', err?.message || err);
       } finally {
         setLoading(false);
       }
     },
-    [systemCode, user?.company_id, loadWarehouseMapStructure]
+    [systemCode, loadWarehouseMapStructure]
   );
 
   useEffect(() => {

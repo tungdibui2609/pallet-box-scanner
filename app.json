@@ -2,14 +2,14 @@
   "expo": {
     "name": "Anywarehouse",
     "slug": "bao-duy",
-    "version": "1.0.88",
+    "version": "1.0.89",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
     "splash": {
       "image": "./assets/splash-logo.png",
       "resizeMode": "contain",
-      "backgroundColor": "#ea580c"
+      "backgroundColor": "#c2410c"
     },
     "ios": {
       "supportsTablet": true
@@ -21,7 +21,7 @@
       },
       "predictiveBackGestureEnabled": false,
       "package": "com.anywarehouse.scanner",
-      "versionCode": 89,
+      "versionCode": 90,
       "permissions": [
         "android.permission.CAMERA",
         "android.permission.RECORD_AUDIO",
@@ -36,9 +36,9 @@
       [
         "expo-splash-screen",
         {
-          "backgroundColor": "#ea580c",
+          "backgroundColor": "#c2410c",
           "image": "./assets/splash-logo.png",
-          "imageWidth": 220,
+          "imageWidth": 288,
           "resizeMode": "contain"
         }
       ],
