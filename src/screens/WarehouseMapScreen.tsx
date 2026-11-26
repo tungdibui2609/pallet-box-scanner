@@ -267,6 +267,7 @@ export interface PositionProductSubItem {
   aliases: string | null;
   quantity: number;
   unit: string;
+  rawUnit: string;
 }
 
 /**
@@ -285,6 +286,7 @@ export function getPositionProductItems(pos: PositionItem): PositionProductSubIt
         aliases: pos.aliases || null,
         quantity: it.quantity != null ? Number(it.quantity) : 0,
         unit: getCleanUnitCategory(it.unit || pos.unit),
+        rawUnit: (it.unit || pos.unit || '').trim() || getCleanUnitCategory(it.unit || pos.unit),
       }));
     }
   }
@@ -300,6 +302,7 @@ export function getPositionProductItems(pos: PositionItem): PositionProductSubIt
       aliases: pos.aliases || null,
       quantity: eachQty,
       unit: getCleanUnitCategory(pos.unit),
+      rawUnit: (pos.unit || '').trim() || getCleanUnitCategory(pos.unit),
     }));
   }
 
@@ -311,6 +314,7 @@ export function getPositionProductItems(pos: PositionItem): PositionProductSubIt
       aliases: pos.aliases || null,
       quantity: pos.quantity || 0,
       unit: getCleanUnitCategory(pos.unit),
+      rawUnit: (pos.unit || '').trim() || getCleanUnitCategory(pos.unit),
     },
   ];
 }
@@ -387,7 +391,11 @@ const MobileWarehouseSearchBar = React.memo(function MobileWarehouseSearchBar({
   onSetDatePreset,
   onResetFilters,
   isFilterOpen,
-  onToggleFilterOpen
+  onToggleFilterOpen,
+  isCollapsed = false,
+  onSetCollapsed,
+  matchCount = 0,
+  onClearAll,
 }: {
   uniqueProducts: UniqueProductItem[];
   uniqueStts: UniqueSttItem[];
@@ -417,12 +425,18 @@ const MobileWarehouseSearchBar = React.memo(function MobileWarehouseSearchBar({
   onResetFilters: () => void;
   isFilterOpen: boolean;
   onToggleFilterOpen: () => void;
+  isCollapsed?: boolean;
+  onSetCollapsed?: (collapsed: boolean) => void;
+  matchCount?: number;
+  onClearAll?: () => void;
 }) {
   const { isDark } = useTheme();
   const styles = useThemedStyles(baseStyles);
   const [inputValue, setInputValue] = useState(searchQuery);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [showModeModal, setShowModeModal] = useState(false);
+  const [activePickerModal, setActivePickerModal] = useState<'unit' | 'tag' | null>(null);
+  const [tagFilterSearch, setTagFilterSearch] = useState('');
 
   const activeModeConfig =
     WAREHOUSE_SEARCH_MODES.find(m => m.id === searchMode) || WAREHOUSE_SEARCH_MODES[0];
@@ -487,8 +501,9 @@ const MobileWarehouseSearchBar = React.memo(function MobileWarehouseSearchBar({
     return list.sort((a, b) => b.score - a.score).slice(0, 6);
   }, [inputValue, uniqueStts, searchMode]);
 
+  // Chỉ hiện gợi ý Tag khi người dùng chủ động chọn chế độ tìm riêng 'tag' (vì đã có bộ lọc Mã phụ riêng)
   const tagSuggestions = useMemo(() => {
-    if (searchMode !== 'all' && searchMode !== 'tag') return [];
+    if (searchMode !== 'tag') return [];
     const q = inputValue.trim();
     if (!q || q.length < 1 || q.startsWith('#')) return [];
 
@@ -713,6 +728,130 @@ const MobileWarehouseSearchBar = React.memo(function MobileWarehouseSearchBar({
   };
 
   const activeDateOption = DATE_FILTER_OPTIONS.find(o => o.id === filterDateType) || DATE_FILTER_OPTIONS[0];
+  const hasAnySearchOrFilter = searchQuery.trim().length > 0 || hasActiveFilters;
+
+  if (isCollapsed && hasAnySearchOrFilter) {
+    return (
+      <View style={[styles.searchSection, { paddingVertical: 6 }]}>
+        <View
+          style={{
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 6,
+            backgroundColor: '#0f172a',
+            borderWidth: 1,
+            borderColor: 'rgba(16, 185, 129, 0.45)',
+            borderRadius: 12,
+            paddingHorizontal: 10,
+            paddingVertical: 7,
+          }}
+        >
+          <TouchableOpacity
+            activeOpacity={0.75}
+            onPress={() => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              onSetCollapsed?.(false);
+            }}
+            style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: 6, minWidth: 0 }}
+          >
+            <Ionicons name="search" size={14} color="#34d399" />
+            <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: 5, minWidth: 0, overflow: 'hidden' }}>
+              {searchQuery.trim() ? (
+                <Text
+                  numberOfLines={1}
+                  style={{ fontSize: 12, fontWeight: '800', color: '#fcd34d', flexShrink: 1 }}
+                >
+                  {searchQuery.trim()}
+                </Text>
+              ) : (
+                <Text style={{ fontSize: 12, fontWeight: '700', color: '#cbd5e1' }}>Đang lọc</Text>
+              )}
+              {selectedUnits.length > 0 && (
+                <View
+                  style={{
+                    paddingHorizontal: 6,
+                    paddingVertical: 2,
+                    borderRadius: 6,
+                    backgroundColor: 'rgba(16, 185, 129, 0.2)',
+                    borderWidth: 1,
+                    borderColor: 'rgba(52, 211, 153, 0.4)',
+                  }}
+                >
+                  <Text style={{ fontSize: 10, fontWeight: '800', color: '#6ee7b7' }} numberOfLines={1}>
+                    {selectedUnits.length === 1 ? selectedUnits[0] : `${selectedUnits.length} ĐVT`}
+                  </Text>
+                </View>
+              )}
+              {selectedTags.length > 0 && (
+                <View
+                  style={{
+                    paddingHorizontal: 6,
+                    paddingVertical: 2,
+                    borderRadius: 6,
+                    backgroundColor: 'rgba(251, 191, 36, 0.2)',
+                    borderWidth: 1,
+                    borderColor: 'rgba(251, 191, 36, 0.4)',
+                  }}
+                >
+                  <Text style={{ fontSize: 10, fontWeight: '800', color: '#fde68a' }} numberOfLines={1}>
+                    {selectedTags.length === 1 ? `🏷️ ${selectedTags[0]}` : `${selectedTags.length} Tag`}
+                  </Text>
+                </View>
+              )}
+            </View>
+          </TouchableOpacity>
+
+          <View
+            style={{
+              paddingHorizontal: 7,
+              paddingVertical: 3,
+              borderRadius: 7,
+              backgroundColor: 'rgba(6, 78, 59, 0.85)',
+              borderWidth: 1,
+              borderColor: 'rgba(16, 185, 129, 0.5)',
+            }}
+          >
+            <Text style={{ fontSize: 11, fontWeight: '900', color: '#34d399' }}>{matchCount} ô</Text>
+          </View>
+
+          <TouchableOpacity
+            onPress={() => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              onSetCollapsed?.(false);
+            }}
+            style={{
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 2,
+              paddingHorizontal: 8,
+              paddingVertical: 4,
+              borderRadius: 8,
+              backgroundColor: '#1e293b',
+            }}
+          >
+            <Text style={{ fontSize: 11, fontWeight: '700', color: '#e2e8f0' }}>Lọc</Text>
+            <Ionicons name="chevron-down" size={12} color="#e2e8f0" />
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            onPress={() => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              if (onClearAll) onClearAll();
+              else onClearSearch();
+            }}
+            hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+            style={{
+              padding: 4,
+              borderRadius: 8,
+              backgroundColor: '#1e293b',
+            }}
+          >
+            <Ionicons name="close" size={14} color="#94a3b8" />
+          </TouchableOpacity>
+        </View>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.searchSection}>
@@ -874,124 +1013,489 @@ const MobileWarehouseSearchBar = React.memo(function MobileWarehouseSearchBar({
         </TouchableOpacity>
       </Modal>
 
-      {/* ── THANH CHỌN NHANH ĐƠN VỊ TÍNH (ĐVT) & MÃ PHỤ (TAG) LIÊN QUAN KHI TÌM SẢN PHẨM ── */}
-      {((searchQuery.trim().length > 0 || searchMode === 'tag' || selectedUnits.length > 0 || selectedTags.length > 0) &&
-        ((availableUnits && (availableUnits.length > 1 || selectedUnits.length > 0)) || (availableTags && availableTags.length > 0))) && (
-        <View style={{ marginTop: 6, gap: 6, paddingTop: 6, borderTopWidth: 1, borderTopColor: '#1e293b' }}>
-          {/* 1. Dãy nút lọc Đơn vị tính (ĐVT) - Đa chọn có ô tích */}
-          {onSelectUnits && availableUnits && (availableUnits.length > 1 || selectedUnits.length > 0) && (
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ alignItems: 'center', gap: 6 }}>
-              <Text style={[styles.activeFilterLabel, { color: '#34d399', fontWeight: '800' }]}>
-                ⚖️ ĐVT{selectedUnits.length > 0 ? ` (${selectedUnits.length})` : ''}:
-              </Text>
-              <TouchableOpacity
-                style={[
-                  styles.regionOptionPill,
-                  selectedUnits.length === 0 && styles.regionOptionPillActive
-                ]}
-                onPress={() => {
-                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                  onSelectUnits([]);
-                }}
-              >
+      {/* ── HÀNG 2 NÚT BỘ LỌC RÕ RÀNG: ĐƠN VỊ TÍNH (ĐVT) & MÃ PHỤ (TAG) ── */}
+      {((onSelectUnits && availableUnits && availableUnits.length > 0) ||
+        (onSelectTags && availableTags && availableTags.length > 0)) && (
+        <View style={{ flexDirection: 'row', gap: 8, marginTop: 6, paddingTop: 6, borderTopWidth: 1, borderTopColor: '#1e293b' }}>
+          {onSelectUnits && availableUnits && availableUnits.length > 0 && (
+            <TouchableOpacity
+              activeOpacity={0.8}
+              onPress={() => {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                setShowSuggestions(false);
+                setActivePickerModal('unit');
+              }}
+              style={{
+                flex: 1,
+                flexDirection: 'row',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: 6,
+                paddingHorizontal: 10,
+                paddingVertical: 8,
+                borderRadius: 12,
+                borderWidth: 1,
+                backgroundColor: selectedUnits.length > 0 ? 'rgba(16, 185, 129, 0.2)' : '#0f172a',
+                borderColor: selectedUnits.length > 0 ? '#34d399' : '#334155',
+              }}
+            >
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1, minWidth: 0 }}>
+                <Ionicons name="scale-outline" size={14} color="#34d399" />
                 <Text
-                  style={[
-                    styles.regionOptionPillText,
-                    selectedUnits.length === 0 && styles.regionOptionPillTextActive
-                  ]}
+                  numberOfLines={1}
+                  style={{
+                    fontSize: 12,
+                    fontWeight: '700',
+                    color: selectedUnits.length > 0 ? '#a7f3d0' : '#e2e8f0',
+                    flex: 1,
+                  }}
                 >
-                  Tất cả ({availableUnits.length})
+                  <Text style={{ color: '#94a3b8', fontWeight: '600' }}>ĐVT: </Text>
+                  {selectedUnits.length === 0
+                    ? `Tất cả (${availableUnits.length})`
+                    : selectedUnits.length === 1
+                    ? selectedUnits[0]
+                    : `Đã chọn ${selectedUnits.length}`}
                 </Text>
-              </TouchableOpacity>
-              {availableUnits.map(u => {
-                const isSel = isUnitSelected(u.unit);
-                return (
-                  <TouchableOpacity
-                    key={u.unit}
-                    style={[
-                      styles.regionOptionPill,
-                      { flexDirection: 'row', alignItems: 'center', gap: 5 },
-                      isSel && styles.regionOptionPillActive
-                    ]}
-                    onPress={() => {
-                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                      toggleUnit(u.unit);
-                    }}
-                  >
-                    <Ionicons
-                      name={isSel ? 'checkbox' : 'square-outline'}
-                      size={13}
-                      color={isSel ? '#0f172a' : '#34d399'}
-                    />
-                    <Text style={[styles.regionOptionPillText, isSel && styles.regionOptionPillTextActive]}>
-                      {u.unit} ({u.count} ô · {u.totalQty.toLocaleString('vi-VN')})
-                    </Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </ScrollView>
+              </View>
+              <Ionicons name="chevron-down" size={14} color="#34d399" />
+            </TouchableOpacity>
           )}
 
-          {/* 2. Dãy nút lọc Mã phụ (Tag) liên quan đến sản phẩm đang tìm - Đa chọn có ô tích */}
           {onSelectTags && availableTags && availableTags.length > 0 && (
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ alignItems: 'center', gap: 6 }}>
-              <Text style={[styles.activeFilterLabel, { color: '#fbbf24', fontWeight: '800' }]}>
-                🏷️ Tag ({selectedTags.length > 0 ? `${selectedTags.length}/${availableTags.length}` : availableTags.length}):
-              </Text>
-              <TouchableOpacity
-                style={[
-                  styles.regionOptionPill,
-                  selectedTags.length === 0 && { backgroundColor: '#f59e0b', borderColor: '#fbbf24' }
-                ]}
-                onPress={() => {
-                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                  onSelectTags([]);
-                }}
-              >
+            <TouchableOpacity
+              activeOpacity={0.8}
+              onPress={() => {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                setShowSuggestions(false);
+                setTagFilterSearch('');
+                setActivePickerModal('tag');
+              }}
+              style={{
+                flex: 1,
+                flexDirection: 'row',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: 6,
+                paddingHorizontal: 10,
+                paddingVertical: 8,
+                borderRadius: 12,
+                borderWidth: 1,
+                backgroundColor: selectedTags.length > 0 ? 'rgba(251, 191, 36, 0.2)' : '#0f172a',
+                borderColor: selectedTags.length > 0 ? '#fbbf24' : '#334155',
+              }}
+            >
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1, minWidth: 0 }}>
+                <Ionicons name="pricetag-outline" size={14} color="#fbbf24" />
                 <Text
-                  style={[
-                    styles.regionOptionPillText,
-                    selectedTags.length === 0 && { color: '#0f172a', fontWeight: '900' }
-                  ]}
+                  numberOfLines={1}
+                  style={{
+                    fontSize: 12,
+                    fontWeight: '700',
+                    color: selectedTags.length > 0 ? '#fde68a' : '#e2e8f0',
+                    flex: 1,
+                  }}
                 >
-                  Tất cả
+                  <Text style={{ color: '#94a3b8', fontWeight: '600' }}>Mã phụ: </Text>
+                  {selectedTags.length === 0
+                    ? `Tất cả (${availableTags.length})`
+                    : selectedTags.length === 1
+                    ? selectedTags[0]
+                    : `Đã chọn ${selectedTags.length}`}
                 </Text>
-              </TouchableOpacity>
-              {availableTags.slice(0, 20).map(t => {
-                const isSel = isTagSelected(t.tag);
-                return (
-                  <TouchableOpacity
-                    key={t.tag}
-                    style={[
-                      styles.regionOptionPill,
-                      { flexDirection: 'row', alignItems: 'center', gap: 5 },
-                      isSel && { backgroundColor: '#f59e0b', borderColor: '#fbbf24' }
-                    ]}
-                    onPress={() => {
-                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                      toggleTag(t.tag);
-                    }}
-                  >
-                    <Ionicons
-                      name={isSel ? 'checkbox' : 'square-outline'}
-                      size={13}
-                      color={isSel ? '#0f172a' : '#fbbf24'}
-                    />
-                    <Text
-                      style={[
-                        styles.regionOptionPillText,
-                        isSel && { color: '#0f172a', fontWeight: '900' }
-                      ]}
-                    >
-                      🏷️ {t.tag} ({t.count} ô · {formatUnitsSummary(t.unitsMap, { short: true })})
-                    </Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </ScrollView>
+              </View>
+              <Ionicons name="chevron-down" size={14} color="#fbbf24" />
+            </TouchableOpacity>
           )}
         </View>
       )}
+
+      {/* ── MODAL CHỌN ĐA PHƯƠNG ÁN: ĐƠN VỊ TÍNH (ĐVT) & MÃ PHỤ (TAG) ── */}
+      <Modal
+        visible={!!activePickerModal}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setActivePickerModal(null)}
+      >
+        <TouchableOpacity
+          activeOpacity={1}
+          onPress={() => setActivePickerModal(null)}
+          style={{
+            flex: 1,
+            backgroundColor: 'rgba(0,0,0,0.75)',
+            justifyContent: 'flex-end',
+          }}
+        >
+          <TouchableOpacity
+            activeOpacity={1}
+            onPress={() => {}}
+            style={{
+              backgroundColor: '#0c1426',
+              borderTopLeftRadius: 24,
+              borderTopRightRadius: 24,
+              borderTopWidth: 1,
+              borderColor: '#334155',
+              maxHeight: '82%',
+              overflow: 'hidden',
+            }}
+          >
+            {/* Header Modal */}
+            <View
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                paddingHorizontal: 16,
+                paddingVertical: 14,
+                backgroundColor: '#0f172a',
+                borderBottomWidth: 1,
+                borderBottomColor: '#1e293b',
+              }}
+            >
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 }}>
+                <View
+                  style={{
+                    width: 34,
+                    height: 34,
+                    borderRadius: 10,
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    backgroundColor: activePickerModal === 'unit' ? 'rgba(16,185,129,0.16)' : 'rgba(251,191,36,0.16)',
+                    borderWidth: 1,
+                    borderColor: activePickerModal === 'unit' ? 'rgba(52,211,153,0.4)' : 'rgba(251,191,36,0.4)',
+                  }}
+                >
+                  <Ionicons
+                    name={activePickerModal === 'unit' ? 'scale-outline' : 'pricetag-outline'}
+                    size={17}
+                    color={activePickerModal === 'unit' ? '#34d399' : '#fbbf24'}
+                  />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={{ fontSize: 15, fontWeight: '900', color: '#ffffff' }}>
+                    {activePickerModal === 'unit'
+                      ? `Chọn Đơn vị tính (${availableUnits.length})`
+                      : `Chọn Mã phụ / Tag (${availableTags.length})`}
+                  </Text>
+                  <Text style={{ fontSize: 11, color: '#94a3b8', marginTop: 1 }}>
+                    Tích chọn một hoặc nhiều phương án để lọc
+                  </Text>
+                </View>
+              </View>
+              <TouchableOpacity
+                onPress={() => setActivePickerModal(null)}
+                style={{
+                  padding: 8,
+                  borderRadius: 10,
+                  backgroundColor: '#1e293b',
+                }}
+              >
+                <Ionicons name="close" size={18} color="#cbd5e1" />
+              </TouchableOpacity>
+            </View>
+
+            {/* Ô tìm nhanh Mã phụ */}
+            {activePickerModal === 'tag' && availableTags.length > 6 && (
+              <View style={{ paddingHorizontal: 14, paddingTop: 12, paddingBottom: 4 }}>
+                <View
+                  style={{
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: 8,
+                    backgroundColor: '#020617',
+                    borderWidth: 1,
+                    borderColor: '#334155',
+                    borderRadius: 12,
+                    paddingHorizontal: 12,
+                    paddingVertical: 8,
+                  }}
+                >
+                  <Ionicons name="search" size={15} color="#94a3b8" />
+                  <TextInput
+                    value={tagFilterSearch}
+                    onChangeText={setTagFilterSearch}
+                    placeholder="Tìm nhanh mã phụ..."
+                    placeholderTextColor="#64748b"
+                    style={{ flex: 1, color: '#ffffff', fontSize: 13, padding: 0 }}
+                  />
+                  {tagFilterSearch.length > 0 && (
+                    <TouchableOpacity onPress={() => setTagFilterSearch('')}>
+                      <Ionicons name="close-circle" size={16} color="#94a3b8" />
+                    </TouchableOpacity>
+                  )}
+                </View>
+              </View>
+            )}
+
+            {/* Danh sách lựa chọn dọc to rõ */}
+            <ScrollView
+              style={{ paddingHorizontal: 14, paddingVertical: 10 }}
+              contentContainerStyle={{ gap: 8, paddingBottom: 14 }}
+              keyboardShouldPersistTaps="handled"
+            >
+              {activePickerModal === 'unit' && onSelectUnits && (
+                <>
+                  <TouchableOpacity
+                    onPress={() => {
+                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                      onSelectUnits([]);
+                    }}
+                    style={{
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      paddingHorizontal: 14,
+                      paddingVertical: 12,
+                      borderRadius: 12,
+                      borderWidth: 1,
+                      backgroundColor: selectedUnits.length === 0 ? '#10b981' : '#0f172a',
+                      borderColor: selectedUnits.length === 0 ? '#34d399' : '#1e293b',
+                    }}
+                  >
+                    <Text
+                      style={{
+                        fontSize: 13,
+                        fontWeight: selectedUnits.length === 0 ? '900' : '700',
+                        color: selectedUnits.length === 0 ? '#020617' : '#e2e8f0',
+                      }}
+                    >
+                      Tất cả ĐVT ({availableUnits.length})
+                    </Text>
+                    {selectedUnits.length === 0 && <Ionicons name="checkmark" size={18} color="#020617" />}
+                  </TouchableOpacity>
+
+                  {availableUnits.map(u => {
+                    const isSel = isUnitSelected(u.unit);
+                    return (
+                      <TouchableOpacity
+                        key={u.unit}
+                        onPress={() => {
+                          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                          toggleUnit(u.unit);
+                        }}
+                        style={{
+                          flexDirection: 'row',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          gap: 10,
+                          paddingHorizontal: 14,
+                          paddingVertical: 12,
+                          borderRadius: 12,
+                          borderWidth: 1,
+                          backgroundColor: isSel ? 'rgba(16, 185, 129, 0.16)' : '#0f172a',
+                          borderColor: isSel ? '#34d399' : '#1e293b',
+                        }}
+                      >
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1, minWidth: 0 }}>
+                          <Ionicons
+                            name={isSel ? 'checkbox' : 'square-outline'}
+                            size={20}
+                            color={isSel ? '#34d399' : '#64748b'}
+                          />
+                          <Text
+                            numberOfLines={1}
+                            style={{
+                              fontSize: 14,
+                              fontWeight: isSel ? '900' : '700',
+                              color: isSel ? '#a7f3d0' : '#f1f5f9',
+                              flex: 1,
+                            }}
+                          >
+                            {u.unit}
+                          </Text>
+                        </View>
+                        <View
+                          style={{
+                            paddingHorizontal: 9,
+                            paddingVertical: 4,
+                            borderRadius: 8,
+                            backgroundColor: 'rgba(6, 78, 59, 0.7)',
+                            borderWidth: 1,
+                            borderColor: 'rgba(16, 185, 129, 0.35)',
+                          }}
+                        >
+                          <Text style={{ fontSize: 11, fontWeight: '800', color: '#6ee7b7' }}>
+                            {u.count} ô · {u.totalQty.toLocaleString('vi-VN')}
+                          </Text>
+                        </View>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </>
+              )}
+
+              {activePickerModal === 'tag' && onSelectTags && (
+                <>
+                  {!tagFilterSearch.trim() && (
+                    <TouchableOpacity
+                      onPress={() => {
+                        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                        onSelectTags([]);
+                      }}
+                      style={{
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        paddingHorizontal: 14,
+                        paddingVertical: 12,
+                        borderRadius: 12,
+                        borderWidth: 1,
+                        backgroundColor: selectedTags.length === 0 ? '#f59e0b' : '#0f172a',
+                        borderColor: selectedTags.length === 0 ? '#fbbf24' : '#1e293b',
+                      }}
+                    >
+                      <Text
+                        style={{
+                          fontSize: 13,
+                          fontWeight: selectedTags.length === 0 ? '900' : '700',
+                          color: selectedTags.length === 0 ? '#020617' : '#e2e8f0',
+                        }}
+                      >
+                        Tất cả Mã phụ ({availableTags.length})
+                      </Text>
+                      {selectedTags.length === 0 && <Ionicons name="checkmark" size={18} color="#020617" />}
+                    </TouchableOpacity>
+                  )}
+
+                  {availableTags
+                    .filter(t => {
+                      const q = tagFilterSearch.trim();
+                      if (!q) return true;
+                      const nq = normalizeSearchString(q, true);
+                      return (
+                        normalizeSearchString(t.tag, true).includes(nq) ||
+                        t.productNames.some(pn => normalizeSearchString(pn, true).includes(nq))
+                      );
+                    })
+                    .map(t => {
+                      const isSel = isTagSelected(t.tag);
+                      return (
+                        <TouchableOpacity
+                          key={t.tag}
+                          onPress={() => {
+                            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                            toggleTag(t.tag);
+                          }}
+                          style={{
+                            flexDirection: 'row',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            gap: 10,
+                            paddingHorizontal: 14,
+                            paddingVertical: 12,
+                            borderRadius: 12,
+                            borderWidth: 1,
+                            backgroundColor: isSel ? 'rgba(251, 191, 36, 0.16)' : '#0f172a',
+                            borderColor: isSel ? '#fbbf24' : '#1e293b',
+                          }}
+                        >
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1, minWidth: 0 }}>
+                            <Ionicons
+                              name={isSel ? 'checkbox' : 'square-outline'}
+                              size={20}
+                              color={isSel ? '#fbbf24' : '#64748b'}
+                            />
+                            <View style={{ flex: 1, minWidth: 0 }}>
+                              <Text
+                                numberOfLines={1}
+                                style={{
+                                  fontSize: 14,
+                                  fontWeight: isSel ? '900' : '700',
+                                  color: isSel ? '#fde68a' : '#f1f5f9',
+                                }}
+                              >
+                                🏷️ {t.tag}
+                              </Text>
+                              {t.productNames.length > 0 && (
+                                <Text numberOfLines={1} style={{ fontSize: 11, color: '#94a3b8', marginTop: 2 }}>
+                                  {t.productNames.slice(0, 2).join(', ')}
+                                </Text>
+                              )}
+                            </View>
+                          </View>
+                          <View
+                            style={{
+                              paddingHorizontal: 9,
+                              paddingVertical: 4,
+                              borderRadius: 8,
+                              backgroundColor: 'rgba(120, 53, 15, 0.65)',
+                              borderWidth: 1,
+                              borderColor: 'rgba(251, 191, 36, 0.35)',
+                            }}
+                          >
+                            <Text style={{ fontSize: 11, fontWeight: '800', color: '#fcd34d' }}>
+                              {t.count} ô · {formatUnitsSummary(t.unitsMap, { short: true })}
+                            </Text>
+                          </View>
+                        </TouchableOpacity>
+                      );
+                    })}
+                </>
+              )}
+            </ScrollView>
+
+            {/* Footer Modal */}
+            <View
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                paddingHorizontal: 16,
+                paddingVertical: 12,
+                backgroundColor: '#0f172a',
+                borderTopWidth: 1,
+                borderTopColor: '#1e293b',
+              }}
+            >
+              <Text style={{ fontSize: 12, fontWeight: '700', color: '#cbd5e1' }}>
+                {activePickerModal === 'unit'
+                  ? selectedUnits.length > 0
+                    ? `Đang chọn ${selectedUnits.length} ĐVT`
+                    : 'Đang chọn: Tất cả'
+                  : selectedTags.length > 0
+                  ? `Đang chọn ${selectedTags.length} mã phụ`
+                  : 'Đang chọn: Tất cả'}
+              </Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                {((activePickerModal === 'unit' && selectedUnits.length > 0) ||
+                  (activePickerModal === 'tag' && selectedTags.length > 0)) && (
+                  <TouchableOpacity
+                    onPress={() => {
+                      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                      if (activePickerModal === 'unit') onSelectUnits?.([]);
+                      else onSelectTags?.([]);
+                    }}
+                    style={{
+                      paddingHorizontal: 12,
+                      paddingVertical: 8,
+                      borderRadius: 10,
+                      backgroundColor: '#1e293b',
+                    }}
+                  >
+                    <Text style={{ fontSize: 12, fontWeight: '700', color: '#e2e8f0' }}>Bỏ chọn</Text>
+                  </TouchableOpacity>
+                )}
+                <TouchableOpacity
+                  onPress={() => {
+                    setActivePickerModal(null);
+                    if (searchQuery.trim().length > 0 || selectedUnits.length > 0 || selectedTags.length > 0 || hasActiveFilters) {
+                      onSetCollapsed?.(true);
+                    }
+                  }}
+                  style={{
+                    paddingHorizontal: 16,
+                    paddingVertical: 8,
+                    borderRadius: 10,
+                    backgroundColor: activePickerModal === 'unit' ? '#10b981' : '#f59e0b',
+                  }}
+                >
+                  <Text style={{ fontSize: 12, fontWeight: '900', color: '#020617' }}>Áp dụng</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
 
       {/* Thanh Chip hiển thị nhanh các bộ lọc đang áp dụng (Khi đóng bảng lọc) */}
       {hasActiveFilters && !isFilterOpen && (
@@ -1070,6 +1574,50 @@ const MobileWarehouseSearchBar = React.memo(function MobileWarehouseSearchBar({
 
           <TouchableOpacity onPress={onResetFilters} style={{ marginLeft: 'auto' }}>
             <Text style={styles.resetFilterLinkText}>Đặt lại</Text>
+          </TouchableOpacity>
+          {onSetCollapsed && (
+            <TouchableOpacity
+              onPress={() => {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                onSetCollapsed(true);
+              }}
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 2,
+                paddingHorizontal: 8,
+                paddingVertical: 3,
+                borderRadius: 8,
+                backgroundColor: '#1e293b',
+              }}
+            >
+              <Text style={{ fontSize: 10, fontWeight: '700', color: '#e2e8f0' }}>Thu gọn</Text>
+              <Ionicons name="chevron-up" size={11} color="#e2e8f0" />
+            </TouchableOpacity>
+          )}
+        </View>
+      )}
+      {!hasActiveFilters && searchQuery.trim().length > 0 && onSetCollapsed && !isFilterOpen && (
+        <View style={{ flexDirection: 'row', justifyContent: 'flex-end', marginTop: 6 }}>
+          <TouchableOpacity
+            onPress={() => {
+              Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+              onSetCollapsed(true);
+            }}
+            style={{
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 3,
+              paddingHorizontal: 10,
+              paddingVertical: 4,
+              borderRadius: 8,
+              backgroundColor: '#1e293b',
+              borderWidth: 1,
+              borderColor: '#334155',
+            }}
+          >
+            <Text style={{ fontSize: 11, fontWeight: '700', color: '#e2e8f0' }}>Thu gọn bộ lọc</Text>
+            <Ionicons name="chevron-up" size={12} color="#e2e8f0" />
           </TouchableOpacity>
         </View>
       )}
@@ -1646,6 +2194,7 @@ export default function WarehouseMapScreen({
   const [selectedUnits, setSelectedUnits] = useState<string[]>([]);
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
   const [isFilterOpen, setIsFilterOpen] = useState<boolean>(false);
+  const [isSearchCollapsed, setIsSearchCollapsed] = useState<boolean>(false);
 
   // Modal detail
   const [selectedPosDetail, setSelectedPosDetail] = useState<PositionItem | null>(null);
@@ -2364,6 +2913,8 @@ export default function WarehouseMapScreen({
     setFilterRegion('all');
     setSelectedUnits([]);
     setSelectedTags([]);
+    setIsFilterOpen(false);
+    setIsSearchCollapsed(false);
     setSearchTab('breakdown');
   }, []);
 
@@ -2374,6 +2925,10 @@ export default function WarehouseMapScreen({
     setSearchQuery(q);
     if (q) {
       setSearchTab('breakdown');
+      setIsFilterOpen(false);
+      setIsSearchCollapsed(true);
+    } else {
+      setIsSearchCollapsed(false);
     }
   }, []);
 
@@ -2528,20 +3083,20 @@ export default function WarehouseMapScreen({
         if (!hasMatchedTag) continue;
       }
 
-      // 2.6 Lọc theo Đơn vị tính (ĐVT) - OR giữa các ĐVT đã chọn
+      // 2.6 Lọc theo Đơn vị tính (ĐVT) - OR giữa các ĐVT đã chọn (giữ nguyên ĐVT chi tiết như Thùng (13kg), Thùng (12kg), Kg...)
       if (hasUnitFilter && normUnitFilterSet) {
         const subItems = getPositionProductItems(p);
         const hasMatchedUnit =
           subItems.some(sub => {
-            if (!normUnitFilterSet.has(normalizeSearchString(sub.unit, true))) return false;
+            if (!normUnitFilterSet.has(normalizeSearchString(sub.rawUnit || sub.unit, true))) return false;
             if (hasQuery && isExactProductQuery) return sub.name === q;
             if (hasQuery && (searchMode === 'name' || searchMode === 'all')) {
               return matchSearch({ name: sub.name, aliases: sub.aliases || p.aliases, sku: sub.sku }, q);
             }
             return true;
           }) ||
-          (subItems.length === 0 && normUnitFilterSet.has(normalizeSearchString(getCleanUnitCategory(p.unit), true))) ||
-          (p.items && p.items.some(it => normUnitFilterSet.has(normalizeSearchString(it.unit || p.unit || '', true))));
+          (subItems.length === 0 && normUnitFilterSet.has(normalizeSearchString((p.unit || '').trim() || getCleanUnitCategory(p.unit), true))) ||
+          (p.items && p.items.some(it => normUnitFilterSet.has(normalizeSearchString((it.unit || p.unit || '').trim(), true))));
         if (!hasMatchedUnit) continue;
       }
 
@@ -2555,7 +3110,7 @@ export default function WarehouseMapScreen({
               subItems.some(
                 sub =>
                   sub.name === q &&
-                  (!normUnitFilterSet || normUnitFilterSet.has(normalizeSearchString(sub.unit, true)))
+                  (!normUnitFilterSet || normUnitFilterSet.has(normalizeSearchString(sub.rawUnit || sub.unit, true)))
               )
             ) {
               matched.push({ pos: p, score: 2000 });
@@ -2569,7 +3124,7 @@ export default function WarehouseMapScreen({
 
           for (let sIdx = 0; sIdx < subItems.length; sIdx++) {
             const sub = subItems[sIdx];
-            if (normUnitFilterSet && !normUnitFilterSet.has(normalizeSearchString(sub.unit, true))) continue;
+            if (normUnitFilterSet && !normUnitFilterSet.has(normalizeSearchString(sub.rawUnit || sub.unit, true))) continue;
             const nameObj = {
               name: sub.name,
               aliases: sub.aliases || p.aliases,
@@ -2693,7 +3248,7 @@ export default function WarehouseMapScreen({
             const hasExact = subItems.some(
               sub =>
                 sub.name === q &&
-                (!normUnitFilterSet || normUnitFilterSet.has(normalizeSearchString(sub.unit, true)))
+                (!normUnitFilterSet || normUnitFilterSet.has(normalizeSearchString(sub.rawUnit || sub.unit, true)))
             );
             if (hasExact) {
               matched.push({ pos: p, score: 2000 });
@@ -2810,7 +3365,7 @@ export default function WarehouseMapScreen({
         const effectiveSubs = matchedSubsForQuery.length > 0 ? matchedSubsForQuery : subItems;
 
         effectiveSubs.forEach(sub => {
-          const rawU = (sub.unit || getCleanUnitCategory(p.unit)).trim();
+          const rawU = (sub.rawUnit || (p.unit || '').trim() || getCleanUnitCategory(p.unit)).trim();
           if (!rawU) return;
           const uKey = normalizeSearchString(rawU, true);
           const existing = unitMap.get(uKey);
@@ -2843,13 +3398,13 @@ export default function WarehouseMapScreen({
           ) {
             return false;
           }
-          if (normSelectedUnitSet && !normSelectedUnitSet.has(normalizeSearchString(sub.unit, true))) {
+          if (normSelectedUnitSet && !normSelectedUnitSet.has(normalizeSearchString(sub.rawUnit || sub.unit, true))) {
             return false;
           }
           return true;
         });
 
-        if (subsForUnit.length > 0 || (subItems.length === 0 && (!normSelectedUnitSet || normSelectedUnitSet.has(normalizeSearchString(getCleanUnitCategory(p.unit), true))))) {
+        if (subsForUnit.length > 0 || (subItems.length === 0 && (!normSelectedUnitSet || normSelectedUnitSet.has(normalizeSearchString((p.unit || '').trim() || getCleanUnitCategory(p.unit), true))))) {
           const posQty =
             subsForUnit.length > 0
               ? subsForUnit.reduce((s, it) => s + (it.quantity || 0), 0)
@@ -2990,7 +3545,7 @@ export default function WarehouseMapScreen({
       // Nếu pallet hỗn hợp nhiều dòng sản phẩm và đang có từ khóa tìm kiếm hoặc lọc ĐVT -> chỉ tính số lượng của sản phẩm / ĐVT khớp
       if (subItems.length > 1 && (qClean || normUnitFilterSet)) {
         const matchedSubs = subItems.filter(s => {
-          if (normUnitFilterSet && !normUnitFilterSet.has(normalizeSearchString(s.unit, true))) return false;
+          if (normUnitFilterSet && !normUnitFilterSet.has(normalizeSearchString(s.rawUnit || s.unit, true))) return false;
           if (!qClean) return true;
           if (isExactProduct) return s.name === qClean;
           return matchSearch(s.name, qClean) || Boolean(s.sku && matchSearch(s.sku, qClean));
@@ -2999,7 +3554,7 @@ export default function WarehouseMapScreen({
           itemsToSum = matchedSubs.map(s => ({ quantity: s.quantity, unit: s.unit }));
         }
       } else if (normUnitFilterSet && subItems.length === 1) {
-        if (normUnitFilterSet.has(normalizeSearchString(subItems[0].unit, true))) {
+        if (normUnitFilterSet.has(normalizeSearchString(subItems[0].rawUnit || subItems[0].unit, true))) {
           itemsToSum = [{ quantity: subItems[0].quantity, unit: subItems[0].unit }];
         }
       }
@@ -3720,73 +4275,56 @@ export default function WarehouseMapScreen({
         onResetFilters={handleResetFilters}
         isFilterOpen={isFilterOpen}
         onToggleFilterOpen={() => setIsFilterOpen(prev => !prev)}
+        isCollapsed={isSearchCollapsed && isSearchActive}
+        onSetCollapsed={setIsSearchCollapsed}
+        matchCount={matchingPositions.length}
+        onClearAll={handleClearAllSearchAndFilters}
       />
 
       {/* ── BỘ THỐNG KÊ KẾT QUẢ TÌM KIẾM THEO KHO (SEARCH STATS PANEL - CHUẨN WEB /SCANNER) ── */}
       {isSearchActive && (
-        <View style={styles.searchStatsPanel}>
-          {/* Dòng 1: Tên từ khóa & Tổng số vị trí khớp & Nút xóa */}
-          <View style={styles.searchStatsRow1}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1, minWidth: 0 }}>
-              <View style={styles.amberPulseDot} />
-              <Text style={styles.searchStatsQueryText} numberOfLines={1}>
-                {searchQuery.trim() ? (
-                  <>
-                    <Text style={{ color: '#94a3b8' }}>Kết quả cho: </Text>
-                    <Text style={{ color: '#fcd34d', fontWeight: '800' }}>&ldquo;{searchQuery}&rdquo;</Text>
-                  </>
-                ) : (
-                  <>
-                    <Text style={{ color: '#94a3b8' }}>Lọc theo: </Text>
-                    <Text style={{ color: '#fcd34d', fontWeight: '800' }}>
-                      {(filterStartDate || filterEndDate)
-                        ? DATE_FILTER_OPTIONS.find(o => o.id === filterDateType)?.shortLabel
-                        : ''}
-                      {filterRegion !== 'all' ? ` · Vùng ${filterRegion}` : ''}
-                    </Text>
-                  </>
-                )}
-              </Text>
-            </View>
-
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-              <View style={styles.matchCountPillCyan}>
-                <Text style={styles.matchCountPillCyanText}>
-                  {matchingPositions.length} vị trí khớp
+        <View style={[styles.searchStatsPanel, { paddingVertical: 6, gap: 6 }]}>
+          {/* Dòng 1: Chỉ hiện khi thanh tìm kiếm đang mở rộng (khi thu gọn đã gộp vào thanh tóm tắt 1 dòng phía trên) */}
+          {!isSearchCollapsed && (
+            <View style={styles.searchStatsRow1}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1, minWidth: 0 }}>
+                <View style={styles.amberPulseDot} />
+                <Text style={styles.searchStatsQueryText} numberOfLines={1}>
+                  {searchQuery.trim() ? (
+                    <>
+                      <Text style={{ color: '#94a3b8' }}>Kết quả cho: </Text>
+                      <Text style={{ color: '#fcd34d', fontWeight: '800' }}>&ldquo;{searchQuery}&rdquo;</Text>
+                    </>
+                  ) : (
+                    <>
+                      <Text style={{ color: '#94a3b8' }}>Lọc theo: </Text>
+                      <Text style={{ color: '#fcd34d', fontWeight: '800' }}>
+                        {(filterStartDate || filterEndDate)
+                          ? DATE_FILTER_OPTIONS.find(o => o.id === filterDateType)?.shortLabel
+                          : ''}
+                        {filterRegion !== 'all' ? ` · Vùng ${filterRegion}` : ''}
+                      </Text>
+                    </>
+                  )}
                 </Text>
               </View>
-              <TouchableOpacity
-                style={styles.clearAllSearchBtn}
-                onPress={handleClearAllSearchAndFilters}
-              >
-                <Ionicons name="close" size={13} color="#94a3b8" />
-                <Text style={styles.clearAllSearchBtnText}>Xóa</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
 
-          {/* Dòng 1B: Thanh mở bộ lọc ngày tháng & vùng miền nhanh */}
-          <View style={styles.quickFilterToggleBar}>
-            <TouchableOpacity
-              style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1, minWidth: 0 }}
-              onPress={() => setIsFilterOpen(prev => !prev)}
-            >
-              <Ionicons name="calendar-outline" size={13} color="#fbbf24" />
-              <Text style={styles.quickFilterToggleText} numberOfLines={1}>
-                {hasActiveFilters
-                  ? `Đang lọc: ${(filterStartDate || filterEndDate) ? DATE_FILTER_OPTIONS.find(o => o.id === filterDateType)?.shortLabel : ''}${filterRegion !== 'all' ? ` · Vùng ${filterRegion}` : ''}`
-                  : 'Lọc Ngày (Đóng gói / SX / Nguyên liệu) & Vùng'}
-              </Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={styles.quickFilterOpenBtn}
-              onPress={() => setIsFilterOpen(prev => !prev)}
-            >
-              <Text style={styles.quickFilterOpenBtnText}>
-                {isFilterOpen ? 'Đóng bộ lọc' : 'Mở bộ lọc'}
-              </Text>
-            </TouchableOpacity>
-          </View>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <View style={styles.matchCountPillCyan}>
+                  <Text style={styles.matchCountPillCyanText}>
+                    {matchingPositions.length} vị trí khớp
+                  </Text>
+                </View>
+                <TouchableOpacity
+                  style={styles.clearAllSearchBtn}
+                  onPress={handleClearAllSearchAndFilters}
+                >
+                  <Ionicons name="close" size={13} color="#94a3b8" />
+                  <Text style={styles.clearAllSearchBtnText}>Xóa</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          )}
 
           {/* Dòng 2: Chuyển đổi giữa 2 tab: [Thống kê phân bổ] và [Sơ đồ vị trí] */}
           <View style={styles.webSearchTabGrid}>

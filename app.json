@@ -17,7 +17,7 @@
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/icon.png",
-        "backgroundColor": "#ea580c"
+        "backgroundColor": "#0f172a"
       },
       "predictiveBackGestureEnabled": false,
       "package": "com.anywarehouse.scanner",
