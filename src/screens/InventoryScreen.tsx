@@ -33,6 +33,7 @@ import {
   VoiceMicButton,
   VoiceAudioPlayerBar,
   AppOfflineVoicePayload,
+  stopAnyActiveVoiceRecording,
 } from '../components/common/VoiceMicButton';
 import {
   OfflineInventoryVoiceAppItem,
@@ -3866,7 +3867,8 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
             <LevelInventoryModal
               level={selectedLevelInfo || groupLevel}
               visible={Boolean(selectedLevelInfo || selectedSummaryGroup)}
-              onClose={() => {
+              onClose={async () => {
+                await stopAnyActiveVoiceRecording();
                 setSelectedLevelInfo(null);
                 setSelectedSummaryGroup(null);
               }}

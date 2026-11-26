@@ -313,8 +313,16 @@ export default function WarehouseDraftListModal({
             voiceUrls: res.voiceUrl ? [res.voiceUrl] : [],
           },
         });
-        await deleteOfflineInventoryVoiceByKeyApp(pv.key);
-        await loadDraftPendingVoices();
+        const canRemoveLocal = res.driveEnabled ? Boolean(res.voiceUrl) : Boolean(res.text);
+        if (canRemoveLocal) {
+          await deleteOfflineInventoryVoiceByKeyApp(pv.key);
+          await loadDraftPendingVoices();
+        } else {
+          Alert.alert(
+            'Chưa tải được lên Drive',
+            'Đã dịch chữ nhưng file ghi âm chưa tải được lên Drive — file vẫn giữ trên máy để thử lại!'
+          );
+        }
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
       } else {
         Alert.alert('Không dịch được', 'AI không nghe rõ hoặc chưa có kết nối — file vẫn giữ trên máy.');

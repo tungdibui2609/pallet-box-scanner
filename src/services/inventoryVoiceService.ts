@@ -369,49 +369,70 @@ async function uploadSingleAudioToDrive(
   }
 ): Promise<string | null> {
   if (!driveCfg) return null;
-  try {
-    const now = new Date();
-    const ym = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-    const day = `${ym}-${String(now.getDate()).padStart(2, '0')}`;
-    const hhmmss = `${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}${String(now.getSeconds()).padStart(2, '0')}`;
-    const rand = Math.random().toString(36).slice(2, 6);
-    const sessionFolder = sanitizeDriveSegment(
-      params.sessionName,
-      params.sessionId.slice(0, 12),
-      60
-    );
-    const posPrefix = sanitizeDriveSegment(
-      params.positionCode,
-      params.positionId.slice(0, 12),
-      32
-    ).replace(/\s+/g, '_');
-    const folderPath = `${params.systemCode}/${ym}/${day}/${sessionFolder}`;
-    const filename = `${posPrefix}_${hhmmss}_${rand}.m4a`;
-    const rootFolder = params.rootFolderOverride
-      ? sanitizeDriveSegment(params.rootFolderOverride, driveCfg.rootFolder, 60).replace(/\s+/g, '_')
-      : driveCfg.rootFolder;
+  const now = new Date();
+  const ym = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  const day = `${ym}-${String(now.getDate()).padStart(2, '0')}`;
+  const hhmmss = `${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}${String(now.getSeconds()).padStart(2, '0')}`;
+  const rand = Math.random().toString(36).slice(2, 6);
+  const sessionFolder = sanitizeDriveSegment(
+    params.sessionName,
+    params.sessionId.slice(0, 12),
+    60
+  );
+  const posPrefix = sanitizeDriveSegment(
+    params.positionCode,
+    params.positionId.slice(0, 12),
+    32
+  ).replace(/\s+/g, '_');
+  const folderPath = `${params.systemCode}/${ym}/${day}/${sessionFolder}`;
+  const filename = `${posPrefix}_${hhmmss}_${rand}.m4a`;
+  const rootFolder = params.rootFolderOverride
+    ? sanitizeDriveSegment(params.rootFolderOverride, driveCfg.rootFolder, 60).replace(/\s+/g, '_')
+    : driveCfg.rootFolder;
 
-    const res = await fetch(driveCfg.webhookUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        rootFolder,
-        folderPath,
-        filename,
-        mimeType: params.mimeType || 'audio/mp4',
-        base64: params.audioBase64,
-      }),
-    });
-    const text = await res.text();
-    const parsed = JSON.parse(text);
-    if (parsed?.success && parsed?.fileId) {
-      // Lưu đúng định dạng chung với Web để Web Quản trị & Web Scanner phát trực tiếp qua /api/voice-proxy
-      return `/api/voice-proxy?id=${encodeURIComponent(String(parsed.fileId))}`;
+  // Tự động thử lại tối đa 3 lần (chống Apps Script cold-start / nghẽn mạng làm rớt file đầu tiên)
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const res = await fetch(driveCfg.webhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          rootFolder,
+          folderPath,
+          filename,
+          mimeType: params.mimeType || 'audio/mp4',
+          base64: params.audioBase64,
+        }),
+      });
+      const text = await res.text();
+      const parsed = JSON.parse(text);
+      if (parsed?.success && parsed?.fileId) {
+        // Lưu đúng định dạng chung với Web để Web Quản trị & Web Scanner phát trực tiếp qua /api/voice-proxy
+        return `/api/voice-proxy?id=${encodeURIComponent(String(parsed.fileId))}`;
+      }
+    } catch {}
+    if (attempt < 3) {
+      await new Promise(resolve => setTimeout(resolve, 700 * attempt));
     }
-    return null;
-  } catch {
-    return null;
   }
+  return null;
+}
+
+async function mapWithConcurrency<T, R>(
+  list: T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+  const results = new Array<R>(list.length);
+  let cursor = 0;
+  const workers = Array.from({ length: Math.min(concurrency, list.length) }, async () => {
+    while (cursor < list.length) {
+      const idx = cursor++;
+      results[idx] = await worker(list[idx], idx);
+    }
+  });
+  await Promise.all(workers);
+  return results;
 }
 
 async function callGeminiBatchAudio(
@@ -491,7 +512,12 @@ async function callGeminiBatchAudio(
         const mapped: Record<string, string> = {};
         items.forEach((it, idx) => {
           const shortKey = String(idx + 1);
-          const val = parsed[shortKey] ?? parsed[it.itemId] ?? '';
+          const val =
+            parsed[shortKey] ??
+            parsed[`Đoạn ${shortKey}`] ??
+            parsed[`đoạn ${shortKey}`] ??
+            parsed[it.itemId] ??
+            '';
           mapped[it.itemId] = String(val || '').trim();
         });
         return mapped;
@@ -514,7 +540,7 @@ export async function processSingleVoiceOnlineApp(params: {
   vocabulary?: string[];
   skipDriveUpload?: boolean;
   rootFolderOverride?: string | null;
-}): Promise<{ text: string; voiceUrl: string | null }> {
+}): Promise<{ text: string; voiceUrl: string | null; driveEnabled: boolean }> {
   const audioBase64 = await LegacyFileSystem.readAsStringAsync(params.localUri, {
     encoding: LegacyFileSystem.EncodingType.Base64,
   });
@@ -550,7 +576,11 @@ export async function processSingleVoiceOnlineApp(params: {
 
   const rawText = String(textMap[params.positionId] || '').trim();
   const normalized = rawText ? normalizeWarehouseVoiceText(rawText) : '';
-  return { text: normalized, voiceUrl };
+  return {
+    text: normalized,
+    voiceUrl,
+    driveEnabled: Boolean(!params.skipDriveUpload && driveCfg),
+  };
 }
 
 export async function syncOfflineInventoryVoicesForSessionApp(params: {
@@ -614,21 +644,19 @@ export async function syncOfflineInventoryVoicesForSessionApp(params: {
 
     if (loadedItems.length === 0) continue;
 
-    // Dùng item.key làm itemId riêng cho từng đoạn ghi âm để nhiều đoạn của cùng 1 vị trí không đè lên nhau
+    // Giới hạn 3 luồng upload Drive song song (kèm retry 3 lần) để tránh Google Apps Script cold-start làm rớt file đầu tiên
     const [driveUrls, geminiMap] = await Promise.all([
-      Promise.all(
-        loadedItems.map(({ item, audioBase64 }) =>
-          uploadSingleAudioToDrive(driveCfg, {
-            audioBase64,
-            mimeType: item.mimeType,
-            systemCode: params.systemCode,
-            sessionId: params.sessionId,
-            sessionName: params.sessionName,
-            positionId: item.positionId,
-            positionCode: params.positionCodeById?.[item.positionId] || null,
-            rootFolderOverride: params.rootFolderOverride || null,
-          })
-        )
+      mapWithConcurrency(loadedItems, 3, ({ item, audioBase64 }) =>
+        uploadSingleAudioToDrive(driveCfg, {
+          audioBase64,
+          mimeType: item.mimeType,
+          systemCode: params.systemCode,
+          sessionId: params.sessionId,
+          sessionName: params.sessionName,
+          positionId: item.positionId,
+          positionCode: params.positionCodeById?.[item.positionId] || null,
+          rootFolderOverride: params.rootFolderOverride || null,
+        })
       ),
       callGeminiBatchAudio(
         geminiCfg,
@@ -684,19 +712,23 @@ export async function syncOfflineInventoryVoicesForSessionApp(params: {
           resultsByPos[item.positionId].voiceUrls.push(voiceUrl);
           batchResultsByPos[item.positionId].voiceUrls.push(voiceUrl);
         }
-        keysToDeleteAfterPersist.push(item.key);
-        syncedCount++;
+
+        // BẮT BUỘC có file ghi âm lên Drive (nếu Drive đang bật) thì mới được phép xóa file local;
+        // nếu Drive lỗi (voiceUrl == null) thì vẫn giữ file local để lần đồng bộ sau đẩy tiếp lên Drive!
+        const canRemoveLocal = driveCfg ? Boolean(voiceUrl) : Boolean(normalized);
+        if (canRemoveLocal) {
+          keysToDeleteAfterPersist.push(item.key);
+          syncedCount++;
+        }
       }
     }
 
     // Lưu bền vững kết quả của lô này trước, sau đó mới xóa file local để tuyệt đối không mất link ghi âm
-    if (keysToDeleteAfterPersist.length > 0) {
-      if (params.onBatchCompleted) {
-        await params.onBatchCompleted(batchResultsByPos);
-      }
-      for (const k of keysToDeleteAfterPersist) {
-        await deleteOfflineInventoryVoiceByKeyApp(k);
-      }
+    if (Object.keys(batchResultsByPos).length > 0 && params.onBatchCompleted) {
+      await params.onBatchCompleted(batchResultsByPos);
+    }
+    for (const k of keysToDeleteAfterPersist) {
+      await deleteOfflineInventoryVoiceByKeyApp(k);
     }
   }
 

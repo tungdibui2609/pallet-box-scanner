@@ -30,6 +30,7 @@ import {
   VoiceMicButton,
   VoiceAudioPlayerBar,
   AppOfflineVoicePayload,
+  VoiceMicButtonHandle,
 } from '../common/VoiceMicButton';
 import {
   processSingleVoiceOnlineApp,
@@ -165,6 +166,8 @@ export default function WarehouseAdjustmentDraftModal({
   const [assignLotError, setAssignLotError] = useState<string | null>(null);
 
   // State ghi âm & dịch AI cho ô ghi chú (lưu bền vững offline + thư mục Drive riêng giống Kiểm kê)
+  const voiceMicRef = useRef<VoiceMicButtonHandle | null>(null);
+  const [isSavingDraft, setIsSavingDraft] = useState(false);
   const [voiceNoteUrl, setVoiceNoteUrl] = useState<string | null>(null);
   const [pendingVoices, setPendingVoices] = useState<OfflineInventoryVoiceAppItem[]>([]);
   const [transcribingVoiceKey, setTranscribingVoiceKey] = useState<string | null>(null);
@@ -277,8 +280,17 @@ export default function WarehouseAdjustmentDraftModal({
           if (res.voiceUrl) {
             setVoiceNoteUrl(prev => appendVoiceNoteUrlApp(prev, res.voiceUrl));
           }
-          await deleteOfflineInventoryVoiceByKeyApp(voiceItem.key);
-          setPendingVoices(prev => prev.filter(v => v.key !== voiceItem.key));
+          // Bắt buộc có file lên Drive (nếu Drive đang bật) mới xóa file local
+          const canRemoveLocal = res.driveEnabled ? Boolean(res.voiceUrl) : Boolean(res.text);
+          if (canRemoveLocal) {
+            await deleteOfflineInventoryVoiceByKeyApp(voiceItem.key);
+            setPendingVoices(prev => prev.filter(v => v.key !== voiceItem.key));
+          } else {
+            Alert.alert(
+              'Chưa tải được lên Drive',
+              'Đã dịch chữ nhưng file ghi âm chưa tải được lên Drive — file vẫn giữ trên máy để thử lại!'
+            );
+          }
         } else {
           Alert.alert(
             'Không dịch được',
@@ -708,110 +720,150 @@ export default function WarehouseAdjustmentDraftModal({
     }
   }, [assignSttQuery, availablePositions]);
 
-  const handleSave = () => {
-    if (!position) return;
+  const handleSave = async () => {
+    if (!position || isSavingDraft) return;
+    setIsSavingDraft(true);
+    try {
+      let finalNote = note;
+      let finalVoiceNoteUrl = voiceNoteUrl;
+      let justSavedPendingVoice = false;
 
-    const cleanStt = assignSttQuery.trim().toUpperCase();
-    if (actionType === 'ASSIGN_LOT' && !cleanStt) {
-      Alert.alert(
-        'Chưa nhập STT Lot',
-        'Vui lòng nhập STT của Lot (VD: G57, G88...) cần gắn vào vị trí này.'
-      );
-      return;
-    }
-
-    if (
-      actionType === 'NOTE' &&
-      !note.trim() &&
-      !voiceNoteUrl &&
-      pendingVoices.length === 0
-    ) {
-      Alert.alert(
-        'Chưa nhập ghi chú',
-        'Vui lòng nhập nội dung ghi chú hoặc ghi âm giọng nói muốn gửi lên Web.'
-      );
-      return;
-    }
-
-    if (!isCurrentlyOccupied && actionType === 'SET_QTY' && subItems.length === 0) {
-      Alert.alert(
-        'Chưa chọn sản phẩm',
-        'Vui lòng chọn ít nhất 1 sản phẩm để tạo Lot mới cho vị trí trống.'
-      );
-      return;
-    }
-
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-
-    let parsedNewQty: number | null = null;
-    let finalSubItems: ProposalSubItem[] | undefined = undefined;
-
-    if (actionType === 'SET_QTY') {
-      if (hasMultipleProducts) {
-        parsedNewQty = subItems.reduce((sum, item) => sum + (item.new_quantity || 0), 0);
-        finalSubItems = subItems;
-      } else {
-        parsedNewQty = parseFloat(newQtyStr) || 0;
-        finalSubItems = subItems.map(s => ({ ...s, new_quantity: parsedNewQty || 0 }));
-      }
-    } else if (actionType === 'CLEAR') {
-      parsedNewQty = 0;
-      finalSubItems = subItems.map(s => ({ ...s, new_quantity: 0 }));
-    }
-
-    let resolvedTargetId = targetPosId;
-    if (actionType === 'MOVE') {
-      if (!resolvedTargetId && targetPosCode.trim() && Array.isArray(availablePositions)) {
-        const found = availablePositions.find(
-          (p: any) => (p.code || '').trim().toUpperCase() === targetPosCode.trim().toUpperCase()
-        );
-        if (found) resolvedTargetId = found.id;
-      }
-    }
-
-    const item: ProposalItem = actionType === 'ASSIGN_LOT'
-      ? {
-          id: initialItem?.id || `${position.id}-${Date.now()}`,
-          position_id: position.id,
-          position_code: position.code,
-          warehouse_name: position.warehouse_name,
-          action_type: 'ASSIGN_LOT',
-          lot_id: foundAssignLot?.id || null,
-          lot_code: foundAssignLot?.code || null,
-          lot_stt: foundAssignLot?.stt || cleanStt,
-          product_name: foundAssignLot?.product_name || `Gắn STT ${cleanStt}`,
-          sku: foundAssignLot?.sku || null,
-          current_quantity: position.quantity ?? 0,
-          unit: foundAssignLot?.unit || 'Thùng',
-          new_quantity: foundAssignLot?.quantity ?? null,
-          target_position_id: foundAssignLot?.current_position_id || null,
-          target_position_code: foundAssignLot?.current_position_code || null,
-          note: note.trim() || null,
-          voice_note_url: voiceNoteUrl || null,
-          updated_at: new Date().toISOString(),
+      // Nếu người dùng quên bấm dừng ghi âm mà bấm thẳng "Lưu vào phiếu nháp" -> tự động dừng & lưu ghi âm trước
+      if (voiceMicRef.current?.isRecording()) {
+        const stopRes = await voiceMicRef.current.stopAndFinalize();
+        if (stopRes.text && stopRes.text.trim()) {
+          finalNote = appendWarehouseVoiceText(finalNote, stopRes.text);
         }
-      : {
-          id: initialItem?.id || `${position.id}-${Date.now()}`,
-          position_id: position.id,
-          position_code: position.code,
-          warehouse_name: position.warehouse_name,
-          action_type: actionType,
-          lot_id: position.lot_id || null,
-          lot_code: position.lot_code || null,
-          product_name: position.product_name || (finalSubItems && finalSubItems.length > 0 ? finalSubItems.map(s => s.product_name).join(', ') : null),
-          sku: position.sku || (finalSubItems && finalSubItems.length > 0 ? (finalSubItems.map(s => s.sku).filter(Boolean).join(', ') || null) : null),
-          current_quantity: position.quantity ?? null,
-          unit: position.unit || (finalSubItems && finalSubItems.length > 0 ? finalSubItems[0].unit : 'Thùng'),
-          sub_items: finalSubItems,
-          new_quantity: parsedNewQty,
-          target_position_id: actionType === 'MOVE' ? resolvedTargetId : null,
-          target_position_code: actionType === 'MOVE' ? targetPosCode.trim().toUpperCase() : null,
-          note: note.trim() || null,
-          voice_note_url: voiceNoteUrl || null,
-          updated_at: new Date().toISOString(),
-        };
+        if (stopRes.voiceUrl) {
+          finalVoiceNoteUrl = appendVoiceNoteUrlApp(finalVoiceNoteUrl, stopRes.voiceUrl);
+        }
+        if (stopRes.savedOffline) {
+          justSavedPendingVoice = true;
+        }
+      }
 
-    onSaveDraftItem(item);
+      const cleanStt = assignSttQuery.trim().toUpperCase();
+      if (actionType === 'ASSIGN_LOT' && !cleanStt) {
+        Alert.alert(
+          'Chưa nhập STT Lot',
+          'Vui lòng nhập STT của Lot (VD: G57, G88...) cần gắn vào vị trí này.'
+        );
+        return;
+      }
+
+      if (
+        actionType === 'NOTE' &&
+        !finalNote.trim() &&
+        !finalVoiceNoteUrl &&
+        pendingVoices.length === 0 &&
+        !justSavedPendingVoice
+      ) {
+        Alert.alert(
+          'Chưa nhập ghi chú',
+          'Vui lòng nhập nội dung ghi chú hoặc ghi âm giọng nói muốn gửi lên Web.'
+        );
+        return;
+      }
+
+      if (!isCurrentlyOccupied && actionType === 'SET_QTY' && subItems.length === 0) {
+        Alert.alert(
+          'Chưa chọn sản phẩm',
+          'Vui lòng chọn ít nhất 1 sản phẩm để tạo Lot mới cho vị trí trống.'
+        );
+        return;
+      }
+
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+
+      let parsedNewQty: number | null = null;
+      let finalSubItems: ProposalSubItem[] | undefined = undefined;
+
+      if (actionType === 'SET_QTY') {
+        if (hasMultipleProducts) {
+          parsedNewQty = subItems.reduce((sum, item) => sum + (item.new_quantity || 0), 0);
+          finalSubItems = subItems;
+        } else {
+          parsedNewQty = parseFloat(newQtyStr) || 0;
+          finalSubItems = subItems.map(s => ({ ...s, new_quantity: parsedNewQty || 0 }));
+        }
+      } else if (actionType === 'CLEAR') {
+        parsedNewQty = 0;
+        finalSubItems = subItems.map(s => ({ ...s, new_quantity: 0 }));
+      }
+
+      let resolvedTargetId = targetPosId;
+      if (actionType === 'MOVE') {
+        if (!resolvedTargetId && targetPosCode.trim() && Array.isArray(availablePositions)) {
+          const found = availablePositions.find(
+            (p: any) => (p.code || '').trim().toUpperCase() === targetPosCode.trim().toUpperCase()
+          );
+          if (found) resolvedTargetId = found.id;
+        }
+      }
+
+      const item: ProposalItem = actionType === 'ASSIGN_LOT'
+        ? {
+            id: initialItem?.id || `${position.id}-${Date.now()}`,
+            position_id: position.id,
+            position_code: position.code,
+            warehouse_name: position.warehouse_name,
+            action_type: 'ASSIGN_LOT',
+            lot_id: foundAssignLot?.id || null,
+            lot_code: foundAssignLot?.code || null,
+            lot_stt: foundAssignLot?.stt || cleanStt,
+            product_name: foundAssignLot?.product_name || `Gắn STT ${cleanStt}`,
+            sku: foundAssignLot?.sku || null,
+            current_quantity: position.quantity ?? 0,
+            unit: foundAssignLot?.unit || 'Thùng',
+            new_quantity: foundAssignLot?.quantity ?? null,
+            target_position_id: foundAssignLot?.current_position_id || null,
+            target_position_code: foundAssignLot?.current_position_code || null,
+            note: finalNote.trim() || null,
+            voice_note_url: finalVoiceNoteUrl || null,
+            updated_at: new Date().toISOString(),
+          }
+        : {
+            id: initialItem?.id || `${position.id}-${Date.now()}`,
+            position_id: position.id,
+            position_code: position.code,
+            warehouse_name: position.warehouse_name,
+            action_type: actionType,
+            lot_id: position.lot_id || null,
+            lot_code: position.lot_code || null,
+            product_name: position.product_name || (finalSubItems && finalSubItems.length > 0 ? finalSubItems.map(s => s.product_name).join(', ') : null),
+            sku: position.sku || (finalSubItems && finalSubItems.length > 0 ? (finalSubItems.map(s => s.sku).filter(Boolean).join(', ') || null) : null),
+            current_quantity: position.quantity ?? null,
+            unit: position.unit || (finalSubItems && finalSubItems.length > 0 ? finalSubItems[0].unit : 'Thùng'),
+            sub_items: finalSubItems,
+            new_quantity: parsedNewQty,
+            target_position_id: actionType === 'MOVE' ? resolvedTargetId : null,
+            target_position_code: actionType === 'MOVE' ? targetPosCode.trim().toUpperCase() : null,
+            note: finalNote.trim() || null,
+            voice_note_url: finalVoiceNoteUrl || null,
+            updated_at: new Date().toISOString(),
+          };
+
+      onSaveDraftItem(item);
+      onClose();
+    } finally {
+      setIsSavingDraft(false);
+    }
+  };
+
+  const handleCloseOrAutoSave = async () => {
+    if (isSavingDraft) return;
+    if (voiceMicRef.current?.isRecording()) {
+      await handleSave();
+      return;
+    }
+    onClose();
+  };
+
+  const handleCancelPress = async () => {
+    if (isSavingDraft) return;
+    if (voiceMicRef.current?.isRecording()) {
+      await voiceMicRef.current.stopAndFinalize();
+    }
     onClose();
   };
 
@@ -822,7 +874,7 @@ export default function WarehouseAdjustmentDraftModal({
       visible={visible}
       transparent
       animationType="slide"
-      onRequestClose={onClose}
+      onRequestClose={() => void handleCloseOrAutoSave()}
       statusBarTranslucent={true}
     >
       <KeyboardAvoidingView
@@ -844,7 +896,7 @@ export default function WarehouseAdjustmentDraftModal({
               <Text style={styles.headerSub}>GHI NHÁP ĐIỀU CHỈNH</Text>
               <Text style={styles.headerTitle}>VỊ TRÍ: {position.code}</Text>
             </View>
-            <TouchableOpacity onPress={onClose} style={styles.closeBtn}>
+            <TouchableOpacity onPress={() => void handleCloseOrAutoSave()} style={styles.closeBtn}>
               <Ionicons name="close" size={24} color="#94a3b8" />
             </TouchableOpacity>
           </View>
@@ -1655,6 +1707,7 @@ export default function WarehouseAdjustmentDraftModal({
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                 <Text style={[styles.sectionLabel, { marginBottom: 0 }]}>GHI CHÚ:</Text>
                 <VoiceMicButton
+                  ref={voiceMicRef}
                   systemCode="KHO_DONG_LANH"
                   companyId={user?.company_id || null}
                   sessionId={DRAFT_VOICE_SESSION_ID}
@@ -1664,7 +1717,7 @@ export default function WarehouseAdjustmentDraftModal({
                   vocabulary={voiceVocabulary}
                   rootFolderOverride={DRAFT_VOICE_ROOT_FOLDER}
                   onResult={handleVoiceResult}
-                  onOfflineAudio={payload => void handleVoiceOfflineSaved(payload)}
+                  onOfflineAudio={handleVoiceOfflineSaved}
                 />
               </View>
               {(isNoteFocused || isInputFocused || isKeyboardVisible) && (
@@ -1730,7 +1783,7 @@ export default function WarehouseAdjustmentDraftModal({
 
           {/* Footer */}
           <View style={styles.footer}>
-            <TouchableOpacity onPress={onClose} style={styles.cancelBtn}>
+            <TouchableOpacity onPress={() => void handleCancelPress()} style={styles.cancelBtn}>
               <Text style={styles.cancelBtnText}>Hủy</Text>
             </TouchableOpacity>
 

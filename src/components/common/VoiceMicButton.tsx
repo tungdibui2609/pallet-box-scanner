@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { TouchableOpacity, View, Text, Alert, ActivityIndicator } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
@@ -23,11 +23,39 @@ export interface AppOfflineVoicePayload {
   durationSec: number;
 }
 
+export interface VoiceMicStopResult {
+  wasRecording: boolean;
+  savedOffline?: boolean;
+  text?: string;
+  voiceUrl?: string | null;
+}
+
+export interface VoiceMicButtonHandle {
+  isRecording: () => boolean;
+  stopAndFinalize: () => Promise<VoiceMicStopResult>;
+}
+
+/**
+ * Registry toàn cục theo dõi nút Micro đang ghi âm hiện tại:
+ * - Khi bấm Micro ở ô khác -> tự động dừng & lưu ghi âm của ô trước đó.
+ * - Khi bấm "HOÀN TẤT" / đóng modal -> gọi `stopAnyActiveVoiceRecording()` để tự dừng & lưu.
+ */
+let activeVoiceRecorder: {
+  id: string;
+  stopAndFinalize: () => Promise<VoiceMicStopResult>;
+} | null = null;
+
+export async function stopAnyActiveVoiceRecording(): Promise<VoiceMicStopResult> {
+  if (!activeVoiceRecorder) return { wasRecording: false };
+  const current = activeVoiceRecorder;
+  return await current.stopAndFinalize();
+}
+
 interface VoiceMicButtonProps {
   /** Callback khi dịch AI thành công online (trả về text + voiceUrl đã lưu trên Google Drive) */
   onResult: (normalizedText: string, voiceUrl?: string | null) => void;
   /** Callback khi đang mất mạng (hoặc gọi API lỗi) -> lưu ghi âm offline chờ đồng bộ & AI dịch */
-  onOfflineAudio?: (payload: AppOfflineVoicePayload) => void;
+  onOfflineAudio?: (payload: AppOfflineVoicePayload) => void | Promise<void>;
   systemCode?: string;
   companyId?: string | null;
   sessionId?: string | null;
@@ -40,7 +68,7 @@ interface VoiceMicButtonProps {
   rootFolderOverride?: string | null;
 }
 
-export function VoiceMicButton({
+export const VoiceMicButton = forwardRef<VoiceMicButtonHandle, VoiceMicButtonProps>(function VoiceMicButton({
   onResult,
   onOfflineAudio,
   systemCode = 'KHO_DONG_LANH',
@@ -53,11 +81,19 @@ export function VoiceMicButton({
   size = 15,
   skipDriveUpload = false,
   rootFolderOverride = null,
-}: VoiceMicButtonProps) {
+}, ref) {
   const audioRecorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   const [status, setStatus] = useState<'idle' | 'recording' | 'transcribing'>('idle');
+  const statusRef = useRef<'idle' | 'recording' | 'transcribing'>('idle');
+  const instanceIdRef = useRef<string>(`app_mic_${Math.random().toString(36).slice(2, 10)}`);
+  const stoppingPromiseRef = useRef<Promise<VoiceMicStopResult> | null>(null);
   const startedAtRef = useRef<number>(0);
   const autoStopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const updateStatus = (next: 'idle' | 'recording' | 'transcribing') => {
+    statusRef.current = next;
+    setStatus(next);
+  };
 
   const clearTimer = () => {
     if (autoStopTimerRef.current) {
@@ -67,8 +103,12 @@ export function VoiceMicButton({
   };
 
   useEffect(() => {
+    const myId = instanceIdRef.current;
     return () => {
       clearTimer();
+      if (activeVoiceRecorder?.id === myId) {
+        activeVoiceRecorder = null;
+      }
       try {
         if (audioRecorder.isRecording) {
           void audioRecorder.stop();
@@ -77,90 +117,126 @@ export function VoiceMicButton({
     };
   }, [audioRecorder]);
 
-  const stopAndProcess = async () => {
-    clearTimer();
-    try {
-      await audioRecorder.stop();
-      const uri = audioRecorder.uri;
-      const durationSec = Math.max(1, Math.round((Date.now() - startedAtRef.current) / 1000));
-
-      try {
-        await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true });
-      } catch {}
-
-      if (!uri) {
-        setStatus('idle');
-        return;
-      }
-
-      // Kiểm tra chế độ tự động gửi AI trong Cài đặt (mặc định TẮT -> luôn lưu local để nghe lại trước)
-      const autoSendOnStop = await getAutoTranscribeVoiceOnStop();
-      if (!autoSendOnStop && onOfflineAudio) {
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-        onOfflineAudio({ localUri: uri, mimeType: 'audio/mp4', durationSec });
-        setStatus('idle');
-        return;
-      }
-
-      // Kiểm tra trạng thái mạng
-      let isOnline = false;
-      try {
-        const net = await Network.getNetworkStateAsync();
-        isOnline = Boolean(net.isConnected && net.isInternetReachable !== false);
-      } catch {
-        isOnline = false;
-      }
-
-      if (!isOnline || (!skipDriveUpload && !sessionId) || !positionId) {
-        if (onOfflineAudio) {
-          onOfflineAudio({ localUri: uri, mimeType: 'audio/mp4', durationSec });
-        }
-        setStatus('idle');
-        return;
-      }
-
-      // Có mạng -> upload Google Drive (trừ khi skipDriveUpload) + dịch Gemini AI ngay
-      setStatus('transcribing');
-      try {
-        const res = await processSingleVoiceOnlineApp({
-          localUri: uri,
-          mimeType: 'audio/mp4',
-          systemCode,
-          companyId,
-          sessionId: sessionId || 'warehouse_draft',
-          sessionName,
-          positionId,
-          positionCode,
-          vocabulary,
-          skipDriveUpload,
-          rootFolderOverride,
-        });
-
-        if (res.text || res.voiceUrl) {
-          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-          onResult(res.text, res.voiceUrl);
-        } else if (onOfflineAudio) {
-          // Không dịch & không upload được -> cứu file lưu vào hàng chờ offline
-          onOfflineAudio({ localUri: uri, mimeType: 'audio/mp4', durationSec });
-        }
-      } catch {
-        if (onOfflineAudio) {
-          onOfflineAudio({ localUri: uri, mimeType: 'audio/mp4', durationSec });
-        }
-      } finally {
-        setStatus('idle');
-      }
-    } catch (e: any) {
-      setStatus('idle');
-      Alert.alert('Lỗi ghi âm', e?.message || 'Không thể dừng ghi âm.');
+  const stopAndProcess = (): Promise<VoiceMicStopResult> => {
+    if (stoppingPromiseRef.current) {
+      return stoppingPromiseRef.current;
     }
+    const run = (async (): Promise<VoiceMicStopResult> => {
+      clearTimer();
+      if (activeVoiceRecorder?.id === instanceIdRef.current) {
+        activeVoiceRecorder = null;
+      }
+      try {
+        await audioRecorder.stop();
+        const uri = audioRecorder.uri;
+        const durationSec = Math.max(1, Math.round((Date.now() - startedAtRef.current) / 1000));
+
+        try {
+          await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true });
+        } catch {}
+
+        if (!uri) {
+          updateStatus('idle');
+          return { wasRecording: true };
+        }
+
+        // Kiểm tra chế độ tự động gửi AI trong Cài đặt (mặc định TẮT -> luôn lưu local để nghe lại trước)
+        const autoSendOnStop = await getAutoTranscribeVoiceOnStop();
+        if (!autoSendOnStop && onOfflineAudio) {
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+          await onOfflineAudio({ localUri: uri, mimeType: 'audio/mp4', durationSec });
+          updateStatus('idle');
+          return { wasRecording: true, savedOffline: true };
+        }
+
+        // Kiểm tra trạng thái mạng
+        let isOnline = false;
+        try {
+          const net = await Network.getNetworkStateAsync();
+          isOnline = Boolean(net.isConnected && net.isInternetReachable !== false);
+        } catch {
+          isOnline = false;
+        }
+
+        if (!isOnline || (!skipDriveUpload && !sessionId) || !positionId) {
+          if (onOfflineAudio) {
+            await onOfflineAudio({ localUri: uri, mimeType: 'audio/mp4', durationSec });
+            updateStatus('idle');
+            return { wasRecording: true, savedOffline: true };
+          }
+          updateStatus('idle');
+          return { wasRecording: true };
+        }
+
+        // Có mạng -> upload Google Drive (trừ khi skipDriveUpload) + dịch Gemini AI ngay
+        updateStatus('transcribing');
+        try {
+          const res = await processSingleVoiceOnlineApp({
+            localUri: uri,
+            mimeType: 'audio/mp4',
+            systemCode,
+            companyId,
+            sessionId: sessionId || 'warehouse_draft',
+            sessionName,
+            positionId,
+            positionCode,
+            vocabulary,
+            skipDriveUpload,
+            rootFolderOverride,
+          });
+
+          if (res.text || res.voiceUrl) {
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+            onResult(res.text, res.voiceUrl);
+            return { wasRecording: true, text: res.text, voiceUrl: res.voiceUrl };
+          } else if (onOfflineAudio) {
+            // Không dịch & không upload được -> cứu file lưu vào hàng chờ offline
+            await onOfflineAudio({ localUri: uri, mimeType: 'audio/mp4', durationSec });
+            return { wasRecording: true, savedOffline: true };
+          }
+          return { wasRecording: true };
+        } catch {
+          if (onOfflineAudio) {
+            await onOfflineAudio({ localUri: uri, mimeType: 'audio/mp4', durationSec });
+            return { wasRecording: true, savedOffline: true };
+          }
+          return { wasRecording: true };
+        } finally {
+          updateStatus('idle');
+        }
+      } catch (e: any) {
+        updateStatus('idle');
+        Alert.alert('Lỗi ghi âm', e?.message || 'Không thể dừng ghi âm.');
+        return { wasRecording: true };
+      } finally {
+        stoppingPromiseRef.current = null;
+      }
+    })();
+
+    stoppingPromiseRef.current = run;
+    return run;
   };
 
+  useImperativeHandle(ref, () => ({
+    isRecording: () => statusRef.current === 'recording',
+    stopAndFinalize: async () => {
+      if (statusRef.current !== 'recording') {
+        return { wasRecording: false };
+      }
+      return await stopAndProcess();
+    },
+  }));
+
   const handlePress = async () => {
-    if (status === 'transcribing') return;
-    if (status === 'recording') {
+    if (statusRef.current === 'transcribing') return;
+    if (statusRef.current === 'recording') {
       await stopAndProcess();
       return;
+    }
+
+    // Nếu ô khác đang ghi âm mà chưa bấm dừng -> tự động dừng & lưu ô trước đó rồi mới ghi ô mới
+    if (activeVoiceRecorder && activeVoiceRecorder.id !== instanceIdRef.current) {
+      await activeVoiceRecorder.stopAndFinalize();
     }
 
     try {
@@ -181,7 +257,14 @@ export function VoiceMicButton({
       await audioRecorder.prepareToRecordAsync();
       audioRecorder.record();
       startedAtRef.current = Date.now();
-      setStatus('recording');
+      updateStatus('recording');
+      activeVoiceRecorder = {
+        id: instanceIdRef.current,
+        stopAndFinalize: async () => {
+          if (statusRef.current !== 'recording') return { wasRecording: false };
+          return await stopAndProcess();
+        },
+      };
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
 
       // Tự dừng sau 15 giây nếu nhân viên quên bấm dừng
@@ -189,7 +272,10 @@ export function VoiceMicButton({
         void stopAndProcess();
       }, 15000);
     } catch (e: any) {
-      setStatus('idle');
+      if (activeVoiceRecorder?.id === instanceIdRef.current) {
+        activeVoiceRecorder = null;
+      }
+      updateStatus('idle');
       Alert.alert('Không thể bật Micro', e?.message || 'Thiết bị không hỗ trợ ghi âm.');
     }
   };
@@ -229,7 +315,7 @@ export function VoiceMicButton({
       )}
     </TouchableOpacity>
   );
-}
+});
 
 /**
  * Thanh phát lại file ghi âm nhỏ gọn (hỗ trợ cả file offline trên máy lẫn file đã lưu trên Google Drive).
