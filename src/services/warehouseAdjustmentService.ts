@@ -36,8 +36,12 @@ export interface ProposalItem {
   target_position_id?: string | null;
   target_position_code?: string | null;
   note?: string | null;
+  voice_note_url?: string | null;
   updated_at: string;
 }
+
+export const DRAFT_VOICE_SESSION_ID = 'WAREHOUSE_DRAFT_VOICE';
+export const DRAFT_VOICE_ROOT_FOLDER = 'WMS_GhiAm_GhiNhap';
 
 export interface DraftProposal {
   title: string;

@@ -36,6 +36,8 @@ interface VoiceMicButtonProps {
   positionCode?: string | null;
   vocabulary?: string[];
   size?: number;
+  skipDriveUpload?: boolean;
+  rootFolderOverride?: string | null;
 }
 
 export function VoiceMicButton({
@@ -49,6 +51,8 @@ export function VoiceMicButton({
   positionCode,
   vocabulary,
   size = 15,
+  skipDriveUpload = false,
+  rootFolderOverride = null,
 }: VoiceMicButtonProps) {
   const audioRecorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   const [status, setStatus] = useState<'idle' | 'recording' | 'transcribing'>('idle');
@@ -107,7 +111,7 @@ export function VoiceMicButton({
         isOnline = false;
       }
 
-      if (!isOnline || !sessionId || !positionId) {
+      if (!isOnline || (!skipDriveUpload && !sessionId) || !positionId) {
         if (onOfflineAudio) {
           onOfflineAudio({ localUri: uri, mimeType: 'audio/mp4', durationSec });
         }
@@ -115,7 +119,7 @@ export function VoiceMicButton({
         return;
       }
 
-      // Có mạng -> upload Google Drive + dịch Gemini AI ngay
+      // Có mạng -> upload Google Drive (trừ khi skipDriveUpload) + dịch Gemini AI ngay
       setStatus('transcribing');
       try {
         const res = await processSingleVoiceOnlineApp({
@@ -123,11 +127,13 @@ export function VoiceMicButton({
           mimeType: 'audio/mp4',
           systemCode,
           companyId,
-          sessionId,
+          sessionId: sessionId || 'warehouse_draft',
           sessionName,
           positionId,
           positionCode,
           vocabulary,
+          skipDriveUpload,
+          rootFolderOverride,
         });
 
         if (res.text || res.voiceUrl) {

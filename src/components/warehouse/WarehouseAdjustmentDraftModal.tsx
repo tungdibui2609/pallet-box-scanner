@@ -16,13 +16,32 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
+import * as Network from 'expo-network';
 import {
   ProposalActionType,
   ProposalItem,
   ProposalSubItem,
+  DRAFT_VOICE_SESSION_ID,
+  DRAFT_VOICE_ROOT_FOLDER,
 } from '../../services/warehouseAdjustmentService';
 import { fetchProductsForSuggestions, ProductSuggestion, lookupLotBySttOrCode, LookedUpLot } from '../../services/supabase';
 import { matchSearch, calculateSearchScore } from '../../utils/searchUtils';
+import {
+  VoiceMicButton,
+  VoiceAudioPlayerBar,
+  AppOfflineVoicePayload,
+} from '../common/VoiceMicButton';
+import {
+  processSingleVoiceOnlineApp,
+  saveOfflineInventoryVoiceApp,
+  getOfflineInventoryVoicesBySessionApp,
+  deleteOfflineInventoryVoiceByKeyApp,
+  appendVoiceNoteUrlApp,
+  parseVoiceNoteUrlsApp,
+  OfflineInventoryVoiceAppItem,
+} from '../../services/inventoryVoiceService';
+import { appendWarehouseVoiceText } from '../../utils/voiceTextNormalizer';
+import { useAuth } from '../../contexts/AuthContext';
 
 interface WarehouseAdjustmentDraftModalProps {
   visible: boolean;
@@ -108,6 +127,7 @@ export default function WarehouseAdjustmentDraftModal({
 }: WarehouseAdjustmentDraftModalProps) {
   // LƯU Ý: Tất cả các hook PHẢI được gọi ở đầu component, TUYỆT ĐỐI không return trước hooks
   const insets = useSafeAreaInsets();
+  const { user } = useAuth();
   const isCurrentlyOccupied = Boolean(position?.lot_id);
   const currentQty = position?.quantity ?? 0;
   const currentUnit = position?.unit || 'Thùng';
@@ -144,14 +164,150 @@ export default function WarehouseAdjustmentDraftModal({
   const [foundAssignLot, setFoundAssignLot] = useState<LookedUpLot | null>(null);
   const [assignLotError, setAssignLotError] = useState<string | null>(null);
 
+  // State ghi âm & dịch AI cho ô ghi chú (lưu bền vững offline + thư mục Drive riêng giống Kiểm kê)
+  const [voiceNoteUrl, setVoiceNoteUrl] = useState<string | null>(null);
+  const [pendingVoices, setPendingVoices] = useState<OfflineInventoryVoiceAppItem[]>([]);
+  const [transcribingVoiceKey, setTranscribingVoiceKey] = useState<string | null>(null);
+
+  const savedVoiceUrls = useMemo(() => parseVoiceNoteUrlsApp(voiceNoteUrl), [voiceNoteUrl]);
+
+  const reloadPendingVoices = useCallback(async (posId?: string | null) => {
+    if (!posId) {
+      setPendingVoices([]);
+      return;
+    }
+    try {
+      const all = await getOfflineInventoryVoicesBySessionApp(DRAFT_VOICE_SESSION_ID);
+      setPendingVoices(all.filter(v => v.positionId === posId));
+    } catch {
+      setPendingVoices([]);
+    }
+  }, []);
+
+  const voiceVocabulary = useMemo(() => {
+    const words = new Set<string>();
+    if (position?.product_name) words.add(String(position.product_name).trim());
+    subItems.forEach(s => {
+      if (s.product_name) words.add(String(s.product_name).trim());
+    });
+    productCatalog.slice(0, 30).forEach(p => {
+      if (p.aliases) {
+        String(p.aliases)
+          .split(/[,;/|\n]+/)
+          .forEach(a => {
+            const t = a.trim();
+            if (t.length >= 2 && t.length <= 32) words.add(t);
+          });
+      }
+    });
+    return Array.from(words).slice(0, 50);
+  }, [position?.product_name, subItems, productCatalog]);
+
+  const handleVoiceResult = useCallback((spoken: string, voiceUrl?: string | null) => {
+    if (spoken && spoken.trim()) {
+      setNote(prev => appendWarehouseVoiceText(prev, spoken));
+    }
+    if (voiceUrl) {
+      setVoiceNoteUrl(prev => appendVoiceNoteUrlApp(prev, voiceUrl));
+    }
+  }, []);
+
+  const handleVoiceOfflineSaved = useCallback(
+    async (payload: AppOfflineVoicePayload) => {
+      if (!position?.id) return;
+      try {
+        const saved = await saveOfflineInventoryVoiceApp({
+          sessionId: DRAFT_VOICE_SESSION_ID,
+          positionId: position.id,
+          sourceUri: payload.localUri,
+          mimeType: payload.mimeType,
+          durationSec: payload.durationSec,
+        });
+        setPendingVoices(prev => [...prev, saved]);
+      } catch {
+        Alert.alert('Lỗi lưu ghi âm', 'Không thể lưu file ghi âm vào bộ nhớ máy.');
+      }
+    },
+    [position?.id]
+  );
+
+  const handleDeletePendingVoice = useCallback(async (voiceKey: string) => {
+    await deleteOfflineInventoryVoiceByKeyApp(voiceKey);
+    setPendingVoices(prev => prev.filter(v => v.key !== voiceKey));
+  }, []);
+
+  const handleTranscribeRecordedVoice = useCallback(
+    async (voiceItem: OfflineInventoryVoiceAppItem) => {
+      if (!position || transcribingVoiceKey) return;
+      let isOnline = false;
+      try {
+        const net = await Network.getNetworkStateAsync();
+        isOnline = Boolean(net.isConnected && net.isInternetReachable !== false);
+      } catch {
+        isOnline = false;
+      }
+      if (!isOnline) {
+        Alert.alert(
+          'Chưa có mạng',
+          'File ghi âm đã được lưu an toàn trên máy. Bạn có thể bấm Lưu vào phiếu nháp rồi ra ngoài dịch hàng loạt khi có mạng!'
+        );
+        return;
+      }
+
+      setTranscribingVoiceKey(voiceItem.key);
+      try {
+        const res = await processSingleVoiceOnlineApp({
+          localUri: voiceItem.localUri,
+          mimeType: voiceItem.mimeType,
+          systemCode: 'KHO_DONG_LANH',
+          companyId: user?.company_id || null,
+          sessionId: DRAFT_VOICE_SESSION_ID,
+          sessionName: 'Ghi_Nhap_So_Do_Kho',
+          positionId: position.id,
+          positionCode: position.code || null,
+          vocabulary: voiceVocabulary,
+          rootFolderOverride: DRAFT_VOICE_ROOT_FOLDER,
+        });
+
+        if (res.text || res.voiceUrl) {
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+          if (res.text) {
+            setNote(prev => appendWarehouseVoiceText(prev, res.text));
+          }
+          if (res.voiceUrl) {
+            setVoiceNoteUrl(prev => appendVoiceNoteUrlApp(prev, res.voiceUrl));
+          }
+          await deleteOfflineInventoryVoiceByKeyApp(voiceItem.key);
+          setPendingVoices(prev => prev.filter(v => v.key !== voiceItem.key));
+        } else {
+          Alert.alert(
+            'Không dịch được',
+            'AI không nghe rõ hoặc chưa có kết nối — file vẫn được giữ an toàn trên máy.'
+          );
+        }
+      } catch (err: any) {
+        Alert.alert('Lỗi dịch AI', err?.message || 'Không thể dịch đoạn ghi âm — file vẫn được giữ trên máy.');
+      } finally {
+        setTranscribingVoiceKey(null);
+      }
+    },
+    [position, transcribingVoiceKey, user?.company_id, voiceVocabulary]
+  );
+
   // Khởi tạo state khi mở modal hoặc thay đổi position / initialItem
   useEffect(() => {
     setIsInputFocused(false);
     setIsNoteFocused(false);
     setIsKeyboardVisible(false);
     setKeyboardHeight(0);
+    setTranscribingVoiceKey(null);
 
-    if (!visible || !position) return;
+    if (!visible || !position) {
+      setPendingVoices([]);
+      return;
+    }
+
+    void reloadPendingVoices(position.id);
 
     const timer = setTimeout(() => {
       if (initialItem) {
@@ -162,6 +318,7 @@ export default function WarehouseAdjustmentDraftModal({
         setTargetPosCode(initialItem.target_position_code || '');
         setTargetPosId(initialItem.target_position_id || null);
         setNote(initialItem.note || '');
+        setVoiceNoteUrl(initialItem.voice_note_url || null);
 
         if (initialItem.sub_items && initialItem.sub_items.length > 0) {
           setSubItems(initialItem.sub_items);
@@ -195,6 +352,7 @@ export default function WarehouseAdjustmentDraftModal({
         setTargetPosCode('');
         setTargetPosId(null);
         setNote('');
+        setVoiceNoteUrl(null);
         setAssignSttQuery('');
         setFoundAssignLot(null);
         setAssignLotError(null);
@@ -562,10 +720,15 @@ export default function WarehouseAdjustmentDraftModal({
       return;
     }
 
-    if (actionType === 'NOTE' && !note.trim()) {
+    if (
+      actionType === 'NOTE' &&
+      !note.trim() &&
+      !voiceNoteUrl &&
+      pendingVoices.length === 0
+    ) {
       Alert.alert(
         'Chưa nhập ghi chú',
-        'Vui lòng nhập nội dung ghi chú muốn gửi lên Web.'
+        'Vui lòng nhập nội dung ghi chú hoặc ghi âm giọng nói muốn gửi lên Web.'
       );
       return;
     }
@@ -624,6 +787,7 @@ export default function WarehouseAdjustmentDraftModal({
           target_position_id: foundAssignLot?.current_position_id || null,
           target_position_code: foundAssignLot?.current_position_code || null,
           note: note.trim() || null,
+          voice_note_url: voiceNoteUrl || null,
           updated_at: new Date().toISOString(),
         }
       : {
@@ -643,6 +807,7 @@ export default function WarehouseAdjustmentDraftModal({
           target_position_id: actionType === 'MOVE' ? resolvedTargetId : null,
           target_position_code: actionType === 'MOVE' ? targetPosCode.trim().toUpperCase() : null,
           note: note.trim() || null,
+          voice_note_url: voiceNoteUrl || null,
           updated_at: new Date().toISOString(),
         };
 
@@ -1487,7 +1652,21 @@ export default function WarehouseAdjustmentDraftModal({
 
             {/* Ghi chú */}
             <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-              <Text style={styles.sectionLabel}>GHI CHÚ:</Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <Text style={[styles.sectionLabel, { marginBottom: 0 }]}>GHI CHÚ:</Text>
+                <VoiceMicButton
+                  systemCode="KHO_DONG_LANH"
+                  companyId={user?.company_id || null}
+                  sessionId={DRAFT_VOICE_SESSION_ID}
+                  sessionName="Ghi_Nhap_So_Do_Kho"
+                  positionId={position.id}
+                  positionCode={position.code || null}
+                  vocabulary={voiceVocabulary}
+                  rootFolderOverride={DRAFT_VOICE_ROOT_FOLDER}
+                  onResult={handleVoiceResult}
+                  onOfflineAudio={payload => void handleVoiceOfflineSaved(payload)}
+                />
+              </View>
               {(isNoteFocused || isInputFocused || isKeyboardVisible) && (
                 <View style={{ flexDirection: 'row', gap: 6, alignItems: 'center' }}>
                   <TouchableOpacity
@@ -1522,10 +1701,31 @@ export default function WarehouseAdjustmentDraftModal({
               onChangeText={setNote}
               onFocus={handleNoteFocus}
               onBlur={handleNoteBlur}
-              placeholder="Nhập nội dung ghi chú..."
+              placeholder="Nhập hoặc bấm Micro nói để AI dịch ghi chú..."
               placeholderTextColor="#64748b"
               multiline
             />
+            {savedVoiceUrls.map((url, idx) => (
+              <VoiceAudioPlayerBar
+                key={`saved_${idx}_${url}`}
+                voiceNoteUrl={url}
+                label={
+                  savedVoiceUrls.length > 1
+                    ? `Nghe lại ghi âm #${idx + 1} (Drive)`
+                    : 'Nghe lại ghi âm đã lưu (Drive)'
+                }
+              />
+            ))}
+            {pendingVoices.map(rv => (
+              <VoiceAudioPlayerBar
+                key={rv.key}
+                localUri={rv.localUri}
+                durationSec={rv.durationSec}
+                isTranscribing={transcribingVoiceKey === rv.key}
+                onTranscribeOffline={() => void handleTranscribeRecordedVoice(rv)}
+                onDeleteOffline={() => void handleDeletePendingVoice(rv.key)}
+              />
+            ))}
           </ScrollView>
 
           {/* Footer */}

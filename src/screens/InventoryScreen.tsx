@@ -1495,6 +1495,73 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
         if (p?.id && p?.code) positionCodeById[p.id] = p.code;
       });
 
+      const persistBatchResults = async (
+        batchMap: Record<string, { texts: string[]; voiceUrls: string[] }>
+      ) => {
+        const resStr = await AsyncStorage.getItem(INVENTORY_KEYS.RESULTS);
+        const allResults = resStr ? JSON.parse(resStr) : {};
+        const localResults: Record<string, any> = { ...(allResults[sessionId] || {}) };
+        const touchedPosIds: string[] = [];
+
+        Object.entries(batchMap).forEach(([pid, vRes]) => {
+          const cur = localResults[pid] || {};
+          let mergedNote = cur.note || '';
+          for (const txt of vRes.texts) {
+            if (txt) mergedNote = appendWarehouseVoiceText(mergedNote, txt);
+          }
+          const mergedVoiceUrl = appendVoiceNoteUrlApp(cur.voice_note_url, vRes.voiceUrls);
+          localResults[pid] = {
+            ...cur,
+            checked: true,
+            note: mergedNote,
+            voice_note_url: mergedVoiceUrl,
+          };
+          touchedPosIds.push(pid);
+        });
+
+        if (touchedPosIds.length === 0) return;
+
+        allResults[sessionId] = localResults;
+        await AsyncStorage.setItem(INVENTORY_KEYS.RESULTS, JSON.stringify(allResults));
+        await markPositionsDirtyApp(sessionId, touchedPosIds);
+        setAllInventoryResults({ ...allResults });
+        if (currentSession?.id === sessionId) {
+          setInventoryResults({ ...localResults });
+        }
+
+        // Tự động đẩy ngay các vị trí vừa dịch lên Supabase để an toàn tuyệt đối (không lo tắt app hay mất sóng giữa chừng)
+        if (isUUID(sessionId) && user) {
+          try {
+            const client = await getSupabaseClient();
+            const autoUpsertRows = touchedPosIds
+              .filter(pid => !pid.startsWith('summary|') && isUUID(pid))
+              .map(pid => {
+                const pos = displayPositions.find((p: any) => p.id === pid);
+                const r = localResults[pid] || {};
+                return {
+                  session_id: sessionId,
+                  position_id: pid,
+                  zone_id: pos?.real_zone_id || pos?.zone_id || null,
+                  checked: true,
+                  note: r.note || null,
+                  voice_note_url: r.voice_note_url || null,
+                  checked_by: user.id,
+                  checked_at: new Date().toISOString(),
+                  lot_id_snapshot: pos?.lot_id || null,
+                };
+              });
+            if (autoUpsertRows.length > 0) {
+              const { error: upErr } = await client
+                .from('internal_inventory_items')
+                .upsert(autoUpsertRows, { onConflict: 'session_id,position_id' });
+              if (!upErr) {
+                await clearPositionsDirtyApp(sessionId, touchedPosIds);
+              }
+            }
+          } catch {}
+        }
+      };
+
       const voiceSync = await syncOfflineInventoryVoicesForSessionApp({
         sessionId,
         sessionName: session.name || null,
@@ -1503,6 +1570,7 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
         positionCodeById,
         vocabulary: voiceVocabulary,
         onProgress: msg => showToast(msg, 'info'),
+        onBatchCompleted: persistBatchResults,
       });
 
       if (voiceSync.syncedCount === 0) {
@@ -1510,66 +1578,7 @@ export default function InventoryScreen({ isActive }: { isActive?: boolean } = {
         return;
       }
 
-      const resStr = await AsyncStorage.getItem(INVENTORY_KEYS.RESULTS);
-      const allResults = resStr ? JSON.parse(resStr) : {};
-      const localResults: Record<string, any> = { ...(allResults[sessionId] || {}) };
-      const touchedPosIds: string[] = [];
-
-      Object.entries(voiceSync.resultsByPos).forEach(([pid, vRes]) => {
-        const cur = localResults[pid] || {};
-        let mergedNote = cur.note || '';
-        for (const txt of vRes.texts) {
-          if (txt) mergedNote = appendWarehouseVoiceText(mergedNote, txt);
-        }
-        const mergedVoiceUrl = appendVoiceNoteUrlApp(cur.voice_note_url, vRes.voiceUrls);
-        localResults[pid] = {
-          ...cur,
-          checked: true,
-          note: mergedNote,
-          voice_note_url: mergedVoiceUrl,
-        };
-        touchedPosIds.push(pid);
-      });
-
-      allResults[sessionId] = localResults;
-      await AsyncStorage.setItem(INVENTORY_KEYS.RESULTS, JSON.stringify(allResults));
-      await markPositionsDirtyApp(sessionId, touchedPosIds);
-      setAllInventoryResults({ ...allResults });
-
-      // Tự động đẩy ngay các vị trí vừa dịch lên Supabase để an toàn tuyệt đối (không lo quên bấm Đồng bộ hay có cuộc gọi đến)
-      if (isUUID(sessionId) && touchedPosIds.length > 0 && user) {
-        try {
-          const client = await getSupabaseClient();
-          const autoUpsertRows = touchedPosIds
-            .filter(pid => !pid.startsWith('summary|') && isUUID(pid))
-            .map(pid => {
-              const pos = displayPositions.find((p: any) => p.id === pid);
-              const r = localResults[pid] || {};
-              return {
-                session_id: sessionId,
-                position_id: pid,
-                zone_id: pos?.real_zone_id || pos?.zone_id || null,
-                checked: true,
-                note: r.note || null,
-                voice_note_url: r.voice_note_url || null,
-                checked_by: user.id,
-                checked_at: new Date().toISOString(),
-                lot_id_snapshot: pos?.lot_id || null,
-              };
-            });
-          if (autoUpsertRows.length > 0) {
-            const { error: upErr } = await client
-              .from('internal_inventory_items')
-              .upsert(autoUpsertRows, { onConflict: 'session_id,position_id' });
-            if (!upErr) {
-              await clearPositionsDirtyApp(sessionId, touchedPosIds);
-            }
-          }
-        } catch {}
-      }
-
       if (currentSession?.id === sessionId) {
-        setInventoryResults({ ...localResults });
         const remList = await getOfflineInventoryVoicesBySessionApp(sessionId);
         const remMap: Record<string, OfflineInventoryVoiceAppItem[]> = {};
         remList.forEach(x => {

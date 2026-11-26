@@ -365,6 +365,7 @@ async function uploadSingleAudioToDrive(
     sessionName?: string | null;
     positionId: string;
     positionCode?: string | null;
+    rootFolderOverride?: string | null;
   }
 ): Promise<string | null> {
   if (!driveCfg) return null;
@@ -386,12 +387,15 @@ async function uploadSingleAudioToDrive(
     ).replace(/\s+/g, '_');
     const folderPath = `${params.systemCode}/${ym}/${day}/${sessionFolder}`;
     const filename = `${posPrefix}_${hhmmss}_${rand}.m4a`;
+    const rootFolder = params.rootFolderOverride
+      ? sanitizeDriveSegment(params.rootFolderOverride, driveCfg.rootFolder, 60).replace(/\s+/g, '_')
+      : driveCfg.rootFolder;
 
     const res = await fetch(driveCfg.webhookUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        rootFolder: driveCfg.rootFolder,
+        rootFolder,
         folderPath,
         filename,
         mimeType: params.mimeType || 'audio/mp4',
@@ -508,6 +512,8 @@ export async function processSingleVoiceOnlineApp(params: {
   positionId: string;
   positionCode?: string | null;
   vocabulary?: string[];
+  skipDriveUpload?: boolean;
+  rootFolderOverride?: string | null;
 }): Promise<{ text: string; voiceUrl: string | null }> {
   const audioBase64 = await LegacyFileSystem.readAsStringAsync(params.localUri, {
     encoding: LegacyFileSystem.EncodingType.Base64,
@@ -523,15 +529,18 @@ export async function processSingleVoiceOnlineApp(params: {
   ).slice(0, 50);
 
   const [voiceUrl, textMap] = await Promise.all([
-    uploadSingleAudioToDrive(driveCfg, {
-      audioBase64,
-      mimeType,
-      systemCode: params.systemCode,
-      sessionId: params.sessionId,
-      sessionName: params.sessionName,
-      positionId: params.positionId,
-      positionCode: params.positionCode,
-    }),
+    params.skipDriveUpload
+      ? Promise.resolve(null)
+      : uploadSingleAudioToDrive(driveCfg, {
+          audioBase64,
+          mimeType,
+          systemCode: params.systemCode,
+          sessionId: params.sessionId,
+          sessionName: params.sessionName,
+          positionId: params.positionId,
+          positionCode: params.positionCode,
+          rootFolderOverride: params.rootFolderOverride || null,
+        }),
     callGeminiBatchAudio(
       geminiCfg,
       [{ itemId: params.positionId, audioBase64, mimeType }],
@@ -551,7 +560,12 @@ export async function syncOfflineInventoryVoicesForSessionApp(params: {
   companyId?: string | null;
   positionCodeById?: Record<string, string>;
   vocabulary?: string[];
+  rootFolderOverride?: string | null;
   onProgress?: (msg: string) => void;
+  /** Lưu ngay kết quả từng lô vào AsyncStorage/DB TRƯỚC KHI xóa file local, tránh mất link nếu gián đoạn giữa chừng */
+  onBatchCompleted?: (
+    batchResultsByPos: Record<string, { texts: string[]; voiceUrls: string[] }>
+  ) => Promise<void>;
 }): Promise<{
   syncedCount: number;
   resultsByPos: Record<string, { texts: string[]; voiceUrls: string[] }>;
@@ -612,6 +626,7 @@ export async function syncOfflineInventoryVoicesForSessionApp(params: {
             sessionName: params.sessionName,
             positionId: item.positionId,
             positionCode: params.positionCodeById?.[item.positionId] || null,
+            rootFolderOverride: params.rootFolderOverride || null,
           })
         )
       ),
@@ -645,6 +660,9 @@ export async function syncOfflineInventoryVoicesForSessionApp(params: {
       }
     }
 
+    const batchResultsByPos: Record<string, { texts: string[]; voiceUrls: string[] }> = {};
+    const keysToDeleteAfterPersist: string[] = [];
+
     for (let i = 0; i < loadedItems.length; i++) {
       const { item } = loadedItems[i];
       const voiceUrl = driveUrls[i] || null;
@@ -655,10 +673,29 @@ export async function syncOfflineInventoryVoicesForSessionApp(params: {
         if (!resultsByPos[item.positionId]) {
           resultsByPos[item.positionId] = { texts: [], voiceUrls: [] };
         }
-        if (normalized) resultsByPos[item.positionId].texts.push(normalized);
-        if (voiceUrl) resultsByPos[item.positionId].voiceUrls.push(voiceUrl);
-        await deleteOfflineInventoryVoiceByKeyApp(item.key);
+        if (!batchResultsByPos[item.positionId]) {
+          batchResultsByPos[item.positionId] = { texts: [], voiceUrls: [] };
+        }
+        if (normalized) {
+          resultsByPos[item.positionId].texts.push(normalized);
+          batchResultsByPos[item.positionId].texts.push(normalized);
+        }
+        if (voiceUrl) {
+          resultsByPos[item.positionId].voiceUrls.push(voiceUrl);
+          batchResultsByPos[item.positionId].voiceUrls.push(voiceUrl);
+        }
+        keysToDeleteAfterPersist.push(item.key);
         syncedCount++;
+      }
+    }
+
+    // Lưu bền vững kết quả của lô này trước, sau đó mới xóa file local để tuyệt đối không mất link ghi âm
+    if (keysToDeleteAfterPersist.length > 0) {
+      if (params.onBatchCompleted) {
+        await params.onBatchCompleted(batchResultsByPos);
+      }
+      for (const k of keysToDeleteAfterPersist) {
+        await deleteOfflineInventoryVoiceByKeyApp(k);
       }
     }
   }

@@ -14,10 +14,15 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
+import * as Network from 'expo-network';
 import {
   DraftProposal,
   ProposalItem,
   SubmittedProposal,
+  DRAFT_VOICE_SESSION_ID,
+  DRAFT_VOICE_ROOT_FOLDER,
+  getLocalDraftProposal,
+  saveLocalDraftProposal,
   removeDraftItem,
   clearLocalDraftProposal,
   submitAdjustmentProposalToServer,
@@ -25,6 +30,18 @@ import {
   getCachedSubmittedProposals,
   syncOfflineAdjustmentProposals,
 } from '../../services/warehouseAdjustmentService';
+import {
+  getOfflineInventoryVoicesBySessionApp,
+  deleteOfflineInventoryVoiceApp,
+  deleteOfflineInventoryVoiceByKeyApp,
+  syncOfflineInventoryVoicesForSessionApp,
+  processSingleVoiceOnlineApp,
+  appendVoiceNoteUrlApp,
+  parseVoiceNoteUrlsApp,
+  OfflineInventoryVoiceAppItem,
+} from '../../services/inventoryVoiceService';
+import { appendWarehouseVoiceText } from '../../utils/voiceTextNormalizer';
+import { VoiceAudioPlayerBar } from '../common/VoiceMicButton';
 import { useAuth } from '../../contexts/AuthContext';
 import WarehouseMovementHistoryView from './WarehouseMovementHistoryView';
 
@@ -50,6 +67,35 @@ export default function WarehouseDraftListModal({
   const [activeTab, setActiveTab] = useState<'DRAFT' | 'HISTORY'>('DRAFT');
   const [shiftNote, setShiftNote] = useState<string>(draft.notes || '');
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // Ghi âm chờ dịch của phiếu nháp
+  const [pendingVoicesByPos, setPendingVoicesByPos] = useState<Record<string, OfflineInventoryVoiceAppItem[]>>({});
+  const [isBatchTranscribing, setIsBatchTranscribing] = useState(false);
+  const [transcribingVoiceKey, setTranscribingVoiceKey] = useState<string | null>(null);
+  const [batchVoiceProgress, setBatchVoiceProgress] = useState<string | null>(null);
+
+  const loadDraftPendingVoices = useCallback(async () => {
+    try {
+      const list = await getOfflineInventoryVoicesBySessionApp(DRAFT_VOICE_SESSION_ID);
+      const map: Record<string, OfflineInventoryVoiceAppItem[]> = {};
+      list.forEach(v => {
+        if (!map[v.positionId]) map[v.positionId] = [];
+        map[v.positionId].push(v);
+      });
+      setPendingVoicesByPos(map);
+    } catch {
+      setPendingVoicesByPos({});
+    }
+  }, []);
+
+  const totalPendingVoices = useMemo(() => {
+    const draftPosIds = new Set((draft.items || []).map(it => it.position_id));
+    let total = 0;
+    Object.entries(pendingVoicesByPos).forEach(([pid, arr]) => {
+      if (draftPosIds.has(pid)) total += arr.length;
+    });
+    return total;
+  }, [draft.items, pendingVoicesByPos]);
 
   // State cho Tab Đã gửi duyệt
   const [submittedList, setSubmittedList] = useState<SubmittedProposal[]>([]);
@@ -90,9 +136,10 @@ export default function WarehouseDraftListModal({
         setActiveTab('DRAFT');
       }
       void loadCachedProposals();
+      void loadDraftPendingVoices();
     }, 0);
     return () => clearTimeout(timer);
-  }, [visible, draft.items.length, loadCachedProposals]);
+  }, [visible, draft.items.length, loadCachedProposals, loadDraftPendingVoices]);
 
   const filteredSubmitted = useMemo(() => {
     if (historyFilter === 'ALL') return submittedList;
@@ -174,6 +221,8 @@ export default function WarehouseDraftListModal({
   const handleDeleteItem = async (positionId: string) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     await removeDraftItem(positionId);
+    await deleteOfflineInventoryVoiceApp(DRAFT_VOICE_SESSION_ID, positionId);
+    await loadDraftPendingVoices();
     onRefreshDraft();
   };
 
@@ -188,13 +237,146 @@ export default function WarehouseDraftListModal({
           style: 'destructive',
           onPress: async () => {
             Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+            const allPending = await getOfflineInventoryVoicesBySessionApp(DRAFT_VOICE_SESSION_ID);
+            for (const pv of allPending) {
+              await deleteOfflineInventoryVoiceByKeyApp(pv.key);
+            }
             await clearLocalDraftProposal();
+            setPendingVoicesByPos({});
             onRefreshDraft();
             onClose();
           },
         },
       ]
     );
+  };
+
+  const persistDraftVoiceBatch = useCallback(
+    async (batchMap: Record<string, { texts: string[]; voiceUrls: string[] }>) => {
+      const currentDraft = await getLocalDraftProposal();
+      let changed = false;
+      const nextItems = currentDraft.items.map(it => {
+        const res = batchMap[it.position_id];
+        if (!res) return it;
+        changed = true;
+        let mergedNote = it.note || '';
+        for (const txt of res.texts) {
+          if (txt) mergedNote = appendWarehouseVoiceText(mergedNote, txt);
+        }
+        const mergedUrl = appendVoiceNoteUrlApp(it.voice_note_url, res.voiceUrls);
+        return {
+          ...it,
+          note: mergedNote.trim() || null,
+          voice_note_url: mergedUrl,
+          updated_at: new Date().toISOString(),
+        };
+      });
+      if (changed) {
+        await saveLocalDraftProposal({ ...currentDraft, items: nextItems });
+        onRefreshDraft();
+      }
+    },
+    [onRefreshDraft]
+  );
+
+  const handleTranscribeSingleDraftVoice = async (
+    it: ProposalItem,
+    pv: OfflineInventoryVoiceAppItem
+  ) => {
+    if (transcribingVoiceKey || isBatchTranscribing) return;
+    try {
+      const net = await Network.getNetworkStateAsync();
+      if (!(net.isConnected && net.isInternetReachable !== false)) {
+        Alert.alert('Chưa có mạng', 'File ghi âm vẫn được giữ an toàn trên máy để dịch khi có mạng.');
+        return;
+      }
+    } catch {}
+
+    setTranscribingVoiceKey(pv.key);
+    try {
+      const res = await processSingleVoiceOnlineApp({
+        localUri: pv.localUri,
+        mimeType: pv.mimeType,
+        systemCode: 'KHO_DONG_LANH',
+        companyId: user?.company_id || null,
+        sessionId: DRAFT_VOICE_SESSION_ID,
+        sessionName: 'Ghi_Nhap_So_Do_Kho',
+        positionId: it.position_id,
+        positionCode: it.position_code || null,
+        rootFolderOverride: DRAFT_VOICE_ROOT_FOLDER,
+      });
+
+      if (res.text || res.voiceUrl) {
+        await persistDraftVoiceBatch({
+          [it.position_id]: {
+            texts: res.text ? [res.text] : [],
+            voiceUrls: res.voiceUrl ? [res.voiceUrl] : [],
+          },
+        });
+        await deleteOfflineInventoryVoiceByKeyApp(pv.key);
+        await loadDraftPendingVoices();
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+      } else {
+        Alert.alert('Không dịch được', 'AI không nghe rõ hoặc chưa có kết nối — file vẫn giữ trên máy.');
+      }
+    } catch {
+      Alert.alert('Lỗi kết nối', 'Không thể dịch AI lúc này — file vẫn được giữ an toàn trên máy.');
+    } finally {
+      setTranscribingVoiceKey(null);
+    }
+  };
+
+  const handleBatchTranscribeDraftVoices = async (silent = false): Promise<boolean> => {
+    if (isBatchTranscribing || totalPendingVoices === 0) return true;
+    try {
+      const net = await Network.getNetworkStateAsync();
+      if (!(net.isConnected && net.isInternetReachable !== false)) {
+        if (!silent) {
+          Alert.alert('Chưa có mạng', 'Vui lòng kết nối mạng để dịch hàng loạt các đoạn ghi âm.');
+        }
+        return false;
+      }
+    } catch {
+      return false;
+    }
+
+    setIsBatchTranscribing(true);
+    setBatchVoiceProgress(`Đang dịch ${totalPendingVoices} ghi âm...`);
+    try {
+      const posCodeById: Record<string, string> = {};
+      draft.items.forEach(it => {
+        posCodeById[it.position_id] = it.position_code;
+      });
+      const syncRes = await syncOfflineInventoryVoicesForSessionApp({
+        sessionId: DRAFT_VOICE_SESSION_ID,
+        sessionName: 'Ghi_Nhap_So_Do_Kho',
+        systemCode: 'KHO_DONG_LANH',
+        companyId: user?.company_id || null,
+        positionCodeById: posCodeById,
+        rootFolderOverride: DRAFT_VOICE_ROOT_FOLDER,
+        onProgress: msg => setBatchVoiceProgress(msg),
+        onBatchCompleted: persistDraftVoiceBatch,
+      });
+      await loadDraftPendingVoices();
+      onRefreshDraft();
+      if (!silent) {
+        if (syncRes.syncedCount > 0) {
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+          Alert.alert('Dịch AI hoàn tất', `Đã dịch & lưu Drive ${syncRes.syncedCount} đoạn ghi âm!`);
+        } else {
+          Alert.alert('Chưa dịch được', 'Kiểm tra kết nối mạng hoặc Gemini API Key.');
+        }
+      }
+      return syncRes.syncedCount > 0;
+    } catch {
+      if (!silent) {
+        Alert.alert('Lỗi', 'Có lỗi khi dịch hàng loạt — các file chưa dịch vẫn được giữ an toàn trên máy.');
+      }
+      return false;
+    } finally {
+      setIsBatchTranscribing(false);
+      setBatchVoiceProgress(null);
+    }
   };
 
   const handleSubmit = async () => {
@@ -205,14 +387,21 @@ export default function WarehouseDraftListModal({
 
     setIsSubmitting(true);
     try {
+      // Nếu còn ghi âm chưa dịch và đang có mạng -> tự động dịch & đẩy Drive trước khi gửi phiếu
+      if (totalPendingVoices > 0) {
+        await handleBatchTranscribeDraftVoices(true);
+      }
+      const latestDraft = await getLocalDraftProposal();
+      const itemsToSubmit = latestDraft.items.length > 0 ? latestDraft.items : draft.items;
+
       const res = await submitAdjustmentProposalToServer({
         system_code: 'KHO_DONG_LANH',
         company_id: user?.company_id || null,
-        title: `Đề xuất điều chỉnh vị trí (${draft.items.length} vị trí)`,
+        title: `Đề xuất điều chỉnh vị trí (${itemsToSubmit.length} vị trí)`,
         created_by: user?.id || null,
         created_by_name: user?.full_name || user?.username || 'Nhân viên kho',
         notes: shiftNote.trim() || undefined,
-        items: draft.items,
+        items: itemsToSubmit,
       });
 
       if (res.success) {
@@ -226,7 +415,7 @@ export default function WarehouseDraftListModal({
         } else {
           Alert.alert(
             'Gửi thành công! 🎉',
-            `Đã gửi phiếu đề xuất (${draft.items.length} vị trí) lên máy chủ. Quản lý sẽ duyệt và cập nhật vào sơ đồ kho.`,
+            `Đã gửi phiếu đề xuất (${itemsToSubmit.length} vị trí) lên máy chủ. Quản lý sẽ duyệt và cập nhật vào sơ đồ kho.`,
             [{ text: 'Đóng', onPress: () => { onSubmittedSuccess(); onClose(); } }]
           );
         }
@@ -444,8 +633,30 @@ export default function WarehouseDraftListModal({
                     </View>
 
                     {it.note ? (
-                      <Text style={styles.itemNote} numberOfLines={2}>💬 {it.note}</Text>
+                      <Text style={styles.itemNote} numberOfLines={3}>💬 {it.note}</Text>
                     ) : null}
+
+                    {parseVoiceNoteUrlsApp(it.voice_note_url).map((url, vIdx, arr) => (
+                      <VoiceAudioPlayerBar
+                        key={`saved_draft_${it.position_id}_${vIdx}`}
+                        voiceNoteUrl={url}
+                        label={arr.length > 1 ? `Nghe ghi âm #${vIdx + 1} (Drive)` : 'Nghe ghi âm đã lưu (Drive)'}
+                      />
+                    ))}
+
+                    {(pendingVoicesByPos[it.position_id] || []).map(pv => (
+                      <VoiceAudioPlayerBar
+                        key={pv.key}
+                        localUri={pv.localUri}
+                        durationSec={pv.durationSec}
+                        isTranscribing={transcribingVoiceKey === pv.key || isBatchTranscribing}
+                        onTranscribeOffline={() => void handleTranscribeSingleDraftVoice(it, pv)}
+                        onDeleteOffline={async () => {
+                          await deleteOfflineInventoryVoiceByKeyApp(pv.key);
+                          await loadDraftPendingVoices();
+                        }}
+                      />
+                    ))}
                   </View>
                 );
               })
@@ -467,29 +678,65 @@ export default function WarehouseDraftListModal({
 
           {/* Footer Actions */}
           {draft.items.length > 0 && (
-            <View style={styles.footer}>
-              <TouchableOpacity
-                onPress={handleClearAll}
-                style={styles.clearBtn}
-                disabled={isSubmitting}
-              >
-                <Text style={styles.clearBtnText}>Xóa hết</Text>
-              </TouchableOpacity>
+            <View>
+              {batchVoiceProgress && (
+                <View style={{ paddingHorizontal: 16, paddingBottom: 6 }}>
+                  <Text style={{ color: '#c4b5fd', fontSize: 11, fontWeight: '700', textAlign: 'center' }}>
+                    {batchVoiceProgress}
+                  </Text>
+                </View>
+              )}
+              <View style={styles.footer}>
+                <TouchableOpacity
+                  onPress={handleClearAll}
+                  style={styles.clearBtn}
+                  disabled={isSubmitting || isBatchTranscribing}
+                >
+                  <Text style={styles.clearBtnText}>Xóa hết</Text>
+                </TouchableOpacity>
 
-              <TouchableOpacity
-                onPress={handleSubmit}
-                style={styles.submitBtn}
-                disabled={isSubmitting}
-              >
-                {isSubmitting ? (
-                  <ActivityIndicator color="#fff" size="small" />
-                ) : (
-                  <>
-                    <Ionicons name="paper-plane" size={18} color="#fff" />
-                  <Text style={styles.submitBtnText}>GỬI ĐỀ XUẤT DUYỆT</Text>
-                  </>
+                {totalPendingVoices > 0 && (
+                  <TouchableOpacity
+                    onPress={() => void handleBatchTranscribeDraftVoices(false)}
+                    disabled={isSubmitting || isBatchTranscribing}
+                    style={{
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: 5,
+                      paddingHorizontal: 12,
+                      paddingVertical: 12,
+                      borderRadius: 12,
+                      backgroundColor: '#7c3aed',
+                      opacity: isBatchTranscribing ? 0.65 : 1,
+                    }}
+                  >
+                    {isBatchTranscribing ? (
+                      <ActivityIndicator color="#fff" size="small" />
+                    ) : (
+                      <Ionicons name="mic" size={16} color="#fff" />
+                    )}
+                    <Text style={{ color: '#fff', fontSize: 12, fontWeight: '800' }}>
+                      {isBatchTranscribing ? 'Đang dịch...' : `Dịch (${totalPendingVoices})`}
+                    </Text>
+                  </TouchableOpacity>
                 )}
-              </TouchableOpacity>
+
+                <TouchableOpacity
+                  onPress={handleSubmit}
+                  style={styles.submitBtn}
+                  disabled={isSubmitting || isBatchTranscribing}
+                >
+                  {isSubmitting ? (
+                    <ActivityIndicator color="#fff" size="small" />
+                  ) : (
+                    <>
+                      <Ionicons name="paper-plane" size={18} color="#fff" />
+                      <Text style={styles.submitBtnText}>GỬI ĐỀ XUẤT</Text>
+                    </>
+                  )}
+                </TouchableOpacity>
+              </View>
             </View>
           )}
             </>
