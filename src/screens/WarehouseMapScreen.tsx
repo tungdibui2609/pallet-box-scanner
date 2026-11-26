@@ -364,11 +364,11 @@ const MobileWarehouseSearchBar = React.memo(function MobileWarehouseSearchBar({
   uniqueStts,
   uniqueTags = [],
   availableUnits = [],
-  selectedUnit = 'all',
-  onSelectUnit,
+  selectedUnits = [],
+  onSelectUnits,
   availableTags = [],
-  selectedTag = 'all',
-  onSelectTag,
+  selectedTags = [],
+  onSelectTags,
   searchQuery,
   searchMode = 'all',
   onSearchModeChange,
@@ -393,11 +393,11 @@ const MobileWarehouseSearchBar = React.memo(function MobileWarehouseSearchBar({
   uniqueStts: UniqueSttItem[];
   uniqueTags?: UniqueTagItem[];
   availableUnits?: AvailableUnitOption[];
-  selectedUnit?: string;
-  onSelectUnit?: (unit: string) => void;
+  selectedUnits?: string[];
+  onSelectUnits?: (units: string[]) => void;
   availableTags?: AvailableTagOption[];
-  selectedTag?: string;
-  onSelectTag?: (tag: string) => void;
+  selectedTags?: string[];
+  onSelectTags?: (tags: string[]) => void;
   searchQuery: string;
   searchMode?: WarehouseSearchMode;
   onSearchModeChange?: (mode: WarehouseSearchMode) => void;
@@ -656,10 +656,45 @@ const MobileWarehouseSearchBar = React.memo(function MobileWarehouseSearchBar({
     onExecuteSearch(sttQuery);
   };
 
+  const isUnitSelected = (unit: string) => {
+    const norm = normalizeSearchString(unit, true);
+    return selectedUnits.some(u => normalizeSearchString(u, true) === norm);
+  };
+
+  const toggleUnit = (unit: string) => {
+    if (!onSelectUnits) return;
+    const norm = normalizeSearchString(unit, true);
+    const exists = selectedUnits.some(u => normalizeSearchString(u, true) === norm);
+    if (exists) {
+      onSelectUnits(selectedUnits.filter(u => normalizeSearchString(u, true) !== norm));
+    } else {
+      onSelectUnits([...selectedUnits, unit]);
+    }
+  };
+
+  const isTagSelected = (tag: string) => {
+    const norm = normalizeSearchString(tag, true);
+    return selectedTags.some(t => normalizeSearchString(t, true) === norm);
+  };
+
+  const toggleTag = (tag: string) => {
+    if (!onSelectTags) return;
+    const norm = normalizeSearchString(tag, true);
+    const exists = selectedTags.some(t => normalizeSearchString(t, true) === norm);
+    if (exists) {
+      onSelectTags(selectedTags.filter(t => normalizeSearchString(t, true) !== norm));
+    } else {
+      onSelectTags([...selectedTags, tag]);
+    }
+  };
+
   const handleSelectTag = (tag: string) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    if (onSelectTag) {
-      onSelectTag(tag);
+    if (onSelectTags) {
+      const norm = normalizeSearchString(tag, true);
+      if (!selectedTags.some(t => normalizeSearchString(t, true) === norm)) {
+        onSelectTags([...selectedTags, tag]);
+      }
     }
     if (searchMode === 'tag') {
       setInputValue(tag);
@@ -840,43 +875,54 @@ const MobileWarehouseSearchBar = React.memo(function MobileWarehouseSearchBar({
       </Modal>
 
       {/* ── THANH CHỌN NHANH ĐƠN VỊ TÍNH (ĐVT) & MÃ PHỤ (TAG) LIÊN QUAN KHI TÌM SẢN PHẨM ── */}
-      {((searchQuery.trim().length > 0 || searchMode === 'tag' || (selectedUnit && selectedUnit !== 'all') || (selectedTag && selectedTag !== 'all')) &&
-        ((availableUnits && (availableUnits.length > 1 || (selectedUnit && selectedUnit !== 'all'))) || (availableTags && availableTags.length > 0))) && (
+      {((searchQuery.trim().length > 0 || searchMode === 'tag' || selectedUnits.length > 0 || selectedTags.length > 0) &&
+        ((availableUnits && (availableUnits.length > 1 || selectedUnits.length > 0)) || (availableTags && availableTags.length > 0))) && (
         <View style={{ marginTop: 6, gap: 6, paddingTop: 6, borderTopWidth: 1, borderTopColor: '#1e293b' }}>
-          {/* 1. Dãy nút lọc Đơn vị tính (ĐVT) */}
-          {onSelectUnit && availableUnits && (availableUnits.length > 1 || (selectedUnit && selectedUnit !== 'all')) && (
+          {/* 1. Dãy nút lọc Đơn vị tính (ĐVT) - Đa chọn có ô tích */}
+          {onSelectUnits && availableUnits && (availableUnits.length > 1 || selectedUnits.length > 0) && (
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ alignItems: 'center', gap: 6 }}>
-              <Text style={[styles.activeFilterLabel, { color: '#34d399', fontWeight: '800' }]}>⚖️ ĐVT:</Text>
+              <Text style={[styles.activeFilterLabel, { color: '#34d399', fontWeight: '800' }]}>
+                ⚖️ ĐVT{selectedUnits.length > 0 ? ` (${selectedUnits.length})` : ''}:
+              </Text>
               <TouchableOpacity
                 style={[
                   styles.regionOptionPill,
-                  (!selectedUnit || selectedUnit === 'all') && styles.regionOptionPillActive
+                  selectedUnits.length === 0 && styles.regionOptionPillActive
                 ]}
                 onPress={() => {
                   Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                  onSelectUnit('all');
+                  onSelectUnits([]);
                 }}
               >
                 <Text
                   style={[
                     styles.regionOptionPillText,
-                    (!selectedUnit || selectedUnit === 'all') && styles.regionOptionPillTextActive
+                    selectedUnits.length === 0 && styles.regionOptionPillTextActive
                   ]}
                 >
                   Tất cả ({availableUnits.length})
                 </Text>
               </TouchableOpacity>
               {availableUnits.map(u => {
-                const isSel = selectedUnit !== 'all' && normalizeSearchString(selectedUnit, true) === normalizeSearchString(u.unit, true);
+                const isSel = isUnitSelected(u.unit);
                 return (
                   <TouchableOpacity
                     key={u.unit}
-                    style={[styles.regionOptionPill, isSel && styles.regionOptionPillActive]}
+                    style={[
+                      styles.regionOptionPill,
+                      { flexDirection: 'row', alignItems: 'center', gap: 5 },
+                      isSel && styles.regionOptionPillActive
+                    ]}
                     onPress={() => {
                       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                      onSelectUnit(isSel ? 'all' : u.unit);
+                      toggleUnit(u.unit);
                     }}
                   >
+                    <Ionicons
+                      name={isSel ? 'checkbox' : 'square-outline'}
+                      size={13}
+                      color={isSel ? '#0f172a' : '#34d399'}
+                    />
                     <Text style={[styles.regionOptionPillText, isSel && styles.regionOptionPillTextActive]}>
                       {u.unit} ({u.count} ô · {u.totalQty.toLocaleString('vi-VN')})
                     </Text>
@@ -886,43 +932,51 @@ const MobileWarehouseSearchBar = React.memo(function MobileWarehouseSearchBar({
             </ScrollView>
           )}
 
-          {/* 2. Dãy nút lọc Mã phụ (Tag) liên quan đến sản phẩm đang tìm */}
-          {onSelectTag && availableTags && availableTags.length > 0 && (
+          {/* 2. Dãy nút lọc Mã phụ (Tag) liên quan đến sản phẩm đang tìm - Đa chọn có ô tích */}
+          {onSelectTags && availableTags && availableTags.length > 0 && (
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ alignItems: 'center', gap: 6 }}>
-              <Text style={[styles.activeFilterLabel, { color: '#fbbf24', fontWeight: '800' }]}>🏷️ Tag ({availableTags.length}):</Text>
+              <Text style={[styles.activeFilterLabel, { color: '#fbbf24', fontWeight: '800' }]}>
+                🏷️ Tag ({selectedTags.length > 0 ? `${selectedTags.length}/${availableTags.length}` : availableTags.length}):
+              </Text>
               <TouchableOpacity
                 style={[
                   styles.regionOptionPill,
-                  (!selectedTag || selectedTag === 'all') && { backgroundColor: '#f59e0b', borderColor: '#fbbf24' }
+                  selectedTags.length === 0 && { backgroundColor: '#f59e0b', borderColor: '#fbbf24' }
                 ]}
                 onPress={() => {
                   Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                  onSelectTag('all');
+                  onSelectTags([]);
                 }}
               >
                 <Text
                   style={[
                     styles.regionOptionPillText,
-                    (!selectedTag || selectedTag === 'all') && { color: '#0f172a', fontWeight: '900' }
+                    selectedTags.length === 0 && { color: '#0f172a', fontWeight: '900' }
                   ]}
                 >
                   Tất cả
                 </Text>
               </TouchableOpacity>
               {availableTags.slice(0, 20).map(t => {
-                const isSel = selectedTag !== 'all' && normalizeSearchString(selectedTag, true) === normalizeSearchString(t.tag, true);
+                const isSel = isTagSelected(t.tag);
                 return (
                   <TouchableOpacity
                     key={t.tag}
                     style={[
                       styles.regionOptionPill,
+                      { flexDirection: 'row', alignItems: 'center', gap: 5 },
                       isSel && { backgroundColor: '#f59e0b', borderColor: '#fbbf24' }
                     ]}
                     onPress={() => {
                       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                      onSelectTag(isSel ? 'all' : t.tag);
+                      toggleTag(t.tag);
                     }}
                   >
+                    <Ionicons
+                      name={isSel ? 'checkbox' : 'square-outline'}
+                      size={13}
+                      color={isSel ? '#0f172a' : '#fbbf24'}
+                    />
                     <Text
                       style={[
                         styles.regionOptionPillText,
@@ -943,37 +997,39 @@ const MobileWarehouseSearchBar = React.memo(function MobileWarehouseSearchBar({
       {hasActiveFilters && !isFilterOpen && (
         <View style={styles.activeFilterChipsBar}>
           <Text style={styles.activeFilterLabel}>Đang lọc:</Text>
-          {selectedUnit && selectedUnit !== 'all' && onSelectUnit && (
+          {onSelectUnits && selectedUnits.map(unit => (
             <TouchableOpacity
+              key={`chip-unit-${unit}`}
               style={styles.activeFilterChipEmerald}
               onPress={onToggleFilterOpen}
             >
               <Ionicons name="scale-outline" size={11} color="#6ee7b7" />
-              <Text style={styles.activeFilterChipEmeraldText}>ĐVT: {selectedUnit}</Text>
+              <Text style={styles.activeFilterChipEmeraldText}>ĐVT: {unit}</Text>
               <TouchableOpacity
-                onPress={() => onSelectUnit('all')}
+                onPress={() => toggleUnit(unit)}
                 hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
               >
                 <Ionicons name="close" size={12} color="#6ee7b7" />
               </TouchableOpacity>
             </TouchableOpacity>
-          )}
+          ))}
 
-          {selectedTag && selectedTag !== 'all' && onSelectTag && (
+          {onSelectTags && selectedTags.map(tag => (
             <TouchableOpacity
+              key={`chip-tag-${tag}`}
               style={styles.activeFilterChipAmber}
               onPress={onToggleFilterOpen}
             >
               <Ionicons name="pricetag" size={11} color="#fcd34d" />
-              <Text style={styles.activeFilterChipAmberText}>Tag: {selectedTag}</Text>
+              <Text style={styles.activeFilterChipAmberText}>Tag: {tag}</Text>
               <TouchableOpacity
-                onPress={() => onSelectTag('all')}
+                onPress={() => toggleTag(tag)}
                 hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
               >
                 <Ionicons name="close" size={12} color="#fcd34d" />
               </TouchableOpacity>
             </TouchableOpacity>
-          )}
+          ))}
 
           {(filterStartDate || filterEndDate) && (
             <TouchableOpacity
@@ -1161,35 +1217,53 @@ const MobileWarehouseSearchBar = React.memo(function MobileWarehouseSearchBar({
             </ScrollView>
           </View>
 
-          {/* 4. Lọc theo Đơn vị tính (ĐVT) */}
-          {onSelectUnit && availableUnits && availableUnits.length > 0 && (
+          {/* 4. Lọc theo Đơn vị tính (ĐVT) - Đa chọn có ô tích */}
+          {onSelectUnits && availableUnits && availableUnits.length > 0 && (
             <View style={{ gap: 5, paddingTop: 6, borderTopWidth: 1, borderTopColor: '#1e293b' }}>
-              <Text style={styles.filterFieldLabel}>Đơn vị tính ({availableUnits.length}):</Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                <Text style={styles.filterFieldLabel}>
+                  Đơn vị tính ({availableUnits.length}){selectedUnits.length > 0 ? ` · Đã chọn ${selectedUnits.length}` : ''}:
+                </Text>
+                {selectedUnits.length > 0 && (
+                  <TouchableOpacity onPress={() => onSelectUnits([])}>
+                    <Text style={{ color: '#34d399', fontSize: 11, fontWeight: '700' }}>Bỏ chọn</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6 }}>
                 <TouchableOpacity
                   style={[
                     styles.regionOptionPill,
-                    (!selectedUnit || selectedUnit === 'all') && styles.regionOptionPillActive
+                    selectedUnits.length === 0 && styles.regionOptionPillActive
                   ]}
-                  onPress={() => onSelectUnit('all')}
+                  onPress={() => onSelectUnits([])}
                 >
                   <Text
                     style={[
                       styles.regionOptionPillText,
-                      (!selectedUnit || selectedUnit === 'all') && styles.regionOptionPillTextActive
+                      selectedUnits.length === 0 && styles.regionOptionPillTextActive
                     ]}
                   >
                     Tất cả ĐVT
                   </Text>
                 </TouchableOpacity>
                 {availableUnits.map(u => {
-                  const isSel = selectedUnit !== 'all' && normalizeSearchString(selectedUnit, true) === normalizeSearchString(u.unit, true);
+                  const isSel = isUnitSelected(u.unit);
                   return (
                     <TouchableOpacity
                       key={u.unit}
-                      style={[styles.regionOptionPill, isSel && styles.regionOptionPillActive]}
-                      onPress={() => onSelectUnit(isSel ? 'all' : u.unit)}
+                      style={[
+                        styles.regionOptionPill,
+                        { flexDirection: 'row', alignItems: 'center', gap: 5 },
+                        isSel && styles.regionOptionPillActive
+                      ]}
+                      onPress={() => toggleUnit(u.unit)}
                     >
+                      <Ionicons
+                        name={isSel ? 'checkbox' : 'square-outline'}
+                        size={13}
+                        color={isSel ? '#0f172a' : '#34d399'}
+                      />
                       <Text style={[styles.regionOptionPillText, isSel && styles.regionOptionPillTextActive]}>
                         {u.unit} ({u.count} ô · {u.totalQty.toLocaleString('vi-VN')})
                       </Text>
@@ -1200,38 +1274,53 @@ const MobileWarehouseSearchBar = React.memo(function MobileWarehouseSearchBar({
             </View>
           )}
 
-          {/* 5. Lọc theo Mã phụ (Tag) */}
-          {onSelectTag && availableTags && availableTags.length > 0 && (
+          {/* 5. Lọc theo Mã phụ (Tag) - Đa chọn có ô tích */}
+          {onSelectTags && availableTags && availableTags.length > 0 && (
             <View style={{ gap: 5, paddingTop: 6, borderTopWidth: 1, borderTopColor: '#1e293b' }}>
-              <Text style={styles.filterFieldLabel}>Mã phụ / Tag liên quan ({availableTags.length}):</Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                <Text style={styles.filterFieldLabel}>
+                  Mã phụ / Tag liên quan ({availableTags.length}){selectedTags.length > 0 ? ` · Đã chọn ${selectedTags.length}` : ''}:
+                </Text>
+                {selectedTags.length > 0 && (
+                  <TouchableOpacity onPress={() => onSelectTags([])}>
+                    <Text style={{ color: '#fbbf24', fontSize: 11, fontWeight: '700' }}>Bỏ chọn</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6 }}>
                 <TouchableOpacity
                   style={[
                     styles.regionOptionPill,
-                    (!selectedTag || selectedTag === 'all') && { backgroundColor: '#f59e0b', borderColor: '#fbbf24' }
+                    selectedTags.length === 0 && { backgroundColor: '#f59e0b', borderColor: '#fbbf24' }
                   ]}
-                  onPress={() => onSelectTag('all')}
+                  onPress={() => onSelectTags([])}
                 >
                   <Text
                     style={[
                       styles.regionOptionPillText,
-                      (!selectedTag || selectedTag === 'all') && { color: '#0f172a', fontWeight: '900' }
+                      selectedTags.length === 0 && { color: '#0f172a', fontWeight: '900' }
                     ]}
                   >
                     Tất cả Tag
                   </Text>
                 </TouchableOpacity>
                 {availableTags.slice(0, 30).map(t => {
-                  const isSel = selectedTag !== 'all' && normalizeSearchString(selectedTag, true) === normalizeSearchString(t.tag, true);
+                  const isSel = isTagSelected(t.tag);
                   return (
                     <TouchableOpacity
                       key={t.tag}
                       style={[
                         styles.regionOptionPill,
+                        { flexDirection: 'row', alignItems: 'center', gap: 5 },
                         isSel && { backgroundColor: '#f59e0b', borderColor: '#fbbf24' }
                       ]}
-                      onPress={() => onSelectTag(isSel ? 'all' : t.tag)}
+                      onPress={() => toggleTag(t.tag)}
                     >
+                      <Ionicons
+                        name={isSel ? 'checkbox' : 'square-outline'}
+                        size={13}
+                        color={isSel ? '#0f172a' : '#fbbf24'}
+                      />
                       <Text
                         style={[
                           styles.regionOptionPillText,
@@ -1554,8 +1643,8 @@ export default function WarehouseMapScreen({
   const [filterStartDate, setFilterStartDate] = useState<string>('');
   const [filterEndDate, setFilterEndDate] = useState<string>('');
   const [filterRegion, setFilterRegion] = useState<string>('all');
-  const [selectedUnit, setSelectedUnit] = useState<string>('all');
-  const [selectedTag, setSelectedTag] = useState<string>('all');
+  const [selectedUnits, setSelectedUnits] = useState<string[]>([]);
+  const [selectedTags, setSelectedTags] = useState<string[]>([]);
   const [isFilterOpen, setIsFilterOpen] = useState<boolean>(false);
 
   // Modal detail
@@ -2225,10 +2314,10 @@ export default function WarehouseMapScreen({
       filterStartDate ||
       filterEndDate ||
       (filterRegion && filterRegion !== 'all') ||
-      (selectedUnit && selectedUnit !== 'all') ||
-      (selectedTag && selectedTag !== 'all')
+      selectedUnits.length > 0 ||
+      selectedTags.length > 0
     );
-  }, [filterStartDate, filterEndDate, filterRegion, selectedUnit, selectedTag]);
+  }, [filterStartDate, filterEndDate, filterRegion, selectedUnits, selectedTags]);
 
   const handleSetDatePreset = useCallback((preset: 'today' | 3 | 7 | 'this_month' | 'clear') => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -2262,8 +2351,8 @@ export default function WarehouseMapScreen({
     setFilterStartDate('');
     setFilterEndDate('');
     setFilterRegion('all');
-    setSelectedUnit('all');
-    setSelectedTag('all');
+    setSelectedUnits([]);
+    setSelectedTags([]);
   }, []);
 
   const handleClearAllSearchAndFilters = useCallback(() => {
@@ -2273,8 +2362,8 @@ export default function WarehouseMapScreen({
     setFilterStartDate('');
     setFilterEndDate('');
     setFilterRegion('all');
-    setSelectedUnit('all');
-    setSelectedTag('all');
+    setSelectedUnits([]);
+    setSelectedTags([]);
     setSearchTab('breakdown');
   }, []);
 
@@ -2376,8 +2465,8 @@ export default function WarehouseMapScreen({
     const hasQuery = q.length > 0;
     const hasDateFilter = !!(filterStartDate || filterEndDate);
     const hasRegionFilter = !!(filterRegion && filterRegion !== 'all');
-    const hasUnitFilter = !!(selectedUnit && selectedUnit !== 'all');
-    const hasTagFilter = !!(selectedTag && selectedTag !== 'all');
+    const hasUnitFilter = selectedUnits.length > 0;
+    const hasTagFilter = selectedTags.length > 0;
 
     if (!hasQuery && !hasDateFilter && !hasRegionFilter && !hasUnitFilter && !hasTagFilter) return [];
 
@@ -2389,8 +2478,12 @@ export default function WarehouseMapScreen({
       : '';
     const isLikelyPositionCodeQuery = hasQuery && /^k\d/i.test(q);
     const normRegionFilter = hasRegionFilter ? normalizeSearchString(filterRegion, true) : '';
-    const normUnitFilter = hasUnitFilter ? normalizeSearchString(selectedUnit, true) : '';
-    const normTagFilter = hasTagFilter ? normalizeSearchString(selectedTag, true) : '';
+    const normUnitFilterSet = hasUnitFilter
+      ? new Set(selectedUnits.map(u => normalizeSearchString(u, true)))
+      : null;
+    const normTagFilterSet = hasTagFilter
+      ? new Set(selectedTags.map(t => normalizeSearchString(t, true)))
+      : null;
 
     const matched: { pos: PositionItem; score: number }[] = [];
     for (let i = 0; i < positions.length; i++) {
@@ -2426,29 +2519,29 @@ export default function WarehouseMapScreen({
         if (!matchedRegion) continue;
       }
 
-      // 2.5 Lọc theo Mã phụ (Tag)
-      if (hasTagFilter) {
+      // 2.5 Lọc theo Mã phụ (Tag) - OR giữa các tag đã chọn
+      if (hasTagFilter && normTagFilterSet) {
         const pTags = p.tags && Array.isArray(p.tags) ? p.tags : [];
         const hasMatchedTag = pTags.some(
-          t => t && !String(t).startsWith('MERGED_') && normalizeSearchString(String(t), true) === normTagFilter
+          t => t && !String(t).startsWith('MERGED_') && normTagFilterSet.has(normalizeSearchString(String(t), true))
         );
         if (!hasMatchedTag) continue;
       }
 
-      // 2.6 Lọc theo Đơn vị tính (ĐVT)
-      if (hasUnitFilter) {
+      // 2.6 Lọc theo Đơn vị tính (ĐVT) - OR giữa các ĐVT đã chọn
+      if (hasUnitFilter && normUnitFilterSet) {
         const subItems = getPositionProductItems(p);
         const hasMatchedUnit =
           subItems.some(sub => {
-            if (normalizeSearchString(sub.unit, true) !== normUnitFilter) return false;
+            if (!normUnitFilterSet.has(normalizeSearchString(sub.unit, true))) return false;
             if (hasQuery && isExactProductQuery) return sub.name === q;
             if (hasQuery && (searchMode === 'name' || searchMode === 'all')) {
               return matchSearch({ name: sub.name, aliases: sub.aliases || p.aliases, sku: sub.sku }, q);
             }
             return true;
           }) ||
-          (subItems.length === 0 && normalizeSearchString(getCleanUnitCategory(p.unit), true) === normUnitFilter) ||
-          (p.items && p.items.some(it => normalizeSearchString(it.unit || p.unit || '', true) === normUnitFilter));
+          (subItems.length === 0 && normUnitFilterSet.has(normalizeSearchString(getCleanUnitCategory(p.unit), true))) ||
+          (p.items && p.items.some(it => normUnitFilterSet.has(normalizeSearchString(it.unit || p.unit || '', true))));
         if (!hasMatchedUnit) continue;
       }
 
@@ -2462,7 +2555,7 @@ export default function WarehouseMapScreen({
               subItems.some(
                 sub =>
                   sub.name === q &&
-                  (!hasUnitFilter || normalizeSearchString(sub.unit, true) === normUnitFilter)
+                  (!normUnitFilterSet || normUnitFilterSet.has(normalizeSearchString(sub.unit, true)))
               )
             ) {
               matched.push({ pos: p, score: 2000 });
@@ -2476,7 +2569,7 @@ export default function WarehouseMapScreen({
 
           for (let sIdx = 0; sIdx < subItems.length; sIdx++) {
             const sub = subItems[sIdx];
-            if (hasUnitFilter && normalizeSearchString(sub.unit, true) !== normUnitFilter) continue;
+            if (normUnitFilterSet && !normUnitFilterSet.has(normalizeSearchString(sub.unit, true))) continue;
             const nameObj = {
               name: sub.name,
               aliases: sub.aliases || p.aliases,
@@ -2600,7 +2693,7 @@ export default function WarehouseMapScreen({
             const hasExact = subItems.some(
               sub =>
                 sub.name === q &&
-                (!hasUnitFilter || normalizeSearchString(sub.unit, true) === normUnitFilter)
+                (!normUnitFilterSet || normUnitFilterSet.has(normalizeSearchString(sub.unit, true)))
             );
             if (hasExact) {
               matched.push({ pos: p, score: 2000 });
@@ -2639,7 +2732,7 @@ export default function WarehouseMapScreen({
       matched.sort((a, b) => b.score - a.score);
     }
     return matched.map(m => m.pos);
-  }, [positions, searchQuery, searchMode, filterDateType, filterStartDate, filterEndDate, filterRegion, selectedUnit, selectedTag, exactProductNamesSet]);
+  }, [positions, searchQuery, searchMode, filterDateType, filterStartDate, filterEndDate, filterRegion, selectedUnits, selectedTags, exactProductNamesSet]);
 
   // ── Danh sách Đơn vị tính (ĐVT) & Mã phụ (Tag) liên quan đến kết quả tìm kiếm hiện tại ──
   const { availableUnits, availableTags } = useMemo(() => {
@@ -2652,8 +2745,14 @@ export default function WarehouseMapScreen({
     const hasRegionFilter = !!(filterRegion && filterRegion !== 'all');
     const isExactProductQuery = hasQuery && exactProductNamesSet.has(q);
     const normRegionFilter = hasRegionFilter ? normalizeSearchString(filterRegion, true) : '';
-    const normSelectedUnit = selectedUnit && selectedUnit !== 'all' ? normalizeSearchString(selectedUnit, true) : '';
-    const normSelectedTag = selectedTag && selectedTag !== 'all' ? normalizeSearchString(selectedTag, true) : '';
+    const normSelectedUnitSet =
+      selectedUnits.length > 0
+        ? new Set(selectedUnits.map(u => normalizeSearchString(u, true)))
+        : null;
+    const normSelectedTagSet =
+      selectedTags.length > 0
+        ? new Set(selectedTags.map(t => normalizeSearchString(t, true)))
+        : null;
 
     for (let i = 0; i < positions.length; i++) {
       const p = positions[i];
@@ -2695,8 +2794,8 @@ export default function WarehouseMapScreen({
         t => t && !String(t).startsWith('MERGED_')
       );
       const posMatchesSelectedTag =
-        !normSelectedTag ||
-        pTags.some(t => normalizeSearchString(String(t), true) === normSelectedTag);
+        !normSelectedTagSet ||
+        pTags.some(t => normSelectedTagSet.has(normalizeSearchString(String(t), true)));
 
       // 1. Gom Đơn vị tính (ĐVT)
       if (posMatchesSelectedTag) {
@@ -2744,13 +2843,13 @@ export default function WarehouseMapScreen({
           ) {
             return false;
           }
-          if (normSelectedUnit && normalizeSearchString(sub.unit, true) !== normSelectedUnit) {
+          if (normSelectedUnitSet && !normSelectedUnitSet.has(normalizeSearchString(sub.unit, true))) {
             return false;
           }
           return true;
         });
 
-        if (subsForUnit.length > 0 || (subItems.length === 0 && (!normSelectedUnit || normalizeSearchString(getCleanUnitCategory(p.unit), true) === normSelectedUnit))) {
+        if (subsForUnit.length > 0 || (subItems.length === 0 && (!normSelectedUnitSet || normSelectedUnitSet.has(normalizeSearchString(getCleanUnitCategory(p.unit), true))))) {
           const posQty =
             subsForUnit.length > 0
               ? subsForUnit.reduce((s, it) => s + (it.quantity || 0), 0)
@@ -2807,8 +2906,8 @@ export default function WarehouseMapScreen({
     filterStartDate,
     filterEndDate,
     filterRegion,
-    selectedUnit,
-    selectedTag,
+    selectedUnits,
+    selectedTags,
     exactProductNamesSet,
   ]);
 
@@ -2879,34 +2978,37 @@ export default function WarehouseMapScreen({
 
     const qClean = searchQuery.trim();
     const isExactProduct = exactProductNamesSet.has(qClean);
-    const normUnitFilter = selectedUnit && selectedUnit !== 'all' ? normalizeSearchString(selectedUnit, true) : '';
+    const normUnitFilterSet =
+      selectedUnits.length > 0
+        ? new Set(selectedUnits.map(u => normalizeSearchString(u, true)))
+        : null;
 
     matchingPositions.forEach(p => {
       const subItems = getPositionProductItems(p);
-
-      let qty = p.quantity || 0;
-      let unitCat = getCleanUnitCategory(p.unit);
+      let itemsToSum: Array<{ quantity: number; unit: string }> = [];
 
       // Nếu pallet hỗn hợp nhiều dòng sản phẩm và đang có từ khóa tìm kiếm hoặc lọc ĐVT -> chỉ tính số lượng của sản phẩm / ĐVT khớp
-      if (subItems.length > 1 && (qClean || normUnitFilter)) {
+      if (subItems.length > 1 && (qClean || normUnitFilterSet)) {
         const matchedSubs = subItems.filter(s => {
-          if (normUnitFilter && normalizeSearchString(s.unit, true) !== normUnitFilter) return false;
+          if (normUnitFilterSet && !normUnitFilterSet.has(normalizeSearchString(s.unit, true))) return false;
           if (!qClean) return true;
           if (isExactProduct) return s.name === qClean;
           return matchSearch(s.name, qClean) || Boolean(s.sku && matchSearch(s.sku, qClean));
         });
         if (matchedSubs.length > 0) {
-          qty = matchedSubs.reduce((sum, s) => sum + s.quantity, 0);
-          unitCat = matchedSubs[0].unit;
+          itemsToSum = matchedSubs.map(s => ({ quantity: s.quantity, unit: s.unit }));
         }
-      } else if (normUnitFilter && subItems.length === 1) {
-        if (normalizeSearchString(subItems[0].unit, true) === normUnitFilter) {
-          qty = subItems[0].quantity;
-          unitCat = subItems[0].unit;
+      } else if (normUnitFilterSet && subItems.length === 1) {
+        if (normUnitFilterSet.has(normalizeSearchString(subItems[0].unit, true))) {
+          itemsToSum = [{ quantity: subItems[0].quantity, unit: subItems[0].unit }];
         }
       }
 
-      addQtyToMap(grandUnitsMap, unitCat, qty);
+      if (itemsToSum.length === 0) {
+        itemsToSum = [{ quantity: p.quantity || 0, unit: getCleanUnitCategory(p.unit) }];
+      }
+
+      itemsToSum.forEach(it => addQtyToMap(grandUnitsMap, it.unit, it.quantity));
 
       let hier: { wh: ZoneItem; aisle: ZoneItem; slot: ZoneItem; tier?: ZoneItem } | undefined;
       for (let i = 0; i < p.zone_ids.length; i++) {
@@ -2923,7 +3025,7 @@ export default function WarehouseMapScreen({
           whAcc = { warehouse: hier.wh, unitsMap: new Map(), positionCount: 0, aislesMap: new Map() };
           whMap.set(hier.wh.id, whAcc);
         }
-        addQtyToMap(whAcc.unitsMap, unitCat, qty);
+        itemsToSum.forEach(it => addQtyToMap(whAcc!.unitsMap, it.unit, it.quantity));
         whAcc.positionCount++;
 
         let aisleAcc = whAcc.aislesMap.get(hier.aisle.id);
@@ -2931,7 +3033,7 @@ export default function WarehouseMapScreen({
           aisleAcc = { aisle: hier.aisle, unitsMap: new Map(), positionCount: 0, slotsMap: new Map() };
           whAcc.aislesMap.set(hier.aisle.id, aisleAcc);
         }
-        addQtyToMap(aisleAcc.unitsMap, unitCat, qty);
+        itemsToSum.forEach(it => addQtyToMap(aisleAcc!.unitsMap, it.unit, it.quantity));
         aisleAcc.positionCount++;
 
         let slotAcc = aisleAcc.slotsMap.get(hier.slot.id);
@@ -2939,7 +3041,7 @@ export default function WarehouseMapScreen({
           slotAcc = { slot: hier.slot, unitsMap: new Map(), positionCount: 0, positions: [], tiersMap: new Map() };
           aisleAcc.slotsMap.set(hier.slot.id, slotAcc);
         }
-        addQtyToMap(slotAcc.unitsMap, unitCat, qty);
+        itemsToSum.forEach(it => addQtyToMap(slotAcc!.unitsMap, it.unit, it.quantity));
         slotAcc.positionCount++;
         slotAcc.positions.push(p);
 
@@ -2949,7 +3051,7 @@ export default function WarehouseMapScreen({
             tierAcc = { tier: hier.tier, unitsMap: new Map(), positionCount: 0, positions: [] };
             slotAcc.tiersMap.set(hier.tier.id, tierAcc);
           }
-          addQtyToMap(tierAcc.unitsMap, unitCat, qty);
+          itemsToSum.forEach(it => addQtyToMap(tierAcc!.unitsMap, it.unit, it.quantity));
           tierAcc.positionCount++;
           tierAcc.positions.push(p);
         }
@@ -3015,7 +3117,7 @@ export default function WarehouseMapScreen({
       totalPositions: matchingPositions.length,
       warehouses: sortedWhs
     };
-  }, [isSearchActive, matchingPositions, zoneHierarchyMap, exactProductNamesSet, searchQuery, selectedUnit]);
+  }, [isSearchActive, matchingPositions, zoneHierarchyMap, exactProductNamesSet, searchQuery, selectedUnits]);
 
   // Mặc định THU GỌN HẾT các kho khi tìm kiếm (gọn gàng, dễ nhìn theo từng thẻ Kho)
   useEffect(() => {
@@ -3594,11 +3696,11 @@ export default function WarehouseMapScreen({
         uniqueStts={uniqueStts}
         uniqueTags={uniqueTags}
         availableUnits={availableUnits}
-        selectedUnit={selectedUnit}
-        onSelectUnit={setSelectedUnit}
+        selectedUnits={selectedUnits}
+        onSelectUnits={setSelectedUnits}
         availableTags={availableTags}
-        selectedTag={selectedTag}
-        onSelectTag={setSelectedTag}
+        selectedTags={selectedTags}
+        onSelectTags={setSelectedTags}
         searchQuery={searchQuery}
         searchMode={searchMode}
         onSearchModeChange={setSearchMode}
